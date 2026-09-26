@@ -1,47 +1,51 @@
-/// <reference types="node" />
-import { readFileSync } from "node:fs";
-import { dirname, resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-
-const here = dirname(new URL(import.meta.url).pathname);
-const indexHtml = readFileSync(resolve(here, "../../index.html"), "utf-8");
-const stylesCss = readFileSync(resolve(here, "./styles.css"), "utf-8");
+import indexHtml from "../../index.html?raw";
+import stylesCss from "./styles.css?raw";
 
 /**
  * index.html の外枠の最小限の CSS は、JavaScript が届く前から暗い背景とサイドバーの形で描くための
- * 決め打ちの値。styles.css の .dark トークンとずれると、起動の瞬間だけ違う色・幅になってしまう
+ * 決め打ちの値。styles.css のトークンとずれると、起動の瞬間だけ違う色・幅になってしまう
  */
-function extract(source: string, pattern: RegExp): string {
-  const match = source.match(pattern);
-  if (!match) throw new Error(`パターンに一致しませんでした: ${pattern}`);
-  return match[1]?.trim() ?? "";
+function block(source: string, selector: string): string {
+  const escaped = selector.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = source.match(new RegExp(`${escaped}\\s*\\{([^}]*)\\}`));
+  if (match?.[1] === undefined) throw new Error(`${selector} のブロックが見つかりません`);
+  return match[1];
 }
 
-// 値は :root（ライト）にも同名で出てくるので、.dark { ... } の中だけを見る
-const darkBlock = extract(stylesCss, /\.dark\s*\{([^}]*)\}/s);
+function declaration(body: string, property: string): string {
+  const escaped = property.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const match = body.match(new RegExp(`(?:^|[;\\s])${escaped}\\s*:\\s*([^;]+);`));
+  if (match?.[1] === undefined) throw new Error(`${property} が見つかりません`);
+  return match[1].trim();
+}
+
+const htmlStyle = indexHtml.match(/<style>([\s\S]*?)<\/style>/)?.[1] ?? "";
+const shellRoot = block(htmlStyle, ":root");
+const shellSidebar = block(htmlStyle, "#root:empty::before");
+// 色は :root（ライト）にも同名で出てくるので、ダークの .dark の中だけを見る
+const darkTokens = block(stylesCss, ".dark");
 
 describe("外枠の値の一致", () => {
   it("背景色（--background）", () => {
-    const inHtml = extract(indexHtml, /background:\s*(#[0-9a-fA-F]+);/);
-    const inCss = extract(darkBlock, /--background:\s*([^;]+);/);
-    expect(inHtml).toBe(inCss);
+    expect(declaration(shellRoot, "background")).toBe(declaration(darkTokens, "--background"));
+  });
+
+  it("文字色（--foreground）", () => {
+    expect(declaration(shellRoot, "color")).toBe(declaration(darkTokens, "--foreground"));
   });
 
   it("サイドバーの背景色（--sidebar）", () => {
-    const inHtml = extract(indexHtml, /background:\s*(#[0-9a-fA-F]+);\s*\n\s*border-right/);
-    const inCss = extract(darkBlock, /--sidebar:\s*([^;]+);/);
-    expect(inHtml).toBe(inCss);
+    expect(declaration(shellSidebar, "background")).toBe(declaration(darkTokens, "--sidebar"));
   });
 
   it("サイドバーの幅（--sidebar-width）", () => {
-    const inHtml = extract(indexHtml, /width:\s*(\d+px);/);
-    const inCss = extract(stylesCss, /--sidebar-width:\s*([^;]+);/);
-    expect(inHtml).toBe(inCss);
+    expect(declaration(shellSidebar, "width")).toBe(declaration(stylesCss, "--sidebar-width"));
   });
 
   it("サイドバーの右の枠線（--sidebar-border）", () => {
-    const inHtml = extract(indexHtml, /border-right:\s*1px solid\s*([^;]+);/);
-    const inCss = extract(darkBlock, /--sidebar-border:\s*([^;]+);/);
-    expect(inHtml).toBe(inCss);
+    expect(declaration(shellSidebar, "border-right")).toBe(
+      `1px solid ${declaration(darkTokens, "--sidebar-border")}`,
+    );
   });
 });

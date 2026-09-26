@@ -53,6 +53,8 @@ export default defineConfig(async () => {
             include: ["src/client/**/*.test.{ts,tsx}", "src/shared/**/*.test.ts"],
             environment: "happy-dom",
             setupFiles: ["./src/client/test/setup.ts"],
+            // CSS は既定では空として読まれる。`?raw` で中身を読むテスト（外枠の値の一致）のために通す
+            css: { include: [/\.css\?raw$/] },
           },
         },
       ],
