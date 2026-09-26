@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { CORE_KEY_BINDINGS } from "@/features/core/register";
 import type { KeyContext } from "./keymap";
 import { Keymap } from "./keymap";
 
@@ -218,5 +219,78 @@ describe("Keymap.register", () => {
 
     unregister();
     expect(keymap.get("a")).toBeUndefined();
+  });
+});
+
+describe("Keymap：キーの重複の検出（4-修正1の5）", () => {
+  it("同じ場面で同じキーを別の id に登録すると例外。何も登録されない", () => {
+    const keymap = new Keymap();
+    keymap.register({ id: "a", label: "A", group: "タスク", keys: ["x"], run: vi.fn() });
+    expect(() =>
+      keymap.register({ id: "b", label: "B", group: "タスク", keys: ["x"], run: vi.fn() }),
+    ).toThrow();
+    expect(keymap.get("b")).toBeUndefined();
+  });
+
+  it("英字は大文字小文字を区別しない：D と d は重なる", () => {
+    const keymap = new Keymap();
+    keymap.register({ id: "a", label: "A", group: "タスク", keys: ["d"], run: vi.fn() });
+    expect(() =>
+      keymap.register({ id: "b", label: "B", group: "タスク", keys: ["D"], run: vi.fn() }),
+    ).toThrow();
+  });
+
+  it("Shift+d と d は重ならない", () => {
+    const keymap = new Keymap();
+    keymap.register({ id: "a", label: "A", group: "タスク", keys: ["d"], run: vi.fn() });
+    expect(() =>
+      keymap.register({ id: "b", label: "B", group: "タスク", keys: ["Shift+d"], run: vi.fn() }),
+    ).not.toThrow();
+  });
+
+  it("Mod+z と z は重ならない", () => {
+    const keymap = new Keymap();
+    keymap.register({ id: "a", label: "A", group: "タスク", keys: ["z"], run: vi.fn() });
+    expect(() =>
+      keymap.register({ id: "b", label: "B", group: "タスク", keys: ["Mod+z"], run: vi.fn() }),
+    ).not.toThrow();
+  });
+
+  it("scope が違えば重ならない", () => {
+    const keymap = new Keymap();
+    keymap.register({ id: "a", label: "A", group: "タスク", keys: ["x"], run: vi.fn() });
+    expect(() =>
+      keymap.register({
+        id: "b",
+        label: "B",
+        group: "タスク",
+        keys: ["x"],
+        scope: "別の場面",
+        run: vi.fn(),
+      }),
+    ).not.toThrow();
+  });
+
+  it("同じ id の登録し直しは置き換えで、例外にならない", () => {
+    const keymap = new Keymap();
+    keymap.register({ id: "a", label: "A", group: "タスク", keys: ["x"], run: vi.fn() });
+    expect(() =>
+      keymap.register({ id: "a", label: "A2", group: "タスク", keys: ["x"], run: vi.fn() }),
+    ).not.toThrow();
+  });
+
+  it("1回の register に渡した配列の中どうしの重なりも例外", () => {
+    const keymap = new Keymap();
+    expect(() =>
+      keymap.register([
+        { id: "a", label: "A", group: "タスク", keys: ["x"], run: vi.fn() },
+        { id: "b", label: "B", group: "タスク", keys: ["x"], run: vi.fn() },
+      ]),
+    ).toThrow();
+  });
+
+  it("4 の割り当て（CORE_KEY_BINDINGS）どうしに重なりがない", () => {
+    const keymap = new Keymap();
+    expect(() => keymap.register(CORE_KEY_BINDINGS)).not.toThrow();
   });
 });
