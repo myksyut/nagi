@@ -372,6 +372,39 @@ describe("物理削除", () => {
       await db.select().from(appliedMutations).where(eq(appliedMutations.id, appliedKeepId)).get(),
     ).toBeDefined();
   });
+
+  it("削除からちょうど 30 日の行は残り、30 日を 1 ミリ秒でも過ぎた行は消える（applied_mutations の 7 日も同じ）", async () => {
+    const DAY_MS = 24 * 60 * 60 * 1000;
+    const exactly = (days: number) => new Date(NOW.getTime() - days * DAY_MS).toISOString();
+    const justOver = (days: number) => new Date(NOW.getTime() - days * DAY_MS - 1).toISOString();
+    const taskKeep = await insertRawTask(db, { deletedAt: exactly(30), seq: 1 });
+    const taskPurge = await insertRawTask(db, { deletedAt: justOver(30), seq: 2 });
+    await setMeta(db, "seq", "2");
+    await setMeta(db, "last_rollover_on", YESTERDAY);
+    const appliedKeepId = crypto.randomUUID();
+    const appliedPurgeId = crypto.randomUUID();
+    await db.insert(appliedMutations).values([
+      { id: appliedKeepId, appliedAt: exactly(7) },
+      { id: appliedPurgeId, appliedAt: justOver(7) },
+    ]);
+
+    await rolloverIfDue(db, NOW, "Asia/Tokyo");
+
+    expect(await taskById(taskKeep.id)).toEqual(taskKeep);
+    expect(await taskById(taskPurge.id)).toBeUndefined();
+    const purgedThroughSeq = await db
+      .select()
+      .from(meta)
+      .where(eq(meta.key, "purged_through_seq"))
+      .get();
+    expect(Number(purgedThroughSeq?.value)).toBe(2);
+    expect(
+      await db.select().from(appliedMutations).where(eq(appliedMutations.id, appliedKeepId)).get(),
+    ).toBeDefined();
+    expect(
+      await db.select().from(appliedMutations).where(eq(appliedMutations.id, appliedPurgeId)).get(),
+    ).toBeUndefined();
+  });
 });
 
 describe("★ 論理日付の境目（サーバー）", () => {
