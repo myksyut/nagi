@@ -1,6 +1,8 @@
+import { observer } from "mobx-react-lite";
 import { Link, useRoute } from "wouter";
+import { useStore } from "@/data";
 import { cn } from "@/lib/utils";
-import { BUCKET_LISTS, type ListEntry, LOGBOOK } from "../navigation";
+import { BUCKET_LISTS, type ListEntry, type ListKey, LOGBOOK } from "../navigation";
 
 export function Sidebar() {
   return (
@@ -31,20 +33,36 @@ export function Sidebar() {
   );
 }
 
-function NavItem({ list }: { list: ListEntry }) {
+/** 件数を出すリスト（受信箱と今日）。0 件のときは出さない */
+function useCount(key: ListKey): number {
+  const { lists } = useStore();
+  if (key === "inbox") return lists.inboxCount;
+  if (key === "today") return lists.todayCount;
+  return 0;
+}
+
+const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
   const [active] = useRoute(list.path);
+  const count = useCount(list.key);
   return (
     <Link
       href={list.path}
       aria-current={active ? "page" : undefined}
       className={cn(
-        "flex items-center rounded-md px-2.5 py-1.5 outline-none",
+        "flex items-center justify-between rounded-md px-2.5 py-1.5 outline-none",
         "hover:bg-sidebar-accent hover:text-sidebar-accent-foreground",
         "focus-visible:ring-2 focus-visible:ring-sidebar-ring",
         active && "bg-sidebar-accent font-medium text-sidebar-accent-foreground",
       )}
     >
       {list.label}
+      {count > 0 && (
+        <span className="font-normal text-muted-foreground text-xs tabular-nums">
+          <span className="sr-only">（</span>
+          {count}
+          <span className="sr-only">件）</span>
+        </span>
+      )}
     </Link>
   );
-}
+});
