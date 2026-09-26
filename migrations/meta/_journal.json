@@ -8,6 +8,13 @@
       "when": 1790449834854,
       "tag": "0000_sessions",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1790452790253,
+      "tag": "0001_sync_tables",
+      "breakpoints": true
     }
   ]
 }

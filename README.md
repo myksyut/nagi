@@ -11,8 +11,8 @@
 ```text
 src/
 ├── client/      # React の画面（coss ui の部品は components/ui）
-├── worker/      # Hono の API（/api/*）とログイン（/auth/*）
-└── shared/      # 画面と Worker で共有する型や関数
+├── worker/      # Hono の API（/api/*）とログイン（/auth/*）。同期の API は worker/sync
+└── shared/      # 画面と Worker で共有する型・検証スキーマ・論理日付・並び順キー・API の版
 migrations/      # D1 のマイグレーション（Drizzle で生成し、wrangler で適用）
 public/          # そのまま配信するファイル
 index.html       # アプリの外枠（最初の表示用の最小限の CSS を直接書く）
@@ -75,6 +75,17 @@ ssh -L 5317:localhost:5317 <M7 のホスト>
   ```sh
   curl -X POST http://localhost:5317/auth/logout \
     -H 'Origin: http://localhost:5317' -H 'Content-Type: application/json' -d '{}'
+  ```
+
+- `/api/sync` と `/api/mutate` には、さらに `X-Api-Version`（`src/shared/api.ts` の `API_VERSION`）を付ける（違えば 409）。タスクを作って、差分の取得で取り出す例：
+
+  ```sh
+  api() {
+    curl -X POST "http://localhost:5317$1" -H 'Origin: http://localhost:5317' \
+      -H 'Content-Type: application/json' -H 'X-Api-Version: 1' -d "$2"
+  }
+  api /api/mutate '{"id":"0199a000-0000-7000-8000-000000000001","mutations":[{"type":"task.create","task":{"id":"0199a000-0000-7000-8000-000000000002","title":"見積もりの確認","bucket":"inbox","rank":"a0"}}]}'
+  api /api/sync '{"cursor":0,"baseCursor":0}'
   ```
 
 ## コマンド
