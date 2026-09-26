@@ -1,6 +1,6 @@
 import { logicalDate } from "@shared/logical-date";
 import { arrivalRanks } from "@shared/rank";
-import { and, eq, isNull, lt, lte, ne, or, sql } from "drizzle-orm";
+import { and, eq, isNull, lt, lte, ne, notExists, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { Db } from "../db/client";
 import { appliedMutations, meta, projects, tasks } from "../db/schema";
@@ -13,7 +13,7 @@ export const PURGE_AFTER_DAYS = 30;
 export const APPLIED_MUTATIONS_TTL_DAYS = 7;
 /**
  * 1回の切り替えで今日へ移す行の数の上限。D1 へのクエリは 1 回の呼び出しで 1000 までなので、それに収める。
- * 超えたぶんは last_rollover_on を進めずに残し、次の同期で続きを移す（今日来たタスクの後ろに並ぶので、順番は保たれる）
+ * 超えたぶんが残ると last_rollover_on は進まず、次の同期で続きを移す（今日来たタスクの後ろに並ぶので、順番は保たれる）
  */
 export const ROLLOVER_BATCH_LIMIT = 400;
 
@@ -22,7 +22,8 @@ export type RolloverResult = { ran: boolean; moved: number };
 
 /**
  * 未完了・未削除で、今日の置き場になく、予定の日付か締切が今日以前のタスク。
- * 移す行の UPDATE の WHERE にも入れるので、何度実行しても（同時に2回来ても）同じ結果になる
+ * 移す行の UPDATE の WHERE にも入れるので、何度実行しても（同時に2回来ても）同じ結果になる。
+ * last_rollover_on を進める条件（対象が残っていない）も、この条件と同じにする
  */
 function isDue(today: string) {
   return and(
@@ -85,8 +86,9 @@ function purgeStatements(db: Db, now: Date) {
  * 日付の切り替え（午前4時）。last_rollover_on が論理日付より前なら行う（/api/sync の最初に呼ぶ）。
  * 1. 予定の日付か締切が今日以前のタスクを、今日の「今日来たタスクの後ろ、それ以外の前」へ移す
  *    （日付の早い順、同じなら作成順。arrivedOn に今日を入れ、scheduledOn は空にする）
- * 2. 同じバッチで last_rollover_on を今日にする（途中で止まった状態を残さない）
- * 3. 同じバッチで、削除から 30 日たった行を物理削除し、7 日たった applied_mutations を消す
+ * 2. 同じバッチで、削除から 30 日たった行を物理削除し、7 日たった applied_mutations を消す
+ * 3. 同じバッチの最後で、移す対象がもう残っていなければ last_rollover_on を今日にする
+ *    （残っていれば進めず、次の同期でもう一度行う。途中で止まった状態は残さない）
  */
 export async function rolloverIfDue(
   db: Db,
@@ -116,7 +118,6 @@ export async function rolloverIfDue(
   ]);
 
   const moving = candidates.sort(byArrival(today)).slice(0, limit);
-  const finished = moving.length === candidates.length;
   const ranks = arrivalRanks(todayTasks, today, moving.length);
   const updatedAt = now.toISOString();
   const count = moving.length;
@@ -141,15 +142,21 @@ export async function rolloverIfDue(
         .where(and(eq(tasks.id, task.id), isDue(today))),
     );
   });
-  if (finished) {
-    statements.push(
-      db
-        .update(meta)
-        .set({ value: today })
-        .where(and(eq(meta.key, "last_rollover_on"), lt(meta.value, today))),
-    );
-  }
   statements.push(...purgeStatements(db, now));
+  // バッチの最後で、移す対象（isDue と同じ条件）がもう残っていないときだけ last_rollover_on を進める。
+  // 候補を読んだあとに期限の来たタスクが確定していたり、limit で残したりしたら進めず、次の同期でやり直す
+  statements.push(
+    db
+      .update(meta)
+      .set({ value: today })
+      .where(
+        and(
+          eq(meta.key, "last_rollover_on"),
+          lt(meta.value, today),
+          notExists(db.select({ id: tasks.id }).from(tasks).where(isDue(today))),
+        ),
+      ),
+  );
   const results = await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
   // 同時に来たほかの切り替えが先に移していた行は、WHERE に当たらず書き換わらない
   const moved = results
