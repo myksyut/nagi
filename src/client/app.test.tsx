@@ -4,6 +4,8 @@ import { describe, expect, it } from "vitest";
 import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { App } from "./app";
+import { AppStore, StoreProvider } from "./data";
+import { createMemoryLocalDb } from "./data/local-db";
 
 /**
  * チケット 1 で決めたリストの URL と表示名（サイドバーの上からの順）。
@@ -19,10 +21,14 @@ const LISTS = [
 
 function renderAt(path: string) {
   const location = memoryLocation({ path, record: true });
+  // 動かさない（start() を呼ばない）ストア。ルーティングの確認には通信も手元の控えも要らない
+  const store = new AppStore({ openLocalDb: async () => createMemoryLocalDb() });
   render(
-    <Router hook={location.hook} searchHook={location.searchHook}>
-      <App />
-    </Router>,
+    <StoreProvider store={store}>
+      <Router hook={location.hook} searchHook={location.searchHook}>
+        <App />
+      </Router>
+    </StoreProvider>,
   );
   return location;
 }
