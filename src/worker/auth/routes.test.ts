@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../db/client";
 import { sessions } from "../db/schema";
 import app from "../index";
+import { decodeBase64Url } from "../test/base64url";
 import { cookieHeader, findSetCookie } from "../test/cookies";
 import { OAUTH_STATE_COOKIE } from "./cookies";
 import { sha256Hex } from "./crypto";
@@ -80,6 +81,19 @@ describe("GET /auth/login", () => {
     expect(stateCookie?.attrs.SameSite).toBe("Lax");
     expect(stateCookie?.attrs.Path).toBe("/");
     expect(stateCookie?.attrs["Max-Age"]).toBe("600");
+    // state は 32 バイトの乱数を base64url にしたもの
+    expect(decodeBase64Url(stateCookie?.value ?? "")).toHaveLength(32);
+  });
+
+  it("state は発行のたびに違う値になる", async () => {
+    const states = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      const res = await exports.default.fetch(`${ORIGIN}/auth/login`, { redirect: "manual" });
+      const state = findSetCookie(res.headers.getSetCookie(), OAUTH_STATE_COOKIE)?.value ?? "";
+      expect(decodeBase64Url(state)).toHaveLength(32);
+      states.add(state);
+    }
+    expect(states.size).toBe(3);
   });
 
   it("GITHUB_CLIENT_ID が空なら /login?error=config へ、state は発行しない", async () => {
@@ -121,7 +135,8 @@ describe("GET /auth/callback", () => {
     expect(sidCookie?.attrs.Path).toBe("/");
     expect(sidCookie?.attrs.Expires).toBeTruthy();
     const token = sidCookie?.value ?? "";
-    expect(token).not.toBe("");
+    // セッションのトークンは 32 バイトの乱数を base64url にしたもの
+    expect(decodeBase64Url(token)).toHaveLength(32);
 
     // D1 には1行だけ。id はトークンの SHA-256 で、トークンそのものは無い
     const rows = await sessionRows();
@@ -162,6 +177,23 @@ describe("GET /auth/callback", () => {
     });
     expect(sessionRes.status).toBe(200);
     expect(await sessionRes.json()).toEqual({ authenticated: true });
+  });
+
+  it("ログインするたびに、別のセッションのトークンが出る", async () => {
+    mockGitHub();
+    const tokens = new Set<string>();
+    for (let i = 0; i < 3; i++) {
+      const state = `state-${i}`;
+      const res = await exports.default.fetch(`${ORIGIN}/auth/callback?code=c&state=${state}`, {
+        redirect: "manual",
+        headers: { Cookie: cookieHeader({ [OAUTH_STATE_COOKIE]: state }) },
+      });
+      const token = findSetCookie(res.headers.getSetCookie(), SESSION_COOKIE)?.value ?? "";
+      expect(decodeBase64Url(token)).toHaveLength(32);
+      tokens.add(token);
+    }
+    expect(tokens.size).toBe(3);
+    expect(await sessionRows()).toHaveLength(3);
   });
 
   it("違う ID なら /login?error=forbidden で、セッションは作らない", async () => {

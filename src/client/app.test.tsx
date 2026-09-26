@@ -1,10 +1,21 @@
-import { render, screen } from "@testing-library/react";
+import { render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, it } from "vitest";
 import { Router } from "wouter";
 import { memoryLocation } from "wouter/memory-location";
 import { App } from "./app";
-import { BUCKET_LISTS, LOGBOOK } from "./navigation";
+
+/**
+ * チケット 1 で決めたリストの URL と表示名（サイドバーの上からの順）。
+ * 実装の定数（navigation.ts）から作らず、ここに書いておく。実装から消えたり変わったりしたら気づけるように
+ */
+const LISTS = [
+  { path: "/inbox", label: "受信箱" },
+  { path: "/today", label: "今日" },
+  { path: "/upcoming", label: "予定" },
+  { path: "/later", label: "あとで" },
+  { path: "/logbook", label: "完了ログ" },
+] as const;
 
 function renderAt(path: string) {
   const location = memoryLocation({ path, record: true });
@@ -17,14 +28,11 @@ function renderAt(path: string) {
 }
 
 describe("各リストの URL", () => {
-  it.each([...BUCKET_LISTS, LOGBOOK])(
-    "$path は見出しと document.title に「$label」が出る",
-    async ({ path, label }) => {
-      renderAt(path);
-      expect(await screen.findByRole("heading", { level: 1, name: label })).toBeInTheDocument();
-      expect(document.title).toBe(`${label} — nagi`);
-    },
-  );
+  it.each(LISTS)("$path は見出しと document.title に「$label」が出る", async ({ path, label }) => {
+    renderAt(path);
+    expect(await screen.findByRole("heading", { level: 1, name: label })).toBeInTheDocument();
+    expect(document.title).toBe(`${label} — nagi`);
+  });
 
   it("/projects/:id は「プロジェクト」の見出しが出る", async () => {
     renderAt("/projects/abc-123");
@@ -50,10 +58,18 @@ describe("サイドバー", () => {
     renderAt("/today");
     await screen.findByRole("heading", { name: "今日" });
 
-    for (const list of [...BUCKET_LISTS, LOGBOOK]) {
-      const link = screen.getByRole("link", { name: list.label });
+    // サイドバーのリンクは、この順でこれだけ
+    const nav = screen.getByRole("navigation", { name: "リスト" });
+    expect(
+      within(nav)
+        .getAllByRole("link")
+        .map((link) => link.textContent),
+    ).toEqual(LISTS.map((list) => list.label));
+
+    for (const list of LISTS) {
+      const link = within(nav).getByRole("link", { name: list.label });
       expect(link).toHaveAttribute("href", list.path);
-      if (list.key === "today") {
+      if (list.path === "/today") {
         expect(link).toHaveAttribute("aria-current", "page");
       } else {
         expect(link).not.toHaveAttribute("aria-current");
