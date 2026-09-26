@@ -1,0 +1,6 @@
+# 手元の開発用の設定。`cp .dev.vars.example .dev.vars` で使う（.dev.vars は Git に入らない）
+# 本物のシークレットはここにも .dev.vars にも入れない（GitHub とのやり取りはテストで確かめる）
+
+# localhost からのリクエストに限って、/api/* のログインを外す
+AUTH_DISABLED=true
+GITHUB_CLIENT_SECRET=dummy
