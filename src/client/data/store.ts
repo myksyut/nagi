@@ -2,7 +2,7 @@ import type { SyncRow } from "@shared/model";
 import { MAX_MUTATIONS_PER_BATCH, type Mutation, mutationSchema } from "@shared/mutations";
 import { makeObservable, observable, runInAction } from "mobx";
 import { type OperationResult, type PerformOptions, TaskActions } from "./actions";
-import { ApiClient, type ApiFailure } from "./api-client";
+import { ApiClient, type ApiFailure, isRetryable } from "./api-client";
 import { TaskLists } from "./lists";
 import { createMemoryLocalDb, type LocalDb, openLocalDb } from "./local-db";
 import { LogicalDay } from "./logical-day";
@@ -111,6 +111,8 @@ export class AppStore {
       canSync: () => this.#isActive() && this.loaded && this.isOnline,
       isActive: () => this.#isActive(),
       onSynced: () => {
+        // 起動して最初の同期のあとにも、30 日たった削除済みの行を捨てる（初回の全件取得で届いた分）
+        if (!this.synced) this.#purgeExpired();
         runInAction(() => {
           this.synced = true;
         });
@@ -218,6 +220,10 @@ export class AppStore {
   #listen(): void {
     const win = this.#window;
     const doc = this.#document;
+    // 読み込みのあいだに online / offline が変わっていたら、ここで追いつく
+    runInAction(() => {
+      this.isOnline = win?.navigator.onLine ?? this.isOnline;
+    });
     const on = (target: EventTarget | undefined, type: string, handler: () => void) => {
       if (!target) return;
       target.addEventListener(type, handler);
@@ -307,7 +313,7 @@ export class AppStore {
   }
 
   #onSendFailed(error: ApiFailure, discarded: readonly PendingBatch[]): void {
-    this.undoStack.discarded(discarded);
+    this.undoStack.discarded(discarded, { restoreUndone: isRetryable(error) });
     const detail = describeDiscarded(discarded);
     switch (error.kind) {
       case "unauthorized":

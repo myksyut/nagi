@@ -10,7 +10,7 @@
 
 ```text
 src/
-├── client/      # React の画面（coss ui の部品は components/ui）
+├── client/      # React の画面（coss ui の部品は components/ui）。データ層（ストア・IndexedDB・同期）は client/data
 ├── worker/      # Hono の API（/api/*）とログイン（/auth/*）。同期の API は worker/sync
 └── shared/      # 画面と Worker で共有する型・検証スキーマ・論理日付・並び順キー・API の版
 migrations/      # D1 のマイグレーション（Drizzle で生成し、wrangler で適用）
@@ -109,7 +109,7 @@ ssh -L 5317:localhost:5317 <M7 のホスト>
 | project | 対象 | 環境 |
 | --- | --- | --- |
 | worker | `src/worker/**/*.test.ts` | Workers 用テストプール（workerd の中）。D1 込みで、各テストファイルの前に `migrations/` を当てる。GitHub とのやり取りは `fetch` を差し替えて確かめる |
-| client | `src/client/**/*.test.{ts,tsx}`、`src/shared/**/*.test.ts` | happy-dom と fake-indexeddb。偽のタイマーは各テストで `vi.useFakeTimers()` |
+| client | `src/client/**/*.test.{ts,tsx}`、`src/shared/**/*.test.ts` | happy-dom と fake-indexeddb。偽のタイマーは各テストで `vi.useFakeTimers()`。同期のテストは `src/client/test/fake-server.ts`（`src/shared` の約束どおりに動く偽のサーバー）を `fetch` に渡す。fake-indexeddb は setImmediate で動くので、IndexedDB と偽のタイマーを一緒に使うときは `vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] })` にする |
 
 Vitest は Workers 用テストプール（`@cloudflare/vitest-pool-workers` 0.22）に合わせて 4 系に固定している。GitHub Actions でも `pnpm check` と `pnpm test` を回す。
 

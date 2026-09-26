@@ -6,6 +6,7 @@ import { memoryLocation } from "wouter/memory-location";
 import { App } from "./app";
 import { AppStore, StoreProvider } from "./data";
 import { createMemoryLocalDb } from "./data/local-db";
+import { FakeServer } from "./test/fake-server";
 
 /**
  * チケット 1 で決めたリストの URL と表示名（サイドバーの上からの順）。
@@ -56,6 +57,32 @@ describe("/ と知らない URL", () => {
     expect(location.history.at(-1)).toBe("/today");
     // replace なので履歴は増えず1件のまま
     expect(location.history).toHaveLength(1);
+  });
+});
+
+describe("ログインが切れたとき（401）", () => {
+  it("同期が 401 になると /login へ移る", async () => {
+    const server = new FakeServer();
+    server.authorized = false;
+    const location = memoryLocation({ path: "/today", record: true });
+    const store = new AppStore({
+      fetch: server.fetch,
+      openLocalDb: async () => createMemoryLocalDb(),
+    });
+    render(
+      <StoreProvider store={store}>
+        <Router hook={location.hook} searchHook={location.searchHook}>
+          <App />
+        </Router>
+      </StoreProvider>,
+    );
+    await screen.findByRole("heading", { name: "今日" });
+
+    await store.start();
+
+    expect(await screen.findByRole("link", { name: "GitHub でログイン" })).toBeInTheDocument();
+    expect(location.history.at(-1)).toBe("/login");
+    store.dispose();
   });
 });
 

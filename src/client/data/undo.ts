@@ -130,15 +130,18 @@ export class UndoStack {
 
   /**
    * まとまりが捨てられた。その操作は（一部でも捨てられたら）元に戻す対象から外す。
-   * 捨てられたのが「元に戻す」操作なら、戻そうとした元の操作を積み直す（もう一度 ⌘Z で戻せるように）
+   * 捨てられたのが「元に戻す」操作で、restoreUndone（通信の失敗）なら、戻そうとした元の操作を積み直す
+   * （もう一度 ⌘Z で戻せるように）。400 などで捨てられたときは、同じ操作がまた失敗するので積み直さない
    */
-  discarded(batches: readonly PendingBatch[]): void {
+  discarded(batches: readonly PendingBatch[], { restoreUndone = true } = {}): void {
     const operationIds = new Set(batches.map((batch) => batch.operationId));
     const kept = this.#entries.filter((entry) => !operationIds.has(entry.operationId));
     for (const operationId of operationIds) {
       const original = this.#undoing.get(operationId);
       this.#undoing.delete(operationId);
-      if (original && !operationIds.has(original.operationId)) kept.push(original);
+      if (restoreUndone && original && !operationIds.has(original.operationId)) {
+        kept.push(original);
+      }
     }
     this.#entries = kept.slice(-UNDO_LIMIT);
     this.#atom.reportChanged();

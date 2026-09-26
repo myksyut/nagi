@@ -58,6 +58,13 @@ function sorted(rows: Iterable<TaskRow>, compare: Compare): TaskRow[] {
   return Array.from(rows).sort(compare);
 }
 
+function sameLogbook(a: readonly LogbookDay[], b: readonly LogbookDay[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((day, i) => day.date === b[i]?.date && compareShallow(day.tasks, b[i]?.tasks))
+  );
+}
+
 function sameGroups(a: ProjectTaskGroups, b: ProjectTaskGroups): boolean {
   return (Object.keys(a) as (keyof ProjectTaskGroups)[]).every((key) =>
     compareShallow(a[key], b[key]),
@@ -79,7 +86,7 @@ export class TaskLists {
       scheduled: list,
       later: list,
       completedToday: list,
-      logbook: list,
+      logbook: computed({ equals: sameLogbook }),
       projects: list,
     });
   }
