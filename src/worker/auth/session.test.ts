@@ -3,6 +3,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/client";
 import { sessions } from "../db/schema";
+import { decodeBase64Url } from "../test/base64url";
 import { sha256Hex } from "./crypto";
 import {
   createSession,
@@ -18,7 +19,33 @@ beforeEach(async () => {
   await env.DB.prepare("DELETE FROM sessions").run();
 });
 
+describe("generateSessionToken", () => {
+  it("32 バイトの乱数を base64url にしたもので、発行のたびに違う値になる", () => {
+    const tokens = new Set<string>();
+    for (let i = 0; i < 5; i++) {
+      const token = generateSessionToken();
+      expect(decodeBase64Url(token)).toHaveLength(32);
+      tokens.add(token);
+    }
+    expect(tokens.size).toBe(5);
+  });
+});
+
 describe("createSession", () => {
+  it("作るたびに別のトークンと別の行になる", async () => {
+    const db = getDb(env.DB);
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    const first = await createSession(db, now);
+    const second = await createSession(db, now);
+
+    expect(decodeBase64Url(first.token)).toHaveLength(32);
+    expect(decodeBase64Url(second.token)).toHaveLength(32);
+    expect(first.token).not.toBe(second.token);
+
+    const ids = (await db.select().from(sessions)).map((row) => row.id).sort();
+    expect(ids).toEqual([await sha256Hex(first.token), await sha256Hex(second.token)].sort());
+  });
+
   it("トークンの SHA-256 だけを D1 に保存し、トークンそのものは保存しない", async () => {
     const db = getDb(env.DB);
     const now = new Date("2026-01-01T00:00:00.000Z");
@@ -112,6 +139,60 @@ describe("validateSession", () => {
     expect(result?.expiresAt.toISOString()).toBe(
       new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
     );
+  });
+
+  it("同じセッションに並列で来ても、延長の書き込みは1回だけで、どちらも D1 と同じ期限を返す", async () => {
+    const db = getDb(env.DB);
+    const token = generateSessionToken();
+    const id = await sha256Hex(token);
+    const lastExtendedAt = new Date("2026-01-01T00:00:00.000Z").getTime();
+    await db.insert(sessions).values({
+      id,
+      expiresAt: new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
+      createdAt: new Date(lastExtendedAt).toISOString(),
+    });
+
+    // 2つとも延長の条件を満たし、時刻だけが違う。両方が延長を書き込むと、期限が食い違う
+    const nowA = new Date(lastExtendedAt + 2 * DAY_MS);
+    const nowB = new Date(nowA.getTime() + 60 * 1000);
+    const [a, b] = await Promise.all([
+      validateSession(db, token, nowA),
+      validateSession(db, token, nowB),
+    ]);
+
+    const row = await db.query.sessions.findFirst({ where: eq(sessions.id, id) });
+    const stored = row?.expiresAt;
+    // 入っているのは、どちらか一方の延長だけ
+    expect([
+      new Date(nowA.getTime() + SESSION_TTL_MS).toISOString(),
+      new Date(nowB.getTime() + SESSION_TTL_MS).toISOString(),
+    ]).toContain(stored);
+    // どちらの応答も D1 と同じ期限で Cookie を出し直す（古い期限に戻らない）
+    expect(a?.extended).toBe(true);
+    expect(b?.extended).toBe(true);
+    expect(a?.expiresAt.toISOString()).toBe(stored);
+    expect(b?.expiresAt.toISOString()).toBe(stored);
+  });
+
+  it("延長しようとしたときに行が消えていたら null", async () => {
+    const db = getDb(env.DB);
+    const token = generateSessionToken();
+    const lastExtendedAt = new Date("2026-01-01T00:00:00.000Z").getTime();
+    await db.insert(sessions).values({
+      id: await sha256Hex(token),
+      expiresAt: new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
+      createdAt: new Date(lastExtendedAt).toISOString(),
+    });
+
+    // 延長の確認（読む → 書く）と並んでログアウト（消す）が走る。消すほうが先に書き込むので、
+    // 延長の書き込みは空振りし、ないセッションを有効として返してはいけない
+    const [result] = await Promise.all([
+      validateSession(db, token, new Date(lastExtendedAt + 2 * DAY_MS)),
+      deleteSession(db, token),
+    ]);
+
+    expect(result).toBeNull();
+    expect(await db.select().from(sessions)).toHaveLength(0);
   });
 
   it("期限切れなら行を消して null を返す", async () => {

@@ -1,4 +1,4 @@
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { sessions } from "../db/schema";
 import { encodeBase64Url, randomBytes, sha256Hex } from "./crypto";
@@ -13,7 +13,10 @@ const EXTEND_INTERVAL_MS = DAY_MS;
 
 export type Session = {
   expiresAt: Date;
-  /** このリクエストで有効期限を延ばした（Cookie も出し直す） */
+  /**
+   * 有効期限が延びたので、Cookie をこの期限で出し直す。
+   * 並列のリクエストが先に延ばしていた場合も、その延ばした期限で true になる
+   */
   extended: boolean;
 };
 
@@ -54,8 +57,19 @@ export async function validateSession(db: Db, token: string, now: Date): Promise
     return { expiresAt, extended: false };
   }
   const extendedAt = new Date(now.getTime() + SESSION_TTL_MS);
-  await db.update(sessions).set({ expiresAt: extendedAt.toISOString() }).where(eq(sessions.id, id));
-  return { expiresAt: extendedAt, extended: true };
+  // 読んだ期限のままのときだけ書く。同じセッションへの並列のリクエストが先に延ばしていたら
+  // 書かない（延長の書き込みは 1 日 1 回まで）
+  const result = await db
+    .update(sessions)
+    .set({ expiresAt: extendedAt.toISOString() })
+    .where(and(eq(sessions.id, id), eq(sessions.expiresAt, row.expiresAt)));
+  if (result.meta.changes > 0) return { expiresAt: extendedAt, extended: true };
+
+  // 先を越された（ほかのリクエストが延ばした、またはログアウトで消えた）。今の行に合わせる。
+  // 古い期限の Cookie を出すと、先に延ばしたリクエストの Cookie を上書きしてしまうため
+  const latest = await db.query.sessions.findFirst({ where: eq(sessions.id, id) });
+  if (!latest) return null;
+  return { expiresAt: new Date(latest.expiresAt), extended: true };
 }
 
 export async function deleteSession(db: Db, token: string): Promise<void> {
