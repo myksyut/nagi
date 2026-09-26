@@ -2,6 +2,7 @@ import { env } from "cloudflare:test";
 import type { ApiErrorResponse, MutateResponse, SyncResponse } from "@shared/api";
 import { API_VERSION, API_VERSION_HEADER } from "@shared/api";
 import type { Project, SyncRow, Task } from "@shared/model";
+import { mutationBatchSchema, type ParsedMutationBatch } from "@shared/mutations";
 import { rankAfter } from "@shared/rank";
 import { eq } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
@@ -72,6 +73,33 @@ export function projectInput(overrides: Record<string, unknown> = {}) {
 
 export function mutationBatch(mutations: unknown[], id: string = crypto.randomUUID()) {
   return { id, mutations };
+}
+
+/** applyMutationBatch / rolloverIfDue を直接呼ぶテスト用に、まとまりを検証済みの形にする */
+export function parseBatch(
+  mutations: unknown[],
+  id: string = crypto.randomUUID(),
+): ParsedMutationBatch {
+  return mutationBatchSchema.parse({ id, mutations });
+}
+
+/** meta.seq の今の値（数） */
+export async function metaSeq(db: Db): Promise<number> {
+  const row = await db.select().from(meta).where(eq(meta.key, "seq")).get();
+  return Number(row?.value);
+}
+
+/** 書き込みが起きていないことを確かめるための、meta.seq・各表・applied_mutations のまとめ */
+export async function snapshot(db: Db) {
+  const byId = <T extends { id: string }>(rows: T[]) =>
+    [...rows].sort((a, b) => (a.id < b.id ? -1 : 1));
+  const [seq, taskRows, projectRows, appliedRows] = await Promise.all([
+    metaSeq(db),
+    db.select().from(tasks),
+    db.select().from(projects),
+    db.select().from(appliedMutations),
+  ]);
+  return { seq, tasks: byId(taskRows), projects: byId(projectRows), applied: byId(appliedRows) };
 }
 
 /** /api/mutate の 200 の応答として読む */
