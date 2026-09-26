@@ -35,6 +35,12 @@ importers:
       lucide-react:
         specifier: ^1.48.0
         version: 1.48.0(react@19.3.0)
+      mobx:
+        specifier: ^7.0.5
+        version: 7.0.5
+      mobx-react-lite:
+        specifier: ^5.1.0
+        version: 5.1.0(mobx@7.0.5)(react@19.3.0)
       react:
         specifier: ^19.3.0
         version: 19.3.0
@@ -2189,6 +2195,15 @@ packages:
     resolution: {integrity: sha512-tmICPUd2P+/4WNa2A9kE22SPZexlu+Dw8nZIvaXCzRj2OVu62hc751Xq4S1P4HEscT5viDle3zxyHyxT2XY3Fw==}
     engines: {node: '>=22.0.0'}
 
+  mobx-react-lite@5.1.0:
+    resolution: {integrity: sha512-++LQTCRr4FJCWuaEvYl5gCtGBwOpOwrnWjm9uhCUDI5nmkzLR8eT1jgMeYfJ8wc88YOYyC/ygjw2KpYPBYGsww==}
+    peerDependencies:
+      mobx: ^7.0.0
+      react: ^18 || ^19
+
+  mobx@7.0.5:
+    resolution: {integrity: sha512-Q3TZfmgJhhHfEVyQ2Wl+1Q9nkfH+y3DnoAB/Gny/gm7Yga43kMdwmfwa8lO4aiGmkty3NNy4rgjfjVM1D8vYAQ==}
+
   nanoid@3.3.19:
     resolution: {integrity: sha512-Y2tUNy4ouw6tq5oDSKeQYGOyhkUBhNOcGV/02KC+6kd9eDGqdZd++mjMiIDilrBYvjEnCYvVtsuHCuP+okSfug==}
     engines: {node: ^10 || ^12 || ^13.7 || ^14 || >=15.0.1}
@@ -3927,6 +3942,13 @@ snapshots:
       - '@types/node'
       - bufferutil
       - utf-8-validate
+
+  mobx-react-lite@5.1.0(mobx@7.0.5)(react@19.3.0):
+    dependencies:
+      mobx: 7.0.5
+      react: 19.3.0
+
+  mobx@7.0.5: {}
 
   nanoid@3.3.19: {}
 
