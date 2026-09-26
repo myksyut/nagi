@@ -541,6 +541,69 @@ describe("完了ログの等値判定（ちらつき防止）", () => {
   });
 });
 
+describe("reset（AppStore を通して確かめる）", () => {
+  it("取り直しのあいだに AppStore で確定した操作は、メモリにも IndexedDB にも残る。続く同期が失敗しても消えない", async () => {
+    const server = new FakeServer();
+    const t1 = server.putTask(makeTask({ id: "0199a000-0000-7000-8000-000000000001", title: "A" }));
+    const name = uniqueName();
+
+    // 手元の IndexedDB に、物理削除される前の状態を直接入れておく（cursor: 1）
+    const seedDb = await openLocalDb({ name });
+    await seedDb.putRows([{ kind: "task", row: t1 }], { from: 0, to: 1 });
+    seedDb.close();
+
+    // t1 を削除して物理削除する（baseCursor(1) がこれより古くなるので reset が起きる）
+    server.putTask({ ...t1, deletedAt: "2020-01-01T00:00:00.000Z" });
+    server.purgeDeleted("2025-01-01T00:00:00.000Z");
+
+    // reset の応答（1回目）のあとの、取り直しの本番のページ（2回目の /api/sync）だけを hold する
+    let syncCallCount = 0;
+    let release: (() => void) | undefined;
+    const originalFetch = server.fetch;
+    const wrapped: typeof fetch = (input, init) => {
+      const path = typeof input === "string" ? input : input.toString();
+      if (path.includes("/api/sync")) {
+        syncCallCount++;
+        if (syncCallCount === 2) release = server.hold("/api/sync");
+      }
+      return originalFetch(input, init);
+    };
+
+    const store = new AppStore({ fetch: wrapped, openLocalDb: () => openLocalDb({ name }) });
+    stores.push(store);
+    const started = store.start();
+    await vi.waitFor(() => expect(release).toBeDefined());
+
+    // 取り直しの本番のページを待っているあいだに、addTask を送って確定させる（/api/mutate は通す）
+    const added = store.actions.addTask({ title: "確定済み", bucket: "today" });
+    expect(added.ok).toBe(true);
+    await store.idle();
+    const newId = added.ok ? added.ids[0] : "";
+    expect(newId).toBeTruthy();
+    // ここでサーバー側から該当行を消す。「取り直しの応答が、この確定より古い時点のもの」を模す
+    // （このテストの偽サーバーは応答を実行時に計算するため、直接この操作で再現する）
+    server.tasks.delete(newId ?? "");
+
+    release?.();
+    await started;
+
+    // 取り直しの結果（この行を含まない）で置き換わったあとも、確定した行は重ね直されて消えない
+    expect(store.task(newId ?? "")?.title).toBe("確定済み");
+    expect(store.lists.today.some((t) => t.id === newId)).toBe(true);
+
+    // IndexedDB にも残っている
+    const check = await openLocalDb({ name });
+    const snapshot = await check.load();
+    expect(snapshot.tasks.find((t) => t.id === newId)?.title).toBe("確定済み");
+    check.close();
+
+    // 続く同期が失敗しても（通信エラー）消えたままにならない
+    server.fail("/api/sync", "network");
+    await store.sync();
+    expect(store.task(newId ?? "")?.title).toBe("確定済み");
+  });
+});
+
 describe("複数のタブの競合（カーソルの飛び越え防止）", () => {
   it("ほかのタブが置き換えでカーソルを下げたあとは、飛び越えて進まない。最終的には新しいタブがサーバーの全行を持つ", async () => {
     const server = new FakeServer();
