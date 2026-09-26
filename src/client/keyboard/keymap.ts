@@ -42,22 +42,48 @@ export type KeyBinding = {
   /** 今使えるか。false のときはキーを奪わない（ブラウザの既定の動きに任せる） */
   when?: (ctx: KeyContext) => boolean;
   run: (ctx: KeyContext) => void;
+  /**
+   * このキーが効く場面の名前（省略すると既定の場面）。同じ場面で同じキーを別の id に割り当てると、
+   * 開発とテストでは登録で例外になる（本番はコンソールに出し、先に登録したほうが動く）。
+   * 同じキーを場面ごとに使い分けるときだけ別の名前を付け、when で同時に効かないようにする
+   */
+  scope?: string;
 };
 
 type Entry = { binding: KeyBinding; combos: KeyCombo[] };
 
+const DEFAULT_SCOPE = "default";
+
+/** 同じキーか（英字は大文字と小文字を区別しない。`D` と `d` は同じ Shift なしの d） */
+function sameCombo(a: KeyCombo, b: KeyCombo): boolean {
+  const key = (combo: KeyCombo) =>
+    /^[a-z]$/i.test(combo.key) ? combo.key.toLowerCase() : combo.key;
+  return key(a) === key(b) && a.mod === b.mod && a.shift === b.shift && a.alt === b.alt;
+}
+
 export class Keymap {
   readonly #entries = new Map<string, Entry>();
 
-  /** 割り当てを足す。戻り値を呼ぶと外す */
+  /**
+   * 割り当てを足す。戻り値を呼ぶと外す。
+   * 同じ場面（scope）で同じキーがほかの id に割り当て済みなら、開発とテストでは例外にする
+   * （5 と 6 が並行してキーを足したときに、表示と実際に動く操作がずれないように）
+   */
   register(bindings: KeyBinding | readonly KeyBinding[]): () => void {
     const list: readonly KeyBinding[] = Array.isArray(bindings) ? bindings : [bindings];
-    for (const binding of list) {
+    const entries = list.map((binding): Entry => {
       if (binding.allowInInput && binding.keys.some((key) => isPlainCharacter(key))) {
         throw new Error(`1文字のキーは入力欄で効かせられません：${binding.id}`);
       }
-      this.#entries.set(binding.id, { binding, combos: binding.keys.map(parseKey) });
+      return { binding, combos: binding.keys.map(parseKey) };
+    });
+    const conflicts = this.#conflicts(entries);
+    if (conflicts.length > 0) {
+      const message = `同じ場面で同じキーが重なっています：${conflicts.join("、")}`;
+      if (import.meta.env.DEV) throw new Error(message);
+      console.error(message);
     }
+    for (const entry of entries) this.#entries.set(entry.binding.id, entry);
     return () => {
       for (const binding of list) {
         if (this.#entries.get(binding.id)?.binding === binding) this.#entries.delete(binding.id);
@@ -72,6 +98,30 @@ export class Keymap {
 
   get(id: string): KeyBinding | undefined {
     return this.#entries.get(id)?.binding;
+  }
+
+  /** 足そうとしている割り当てと、登録済み（同じ id は置き換えるので除く）・互いのあいだで重なるキー */
+  #conflicts(adding: readonly Entry[]): string[] {
+    const replacing = new Set(adding.map((entry) => entry.binding.id));
+    const existing = Array.from(this.#entries.values()).filter(
+      (entry) => !replacing.has(entry.binding.id),
+    );
+    const conflicts: string[] = [];
+    const checked: Entry[] = [...existing];
+    for (const entry of adding) {
+      const scope = entry.binding.scope ?? DEFAULT_SCOPE;
+      for (const other of checked) {
+        if ((other.binding.scope ?? DEFAULT_SCOPE) !== scope) continue;
+        entry.binding.keys.forEach((key, i) => {
+          const combo = entry.combos[i];
+          if (combo && other.combos.some((o) => sameCombo(o, combo))) {
+            conflicts.push(`${key}（${entry.binding.id} と ${other.binding.id}）`);
+          }
+        });
+      }
+      checked.push(entry);
+    }
+    return conflicts;
   }
 
   /**

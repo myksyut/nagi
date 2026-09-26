@@ -86,7 +86,11 @@ export const TaskList = observer(function TaskList({
       role="listbox"
       aria-label={label}
       tabIndex={0}
-      className="group/list relative mt-5 outline-none"
+      className={cn(
+        "group/list relative mt-5 rounded-lg outline-none",
+        // 選ぶ前に Tab で入ったときは一覧そのものに輪郭を出す（選んでいれば、選択中の行に出す）
+        "[&:focus-visible:not([aria-activedescendant])]:ring-2 [&:focus-visible:not([aria-activedescendant])]:ring-ring/60 [&:focus-visible:not([aria-activedescendant])]:ring-offset-4 [&:focus-visible:not([aria-activedescendant])]:ring-offset-background",
+      )}
     >
       <AnimatePresence initial={false} mode="popLayout">
         {items.map((item) => (

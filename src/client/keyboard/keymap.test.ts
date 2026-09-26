@@ -58,6 +58,8 @@ describe("Keymap.dispatch", () => {
       group: "タスク",
       keys: ["Mod+z"],
       allowInInput: true,
+      // 同じキーを別の割り当てにするので、場面を分ける（同じ場面だと登録で例外になる）
+      scope: "入力欄",
       run: allowed,
     });
     const input = document.createElement("input");

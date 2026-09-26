@@ -11,6 +11,15 @@ import { ListScreen } from "./list-screen";
 /** 一度に描く完了ログの行数。続きは「さらに表示」か、一番下で ↓ を押すと読み込む */
 export const LOGBOOK_PAGE_SIZE = 200;
 
+/** 続きを表示したときの上限。全部表示していたら増やさない（一番下で ↓ を押し続けても計算し直さない） */
+export function nextLogbookLimit(limit: number, total: number): number {
+  return limit >= total ? limit : limit + LOGBOOK_PAGE_SIZE;
+}
+
+function countRows(days: readonly LogbookDay[]): number {
+  return days.reduce((sum, day) => sum + day.tasks.length, 0);
+}
+
 /** 完了した日ごとに新しい順の見出しつきのまとまりを、先頭から limit 行ぶん */
 function logbookSections(days: readonly LogbookDay[], limit: number, today: string): TaskSection[] {
   const sections: TaskSection[] = [];
@@ -31,7 +40,11 @@ function logbookSections(days: readonly LogbookDay[], limit: number, today: stri
 export const LogbookScreen = observer(function LogbookScreen() {
   const store = useStore();
   const [limit] = useState(() => observable.box(LOGBOOK_PAGE_SIZE));
-  const showMore = () => runInAction(() => limit.set(limit.get() + LOGBOOK_PAGE_SIZE));
+  const showMore = () =>
+    runInAction(() => {
+      const next = nextLogbookLimit(limit.get(), countRows(store.lists.logbook));
+      if (next !== limit.get()) limit.set(next);
+    });
   const view = useListView(() => ({
     key: "logbook",
     kind: "logbook",
@@ -39,7 +52,7 @@ export const LogbookScreen = observer(function LogbookScreen() {
     addTo: { bucket: "inbox", label: "受信箱に追加" },
     onReachEnd: showMore,
   }));
-  const total = store.lists.logbook.reduce((sum, day) => sum + day.tasks.length, 0);
+  const total = countRows(store.lists.logbook);
   const hidden = total - limit.get();
 
   return (

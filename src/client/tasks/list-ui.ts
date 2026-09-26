@@ -21,6 +21,15 @@ import { Toaster } from "./toaster";
 
 export type ListKind = "inbox" | "today" | "upcoming" | "later" | "logbook" | "project";
 
+/** 開いたタスクで直せる文字の項目 */
+export type TextField = "title" | "memo";
+
+const TEXT_FIELDS: readonly TextField[] = ["title", "memo"];
+
+function textKey(taskId: string, field: TextField): string {
+  return `${taskId}:${field}`;
+}
+
 /** n で追加する行き先 */
 export type AddTarget = {
   bucket: "inbox" | "today" | "later";
@@ -84,6 +93,11 @@ export class ListUi {
 
   /** 保存できずに戻ってきた追加の文字の残り（追加欄が空になったら、次を下書きに入れる） */
   readonly #draftQueue = observable.array<string>([], { deep: false });
+  /**
+   * まだ保存できていないタイトルとメモ（`<タスクの id>:<項目>` → 打った文字）。編集欄より長く持ち、
+   * 保存できなかったとき（閉じたあとの失敗も）やオフラインで閉じたときに入れ、次にそのタスクを開いたら欄へ戻す
+   */
+  readonly #unsavedText = observable.map<string, string>();
   /** 開いているまとまり（`<画面>:<まとまり>`） */
   readonly #openFolds = observable.set<string>();
   /** 行ごとの「選択中か」「開いているか」。行は自分の id だけを観測するので、選択が動いても描き直すのは2行だけ */
@@ -120,6 +134,8 @@ export class ListUi {
       setAddDraft: true,
       noteAdded: true,
       restoreDrafts: true,
+      keepUnsavedText: true,
+      clearUnsavedText: true,
       toggleFold: true,
       applySelection: true,
       applyOpen: true,
@@ -287,6 +303,20 @@ export class ListUi {
     this.#fillDraftFromQueue();
   }
 
+  // --- 保存できていないタイトルとメモ -----------------------------------------------------
+
+  unsavedText(taskId: string, field: TextField): string | undefined {
+    return this.#unsavedText.get(textKey(taskId, field));
+  }
+
+  keepUnsavedText(taskId: string, field: TextField, value: string): void {
+    this.#unsavedText.set(textKey(taskId, field), value);
+  }
+
+  clearUnsavedText(taskId: string, field: TextField): void {
+    this.#unsavedText.delete(textKey(taskId, field));
+  }
+
   // --- まとまりの開閉 ---------------------------------------------------------------------
 
   toggleFold(sectionKey: string): void {
@@ -378,10 +408,32 @@ export class ListUi {
   #onNotice(notice: Notice): void {
     if (notice.type !== "save-failed") return;
     const titles = notice.failedCreates.map((create) => create.title);
-    runInAction(() => this.restoreDrafts(titles));
+    // 捨てられたタイトルとメモの変更（同じ項目が何度もあれば、最後に打ったもの）
+    const lost = new Map<string, { taskId: string; field: TextField; value: string }>();
+    for (const operation of notice.discarded) {
+      for (const mutation of operation.mutations) {
+        if (mutation.type !== "task.update") continue;
+        for (const field of TEXT_FIELDS) {
+          const value = mutation.changes[field];
+          if (typeof value === "string") {
+            lost.set(textKey(mutation.id, field), { taskId: mutation.id, field, value });
+          }
+        }
+      }
+    }
+    runInAction(() => {
+      this.restoreDrafts(titles);
+      for (const { taskId, field, value } of lost.values()) {
+        this.keepUnsavedText(taskId, field, value);
+      }
+    });
     this.toaster.error(
       "保存できませんでした",
-      titles.length > 0 ? "追加した文字は、追加欄の下書きに戻しました" : undefined,
+      titles.length > 0
+        ? "追加した文字は、追加欄の下書きに戻しました"
+        : lost.size > 0
+          ? "直した文字は、そのタスクを開くと欄に戻ります"
+          : undefined,
     );
   }
 }

@@ -14,6 +14,10 @@ export function titleInputId(taskId: string): string {
   return `task-title-${taskId}`;
 }
 
+/** 開いたタスクの入力欄のフォーカスの輪郭（選択中の行の背景とは別に、どこへ打つかを見せる） */
+export const fieldFocusClassName =
+  "-mx-1 rounded-sm px-1 outline-none focus-visible:ring-1 focus-visible:ring-ring/70";
+
 /** 入力欄で Enter・Esc を押したら保存して閉じ、一覧にフォーカスを戻す（変換を確定するキーでは閉じない） */
 function useCloseKeys(flush: () => void, keys: readonly string[]) {
   const ui = useUi();
@@ -35,7 +39,10 @@ export const TitleInput = observer(function TitleInput({ task }: { task: TaskRow
     <input
       id={titleInputId(task.id)}
       aria-label="タイトル"
-      className="min-w-0 flex-1 bg-transparent outline-none placeholder:text-muted-foreground"
+      className={cn(
+        "min-w-0 flex-1 bg-transparent placeholder:text-muted-foreground",
+        fieldFocusClassName,
+      )}
       placeholder="タイトル"
       value={field.value}
       onChange={(event) => field.onChange(event.target.value)}
@@ -110,7 +117,10 @@ const MemoEditor = observer(function MemoEditor({ task }: { task: TaskRow }) {
         aria-label="メモ"
         placeholder="メモ"
         rows={1}
-        className="field-sizing-content min-h-6 w-full resize-none bg-transparent text-muted-foreground text-sm leading-6 outline-none placeholder:text-muted-foreground/60"
+        className={cn(
+          "field-sizing-content min-h-6 w-[calc(100%+0.5rem)] resize-none bg-transparent text-muted-foreground text-sm leading-6 placeholder:text-muted-foreground/60",
+          fieldFocusClassName,
+        )}
         value={field.value}
         onChange={(event) => field.onChange(event.target.value)}
         onFocus={field.onFocus}
@@ -133,7 +143,8 @@ const MemoEditor = observer(function MemoEditor({ task }: { task: TaskRow }) {
       tabIndex={0}
       aria-label={empty ? "メモを書く" : "メモを直す"}
       className={cn(
-        "min-h-6 cursor-text whitespace-pre-wrap break-words text-sm leading-6 outline-none",
+        "min-h-6 cursor-text whitespace-pre-wrap break-words text-sm leading-6",
+        fieldFocusClassName,
         empty ? "text-muted-foreground/60" : "text-muted-foreground",
       )}
       onClick={() => setEditing(true)}

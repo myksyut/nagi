@@ -39,7 +39,7 @@ export const AddRow = observer(function AddRow({ view }: { view: ListView }) {
     <div
       role="group"
       aria-label={view.addTo.label}
-      className="flex min-h-9 items-center gap-2.5 rounded-md border border-primary/30 px-2.5 py-1.5 text-sm"
+      className="flex min-h-9 items-center gap-2.5 rounded-md border border-primary/30 px-2.5 py-1.5 text-sm focus-within:border-primary/80 focus-within:ring-1 focus-within:ring-ring/40"
     >
       <span
         aria-hidden="true"
