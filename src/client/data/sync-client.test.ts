@@ -2,16 +2,21 @@ import { describe, expect, it, vi } from "vitest";
 import { FakeServer } from "../test/fake-server";
 import { makeTask } from "../test/fixtures";
 import { ApiClient } from "./api-client";
-import { createMemoryLocalDb, type LocalDb } from "./local-db";
+import { createMemoryLocalDb, type LocalDb, openLocalDb } from "./local-db";
 import { Replica } from "./replica";
 import { SyncClient } from "./sync-client";
 
+let dbCount = 0;
+function uniqueDbName(): string {
+  dbCount += 1;
+  return `sync-client-test-${dbCount}`;
+}
+
 /** 3. 差分の取得（POST /api/sync） */
 
-function setup(server: FakeServer) {
+function setup(server: FakeServer, localDb: LocalDb = createMemoryLocalDb()) {
   const replica = new Replica();
   const api = new ApiClient({ fetch: server.fetch });
-  const localDb: LocalDb = createMemoryLocalDb();
   const onFailed = vi.fn();
   const onSynced = vi.fn();
   const sync = new SyncClient({
@@ -201,6 +206,52 @@ describe("差分の取得：reset", () => {
     // （replaceConfirmed 時点でその id の確定データがなくなっていても task.update は base が undefined なら何も出さない仕様なので、
     //   ここでは削除済みで置き換わらない別の行を確認する）
     expect(replica.pending).toHaveLength(1);
+  });
+
+  it("取り直し（reset）中に確定した行は、置き換えのあとも消えない。続く同期が失敗しても消えない", async () => {
+    const server = new FakeServer();
+    const t1 = server.putTask(makeTask({ id: "0199a000-0000-7000-8000-000000000001", title: "A" }));
+    const localDb = await openLocalDb({ name: uniqueDbName() });
+    const { replica, sync } = setup(server, localDb);
+
+    // 削除される前に、いったんここまで同期しておく（baseCursor がその時点で止まる）
+    await sync.sync();
+    expect(sync.cursor).toBe(1);
+
+    // reset を起こす（baseCursor(1) が purgedThroughSeq より古くなる）
+    server.putTask({ ...t1, deletedAt: "2020-01-01T00:00:00.000Z" });
+    server.purgeDeleted("2025-01-01T00:00:00.000Z");
+
+    const release = server.hold("/api/sync");
+    const flow = sync.sync();
+    await vi.waitFor(() => {
+      expect(server.requestsTo("/api/sync").length).toBeGreaterThanOrEqual(1);
+    });
+
+    // 取り直しのあいだに、送信の列から「操作の応答で行が確定した」と伝えられた
+    // （AppStore では #persist の中で SyncClient.noteConfirmed を呼ぶ）
+    const confirmedRow = makeTask({
+      id: "0199a000-0000-7000-8000-000000000099",
+      title: "確定済み",
+      seq: 999,
+    });
+    sync.noteConfirmed([{ kind: "task", row: confirmedRow }]);
+
+    release();
+    await flow;
+
+    // 全件の取り直し（サーバーには実在しない confirmedRow は含まれない）のあとも、重ね直されて消えない
+    expect(replica.confirmedTask(confirmedRow.id)?.title).toBe("確定済み");
+    expect(replica.task(confirmedRow.id)?.title).toBe("確定済み");
+    const saved = await localDb.load();
+    expect(saved.tasks.find((t) => t.id === confirmedRow.id)?.title).toBe("確定済み");
+
+    // 続く同期が失敗しても（通信エラー）、消えたままにならない
+    server.fail("/api/sync", "network");
+    await sync.sync();
+    expect(replica.confirmedTask(confirmedRow.id)?.title).toBe("確定済み");
+
+    localDb.close();
   });
 });
 

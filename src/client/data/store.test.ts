@@ -1,8 +1,9 @@
+import { rankAfter } from "@shared/rank";
 import { reaction } from "mobx";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeServer } from "../test/fake-server";
 import { makeTask } from "../test/fixtures";
-import { createMemoryLocalDb } from "./local-db";
+import { createMemoryLocalDb, openLocalDb } from "./local-db";
 import type { Notice } from "./notices";
 import { AppStore, DELETED_ROW_TTL_DAYS } from "./store";
 
@@ -11,6 +12,12 @@ afterEach(() => {
   for (const store of stores.splice(0)) store.dispose();
   vi.useRealTimers();
 });
+
+let dbCount = 0;
+function uniqueName(): string {
+  dbCount += 1;
+  return `store-test-${dbCount}`;
+}
 
 function makeStore(server: FakeServer, now?: () => Date) {
   const store = new AppStore({
@@ -531,5 +538,153 @@ describe("完了ログの等値判定（ちらつき防止）", () => {
     expect(spy).toHaveBeenCalledTimes(1);
 
     dispose();
+  });
+});
+
+describe("複数のタブの競合（カーソルの飛び越え防止）", () => {
+  it("ほかのタブが置き換えでカーソルを下げたあとは、飛び越えて進まない。最終的には新しいタブがサーバーの全行を持つ", async () => {
+    const server = new FakeServer();
+    const t1 = server.putTask(makeTask({ id: "0199a000-0000-7000-8000-000000000001", title: "A" }));
+    const t2 = server.putTask(makeTask({ id: "0199a000-0000-7000-8000-000000000002", title: "B" }));
+    const name = uniqueName();
+
+    const tabA = new AppStore({ fetch: server.fetch, openLocalDb: () => openLocalDb({ name }) });
+    stores.push(tabA);
+    await tabA.start();
+    expect(tabA.task(t2.id)?.title).toBe("B");
+
+    // タブ B が（reset などで）全件を古い状態で置き換え、カーソルを下げた
+    const dbB = await openLocalDb({ name });
+    await dbB.replaceAll([{ kind: "task", row: t1 }], 1);
+    dbB.close();
+
+    // タブ A は自分のメモリのカーソル（2）のまま、普通の同期を続ける
+    server.putTask({ ...t2, title: "B2" });
+    await tabA.sync();
+    // A 自身のメモリは進む
+    expect(tabA.task(t2.id)?.title).toBe("B2");
+
+    // だが IndexedDB のカーソルは飛び越えて進んでいない（保存済み 1 のまま）
+    const check = await openLocalDb({ name });
+    const snapshot = await check.load();
+    expect(snapshot.cursor).toBe(1);
+    check.close();
+
+    // 新しいタブ（この IndexedDB を開く）が同期を終えると、サーバーの全行（t2 も）を持つ
+    const tabC = new AppStore({ fetch: server.fetch, openLocalDb: () => openLocalDb({ name }) });
+    stores.push(tabC);
+    await tabC.start();
+    expect(tabC.task(t2.id)?.title).toBe("B2");
+  });
+});
+
+describe("手元の控えを読み損ねたあとの起動", () => {
+  it("サーバーで物理削除された行は、読み込み失敗のあとも手元に残らない", async () => {
+    const server = new FakeServer();
+    const oldTask = server.putTask(
+      makeTask({ id: "0199a000-0000-7000-8000-000000000001", title: "古い生きてる版" }),
+    );
+    const name = uniqueName();
+
+    // IndexedDB に古い行とカーソルを直接入れておく
+    const seedDb = await openLocalDb({ name });
+    await seedDb.putRows([{ kind: "task", row: oldTask }], { from: 0, to: 1 });
+    seedDb.close();
+
+    // サーバー側で削除して物理削除する（IndexedDB にはまだ残っている）
+    server.putTask({ ...oldTask, deletedAt: "2020-01-01T00:00:00.000Z" });
+    server.purgeDeleted("2025-01-01T00:00:00.000Z");
+
+    // load() を1回だけ失敗させる
+    let failNextLoad = true;
+    const wrappedOpen = async () => {
+      const db = await openLocalDb({ name });
+      return {
+        load: async () => {
+          if (failNextLoad) {
+            failNextLoad = false;
+            throw new Error("読み込み失敗（テスト）");
+          }
+          return db.load();
+        },
+        putRows: db.putRows.bind(db),
+        replaceAll: db.replaceAll.bind(db),
+        purgeDeleted: db.purgeDeleted.bind(db),
+        close: db.close.bind(db),
+      };
+    };
+
+    const store1 = new AppStore({ fetch: server.fetch, openLocalDb: wrappedOpen });
+    stores.push(store1);
+    await store1.start();
+    // 読み込みに失敗したので cursor 0 から全件取得。物理削除済みなので届かない
+    expect(store1.task(oldTask.id)).toBeUndefined();
+
+    // 新しいストアで同じ IndexedDB を普通に開き、同期の前（hold 中）を確認する
+    const release = server.hold("/api/sync");
+    const store2 = new AppStore({ fetch: server.fetch, openLocalDb: () => openLocalDb({ name }) });
+    stores.push(store2);
+    const started = store2.start();
+    await vi.waitFor(() => expect(store2.loaded).toBe(true));
+    // 控えからすでに消えている（全件置き換えで正しく上書きされたので）
+    expect(store2.task(oldTask.id)).toBeUndefined();
+    release();
+    await started;
+  });
+});
+
+describe("7. 送信の列：500 まで", () => {
+  it("501 件の completeTasks は too-many で、何も送らず、表示も変わらない", async () => {
+    const server = new FakeServer();
+    const tasks = Array.from({ length: 501 }, () => server.putTask(makeTask({ bucket: "today" })));
+    const store = makeStore(server);
+    await store.start();
+    const before = store.lists.today.length;
+
+    const result = store.actions.completeTasks(tasks.map((t) => t.id));
+    expect(result).toEqual({ ok: false, reason: "too-many" });
+    expect(store.lists.today).toHaveLength(before);
+    expect(server.requestsTo("/api/mutate")).toHaveLength(0);
+  });
+
+  it("500 件はちょうど1リクエスト（mutations が500件）で通る", async () => {
+    const server = new FakeServer();
+    const tasks = Array.from({ length: 500 }, () => server.putTask(makeTask({ bucket: "today" })));
+    const store = makeStore(server);
+    await store.start();
+
+    const result = store.actions.completeTasks(tasks.map((t) => t.id));
+    expect(result.ok).toBe(true);
+    await store.idle();
+    expect(store.lists.completedTodayCount).toBe(500);
+    const requests = server.requestsTo("/api/mutate");
+    expect(requests).toHaveLength(1);
+    expect((requests[0]?.body as { mutations: unknown[] } | undefined)?.mutations).toHaveLength(
+      500,
+    );
+  });
+});
+
+describe("11. setDeadline（Store 統合：元に戻す）", () => {
+  it("元に戻すで bucket・rank・scheduledOn・arrivedOn・deadlineOn がすべて元に戻る", async () => {
+    const server = new FakeServer();
+    const originalRank = rankAfter(null);
+    const task = server.putTask(
+      makeTask({ bucket: "later", rank: originalRank, deadlineOn: null, arrivedOn: null }),
+    );
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.setDeadline([task.id], store.today);
+    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.task(task.id)?.deadlineOn).toBe(store.today);
+    expect(store.task(task.id)?.arrivedOn).toBe(store.today);
+
+    store.actions.undo();
+    expect(store.task(task.id)?.bucket).toBe("later");
+    expect(store.task(task.id)?.rank).toBe(originalRank);
+    expect(store.task(task.id)?.scheduledOn).toBeNull();
+    expect(store.task(task.id)?.arrivedOn).toBeNull();
+    expect(store.task(task.id)?.deadlineOn).toBeNull();
   });
 });

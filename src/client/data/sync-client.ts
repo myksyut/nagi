@@ -8,7 +8,10 @@ import type { Replica } from "./replica";
  * - 要求は { cursor, baseCursor }。baseCursor は、その取得の流れの最初の、手元に反映済みのカーソル
  *   （手元が空なら 0）で、hasMore がなくなるまでのすべてのページにそのまま付ける
  * - 全部そろってから、まとめて確定データに反映し（途中の半端な状態を見せない）、最後に手元の控えに保存する
- * - reset が来たら、それまでのページを捨てて { cursor: 0, baseCursor: 0 } から取り直し、そろったら手元を置き換える
+ * - reset が来たら、それまでのページを捨てて { cursor: 0, baseCursor: 0 } から取り直す
+ * - カーソル 0 から取った流れ（初回・手元の控えを読めなかったとき・reset）は、手元を全件で置き換える
+ *   （サーバーで物理削除された行が手元に残らないように）。取り直しのあいだに操作の応答で確定した行は、
+ *   置き換えのあとに seq で比べて重ね直す
  * - カーソルを進めるのは差分の取得だけ（操作の応答で返った行では動かさない）
  * - 取得は同時に1つだけ。取得中にきっかけが来たら、終わったあとにもう1回取る
  */
@@ -33,6 +36,8 @@ export class SyncClient {
   readonly #options: SyncClientOptions;
   #running: Promise<void> | null = null;
   #again = false;
+  /** 取得の流れのあいだに、操作の応答で確定した行（流れが終わるまで覚えておく） */
+  #confirmedDuringFlow: SyncRow[] | null = null;
 
   constructor(options: SyncClientOptions) {
     this.#options = options;
@@ -51,10 +56,20 @@ export class SyncClient {
     return this.#running;
   }
 
+  /** 操作の応答で行が確定した（取得の流れのあいだなら覚えておき、置き換えのあとに重ね直す） */
+  noteConfirmed(rows: readonly SyncRow[]): void {
+    this.#confirmedDuringFlow?.push(...rows);
+  }
+
   async #loop(): Promise<void> {
     do {
       this.#again = false;
-      await this.#flow();
+      this.#confirmedDuringFlow = [];
+      try {
+        await this.#flow();
+      } finally {
+        this.#confirmedDuringFlow = null;
+      }
     } while (this.#again && this.#options.canSync());
   }
 
@@ -91,16 +106,21 @@ export class SyncClient {
       if (!page.hasMore) break;
     }
 
-    if (reset) {
+    const localDb = this.#options.localDb();
+    if (baseCursor === 0) {
+      // 全件で置き換える。取り直しのあいだに確定した行（取り直しの結果より新しいことがある）は重ね直す
+      const confirmedDuringFlow = [...(this.#confirmedDuringFlow ?? [])];
       replica.replaceConfirmed(rows);
+      replica.mergeConfirmed(confirmedDuringFlow);
       this.cursor = cursor;
-      await this.#persist(() => this.#options.localDb().replaceAll(rows, cursor));
-      // 取り直しのあいだに確定した操作の応答は、置き換えで消えることがあるので、もう1回取る
-      this.#again = true;
+      await this.#persist(async () => {
+        await localDb.replaceAll(rows, cursor);
+        await localDb.putRows(confirmedDuringFlow);
+      });
     } else {
       replica.mergeConfirmed(rows);
       this.cursor = cursor;
-      await this.#persist(() => this.#options.localDb().putRows(rows, cursor));
+      await this.#persist(() => localDb.putRows(rows, { from: baseCursor, to: cursor }));
     }
     onSynced();
   }

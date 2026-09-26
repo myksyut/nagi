@@ -18,6 +18,7 @@ export type OperationKind =
   | "task.complete"
   | "task.uncomplete"
   | "task.move"
+  | "task.deadline"
   | "task.delete"
   | "project.create"
   | "project.update"
@@ -30,7 +31,7 @@ export type PendingBatch = {
   readonly mutations: readonly Mutation[];
   /** 操作した時刻（ISO 8601）。作成を送信中の行の、仮の createdAt・updatedAt に使う */
   readonly at: string;
-  /** 1回のユーザー操作の ID。500 を超えて分けたまとまりは同じ値を持つ */
+  /** 1回のユーザー操作の ID（1回の操作は1つのまとまりなので、今は id と同じ） */
   readonly operationId: string;
   readonly kind: OperationKind;
 };

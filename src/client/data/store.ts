@@ -100,7 +100,10 @@ export class AppStore {
     this.#queue = new SendQueue({
       replica: this.replica,
       api: this.#api,
-      persist: (rows) => this.#persist(rows),
+      persist: (rows) => {
+        this.#persist(rows);
+        this.#sync.noteConfirmed(rows);
+      },
       onConfirmed: (batch) => this.undoStack.confirmed(batch),
       onFailed: (error, discarded) => this.#onSendFailed(error, discarded),
     });
@@ -258,8 +261,9 @@ export class AppStore {
 
   /**
    * 操作のまとまりを受け付ける。オフラインなら止めて知らせる。
-   * 受け付けたら、元に戻すための逆向きの操作を今の表示から作り、表示に重ねて、送信の列に積む。
-   * 500 を超える操作は、500 ずつのまとまりに分けて順に送る
+   * 1回のユーザー操作は1つのまとまり（1リクエスト）で、サーバーは全部成功か全部失敗にする。
+   * そのため、500（サーバーの上限）を超える操作は分けずに断る（画面側の上限は 7 で付ける）。
+   * 受け付けたら、元に戻すための逆向きの操作を今の表示から作り、表示に重ねて、送信の列に積む
    */
   #perform(
     kind: OperationKind,
@@ -272,6 +276,7 @@ export class AppStore {
       return { ok: false, reason: "offline" };
     }
     if (mutations.length === 0) return { ok: false, reason: "noop" };
+    if (mutations.length > MAX_MUTATIONS_PER_BATCH) return { ok: false, reason: "too-many" };
     for (const mutation of mutations) {
       const parsed = mutationSchema.safeParse(mutation);
       if (!parsed.success) {
@@ -280,30 +285,26 @@ export class AppStore {
       }
     }
 
-    const at = this.#now().toISOString();
-    const operationId = uuidv7(this.#now().getTime());
+    const id = uuidv7(this.#now().getTime());
     const inverse =
       options.undoable === false
         ? null
         : buildInverse(mutations, {
-            task: (id) => this.replica.task(id)?.peek(),
-            project: (id) => this.replica.project(id)?.peek(),
+            task: (taskId) => this.replica.task(taskId)?.peek(),
+            project: (projectId) => this.replica.project(projectId)?.peek(),
           });
-    const batches: PendingBatch[] = [];
-    for (let i = 0; i < mutations.length; i += MAX_MUTATIONS_PER_BATCH) {
-      batches.push({
-        id: uuidv7(this.#now().getTime()),
-        mutations: mutations.slice(i, i + MAX_MUTATIONS_PER_BATCH),
-        at,
-        operationId,
-        kind,
-      });
-    }
-    this.replica.addPending(batches);
-    if (inverse) this.undoStack.push({ operationId, kind, inverse });
+    const batch: PendingBatch = {
+      id,
+      mutations,
+      at: this.#now().toISOString(),
+      operationId: id,
+      kind,
+    };
+    this.replica.addPending([batch]);
+    if (inverse) this.undoStack.push({ operationId: id, kind, inverse });
     this.#queue.kick();
     const ids = [...new Set(mutations.map((mutation) => targetOf(mutation).id))];
-    return { ok: true, operationId, ids };
+    return { ok: true, operationId: id, ids };
   }
 
   #persist(rows: readonly SyncRow[]): void {

@@ -8,15 +8,25 @@ import type { Project, SyncRow, Task } from "@shared/model";
 
 export type LocalSnapshot = { tasks: Task[]; projects: Project[]; cursor: number };
 
+/**
+ * 差分の取得の流れで、カーソルをどこからどこまで進めたか。
+ * 保存済みのカーソルが from 以上のときだけ（控えに from までの欠けがないときだけ）、to まで進める。
+ * こうして「控えは、保存済みのカーソルまで欠けがない」という約束を、どのタブが書いても保つ
+ */
+export type CursorAdvance = { from: number; to: number };
+
 export interface LocalDb {
   /** 保存してある確定データとカーソルを、同じ時点の中身として読む */
   load(): Promise<LocalSnapshot>;
   /**
    * 行を書く。手元より seq が新しい行だけを上書きする。
-   * cursor を渡したら、保存済みのカーソルより大きいときだけ進める（行と同じトランザクションで）
+   * advance を渡したら、行と同じトランザクションでカーソルを進める（CursorAdvance の決まりで）
    */
-  putRows(rows: readonly SyncRow[], cursor?: number): Promise<void>;
-  /** 手元を捨てて、rows と cursor に置き換える（差分の取得で reset が来たとき） */
+  putRows(rows: readonly SyncRow[], advance?: CursorAdvance): Promise<void>;
+  /**
+   * 手元を捨てて、rows と cursor に置き換える（カーソル 0 から全件を取ったとき）。
+   * カーソルは cursor にそろえる（ほかのタブが先に進めていても、そこまでの行はもう控えにないので）
+   */
   replaceAll(rows: readonly SyncRow[], cursor: number): Promise<void>;
   /** deletedBefore（ISO 8601）より前に削除された行を捨てる */
   purgeDeleted(deletedBefore: string): Promise<void>;
@@ -100,16 +110,17 @@ class IndexedLocalDb implements LocalDb {
     };
   }
 
-  putRows(rows: readonly SyncRow[], cursor?: number): Promise<void> {
+  putRows(rows: readonly SyncRow[], advance?: CursorAdvance): Promise<void> {
     return this.#write((db) => {
       const transaction = db.transaction([TASKS, PROJECTS, META], "readwrite");
       for (const { kind, row } of rows) putIfNewer(transaction.objectStore(storeNameOf(kind)), row);
-      if (cursor !== undefined) {
+      if (advance !== undefined) {
         const meta = transaction.objectStore(META);
         const read = meta.get(CURSOR_KEY);
         read.onsuccess = () => {
           const saved = typeof read.result === "number" ? read.result : 0;
-          if (cursor > saved) meta.put(cursor, CURSOR_KEY);
+          // 控えに from までの欠けがあるなら（ほかのタブが全件で置き換えてカーソルを下げたなど）進めない
+          if (saved >= advance.from && advance.to > saved) meta.put(advance.to, CURSOR_KEY);
         };
       }
       return transactionDone(transaction);

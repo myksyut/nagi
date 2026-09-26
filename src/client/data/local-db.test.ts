@@ -85,6 +85,33 @@ describe("IndexedDB：保存形式の版の切り替え", () => {
   });
 });
 
+describe("IndexedDB：カーソルの進め方（CursorAdvance）", () => {
+  it("保存済みが 10 で { from: 5, to: 12 } なら 12 になる", async () => {
+    const name = uniqueName();
+    const db = await openLocalDb({ name });
+    await db.putRows([], { from: 0, to: 10 });
+    await db.putRows([], { from: 5, to: 12 });
+    const snapshot = await db.load();
+    expect(snapshot.cursor).toBe(12);
+    db.close();
+  });
+
+  it("保存済みが 3（ほかのタブが置き換えで下げた）で { from: 5, to: 12 } なら 3 のまま（行は書かれる）", async () => {
+    const name = uniqueName();
+    const db = await openLocalDb({ name });
+    // ほかのタブが全件の置き換えでカーソルを 3 に下げた、とする
+    await db.replaceAll([], 3);
+    const row = makeTask({ id: "0199a000-0000-7000-8000-000000000001", title: "X" });
+    await db.putRows([{ kind: "task", row }], { from: 5, to: 12 });
+    const snapshot = await db.load();
+    // 控えに from(5) までの欠けがある（保存済みは 3）ので、カーソルは進めない
+    expect(snapshot.cursor).toBe(3);
+    // 行そのものは書かれる
+    expect(snapshot.tasks.find((t) => t.id === row.id)?.title).toBe("X");
+    db.close();
+  });
+});
+
 describe("IndexedDB：複数のタブの書き込み", () => {
   it("古い seq の行で新しい行を上書きしない", async () => {
     const name = uniqueName();

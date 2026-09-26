@@ -236,34 +236,6 @@ describe("送信の列：再送", () => {
   });
 });
 
-describe("送信の列：大きさ", () => {
-  it("500 を超える操作は 500 ずつのまとまりに分かれて送られる（例：501 件の追加）", async () => {
-    const server = new FakeServer();
-    const { replica, queue, confirmed } = setup(server);
-    const tasks = Array.from({ length: 501 }, () => makeTask({ bucket: "today" }));
-
-    // AppStore.#perform と同じ分割ロジック（500 まで）を直接まねて積む
-    const chunkSize = 500;
-    // task.create は taskCreateSchema の項目だけを strictObject で受ける
-    const mutations = tasks.map((t) => ({
-      type: "task.create" as const,
-      task: { id: t.id, title: t.title, bucket: t.bucket, rank: t.rank },
-    }));
-    const batches = [];
-    for (let i = 0; i < mutations.length; i += chunkSize) {
-      batches.push(makeBatch({ kind: "task.add", mutations: mutations.slice(i, i + chunkSize) }));
-    }
-    expect(batches).toHaveLength(2);
-    replica.addPending(batches);
-    queue.kick();
-    await queue.idle();
-
-    expect(confirmed).toHaveLength(2);
-    const requests = server.requestsTo("/api/mutate");
-    expect(requests).toHaveLength(2);
-    expect((requests[0]?.body as { mutations: unknown[] } | undefined)?.mutations).toHaveLength(
-      500,
-    );
-    expect((requests[1]?.body as { mutations: unknown[] } | undefined)?.mutations).toHaveLength(1);
-  });
-});
+// 「500 を超える操作を 500 ずつのまとまりに分けて送る」は、もう仕様ではない（500 を超える操作は
+// AppStore.#perform が分けずに { ok: false, reason: "too-many" } で断る）。
+// store.test.ts の「7. 送信の列：500 まで」に置き換えた

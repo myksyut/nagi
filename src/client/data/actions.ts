@@ -24,6 +24,8 @@ export type OperationFailure =
   | "invalid"
   /** 未完了のタスクが残っているプロジェクトはアーカイブできない */
   | "has-open-tasks"
+  /** 1回の操作の対象が 500（サーバーの上限）を超えた。分けずに断る */
+  | "too-many"
   /** 元に戻す操作がない */
   | "nothing-to-undo";
 
@@ -238,6 +240,41 @@ export class TaskActions {
       changes: { bucket: to.bucket, scheduledOn, rank: ranks[i] },
     }));
     return this.#updateMany("task.move", updates);
+  }
+
+  /**
+   * 締切を付ける・外す（null）。未完了の予定・あとでのタスクに今日以前の締切を付けたら、同じ操作で
+   * 今日の到着の位置（今日来たタスクの後ろ、それ以外の今日のタスクの前）へ移し、到着の印（arrivedOn）を付ける。
+   * 受信箱（振り分けの途中）と、すでに今日にあるタスクは動かさない。
+   * 締切のあるタスクを moveTasks で予定・あとでへ移したときは、今日へ引き戻さない（あえて送った場合があるため）
+   */
+  setDeadline(ids: readonly string[], deadlineOn: string | null): OperationResult {
+    const today = this.#day.today;
+    const arrives = (task: Task) =>
+      deadlineOn !== null &&
+      deadlineOn <= today &&
+      task.completedAt === null &&
+      (task.bucket === "scheduled" || task.bucket === "later");
+    const targets = this.#rows(ids).filter(
+      (task) => task.deletedAt === null && task.deadlineOn !== deadlineOn,
+    );
+    const ranks = this.arrivalRanks(targets.filter(arrives).length);
+    let next = 0;
+    const updates = targets.map((task) => {
+      if (!arrives(task)) return { id: task.id, changes: { deadlineOn } };
+      const rank = ranks[next++];
+      return {
+        id: task.id,
+        changes: {
+          deadlineOn,
+          bucket: "today" as const,
+          scheduledOn: null,
+          rank,
+          arrivedOn: today,
+        },
+      };
+    });
+    return this.#updateMany("task.deadline", updates);
   }
 
   /** 削除（論理削除）。確認は画面が出さない。元に戻すで戻る */
