@@ -34,19 +34,27 @@ function stubReducedMotion(initial: boolean) {
   };
 }
 
+/** border-beam は描いた次のフレームで付くので、1フレーム待つ */
+async function nextFrame() {
+  await act(async () => {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+  });
+}
+
 afterEach(() => {
   cleanup();
   vi.restoreAllMocks();
 });
 
 describe("7：border-beam の出入り", () => {
-  it("出るときは 100ms、消えるときは 150ms のフェードに上書きする", () => {
+  it("出るときは 100ms、消えるときは 150ms のフェードに上書きする", async () => {
     stubReducedMotion(false);
     render(
       <BeamLine active radius={8}>
         <input aria-label="追加" />
       </BeamLine>,
     );
+    await nextFrame();
     const css = [...document.querySelectorAll("style")]
       .map((style) => style.textContent)
       .join("\n");
@@ -54,13 +62,14 @@ describe("7：border-beam の出入り", () => {
     expect(css).toMatch(/\[data-fading\] \{ animation:[^}]*beam-fade-out-[^ ]+ 150ms/);
   });
 
-  it("reduced motion のあいだは border-beam を外し、戻したら付け直す", () => {
+  it("reduced motion のあいだは border-beam を外し、戻したら付け直す", async () => {
     const setReduced = stubReducedMotion(true);
     render(
       <BeamLine active radius={8}>
         <input aria-label="追加" />
       </BeamLine>,
     );
+    await nextFrame();
     expect(document.querySelector('[data-slot="beam-line"]')).toBeNull();
 
     act(() => setReduced(false));
@@ -72,7 +81,7 @@ describe("7：border-beam の出入り", () => {
 });
 
 describe("6：ポップオーバーの動き", () => {
-  it("幅と高さを transition の対象にしない（scale と opacity だけ）", () => {
+  it("幅と高さを transition の対象にしない（scale と opacity だけ）", async () => {
     render(
       <Popover open>
         <PopoverPopup aria-label="試し">中身</PopoverPopup>

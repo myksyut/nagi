@@ -2,7 +2,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { autorun } from "mobx";
 import { observer } from "mobx-react-lite";
 import { AnimatePresence, m } from "motion/react";
-import { memo, type ReactNode, useCallback } from "react";
+import { memo, type ReactNode, useCallback, useLayoutEffect, useRef } from "react";
 import type { TaskRow } from "@/data";
 import { DURATION, EASE_OUT, LAYOUT_TRANSITION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
@@ -38,6 +38,8 @@ export const TaskList = observer(function TaskList({
   empty?: ReactNode;
 }) {
   const ui = useUi();
+  /** 前に描いた項目の並び（行の出入りで、どこから下が動くかを見る） */
+  const committedKeys = useRef<readonly string[]>([]);
   const adding = ui.adding && ui.view === view;
   const sections = view.sections();
   const listRef = useCallback(
@@ -87,6 +89,15 @@ export const TaskList = observer(function TaskList({
   }
   placeEmpty();
 
+  // 前に描いた並びと比べて、最初に変わった項目。そこから下の LAYOUT_WINDOW 項目だけ、位置の変化を動かす
+  const keys = items.map((item) => item.key);
+  const committed = committedKeys.current;
+  let firstChange = keys.findIndex((key, i) => committed[i] !== key);
+  if (firstChange < 0) firstChange = keys.length;
+  useLayoutEffect(() => {
+    committedKeys.current = keys;
+  });
+
   return (
     <div
       ref={listRef}
@@ -109,14 +120,34 @@ export const TaskList = observer(function TaskList({
       )}
     >
       {/* 描く範囲が飛んだら（完了ログの窓）作り直して、行の動きを出さない */}
-      <AnimatePresence key={view.layoutKey?.() ?? "list"} initial={false} mode="popLayout">
-        {positioned(items).map(({ item, position }) => (
-          <ListItem key={item.key} item={item} position={position} view={view} empty={empty} />
+      {/* presenceAffectsLayout を外す：既定では描き直すたびに全行へ新しい文脈を配り、memo した行まで描き直して測ってしまう
+          （行の出入りで位置の変わる行は、position が変わるので描き直して動く） */}
+      <AnimatePresence
+        key={view.layoutKey?.() ?? "list"}
+        initial={false}
+        mode="popLayout"
+        presenceAffectsLayout={false}
+      >
+        {positioned(items).map(({ item, position }, index) => (
+          <ListItem
+            key={item.key}
+            item={item}
+            position={position}
+            animate={index >= firstChange && index < firstChange + LAYOUT_WINDOW}
+            view={view}
+            empty={empty}
+          />
         ))}
       </AnimatePresence>
     </div>
   );
 });
+
+/**
+ * 行の出入りで位置の変わる項目のうち、動かすのは変わったところから下のこの数まで（画面にはおよそ 25 行が入る）。
+ * それより下の項目は画面の外なので、描き直さずにそのまま詰める（100 行の一覧で、完了のたびに全行を測って動かさないように）
+ */
+const LAYOUT_WINDOW = 40;
 
 /**
  * 項目ごとの「上から何番目か」。追加欄は数えない（追加欄を開いても、下の行を動かさない。
@@ -153,8 +184,8 @@ function sameItem(a: Item, b: Item): boolean {
 
 /**
  * 一覧の1項目（Motion の layout アニメーションの単位）。上から何番目か（position）が変わったときだけ描き直し、
- * そのときだけ Motion が位置を測って動かす。位置の変わらない行は、ほかの行の出入りで描き直さない
- * （100 行の一覧で、完了のたびに全行を描き直して測らないように）
+ * そのときだけ Motion が位置を測って動かす。位置の変わらない行と、動かす範囲の外（animate が false）の行は、
+ * ほかの行の出入りで描き直さない
  */
 const ListItem = memo(
   function ListItem({
@@ -165,6 +196,8 @@ const ListItem = memo(
   }: {
     item: Item;
     position: number;
+    /** 位置の変化を動かす範囲にあるか（false なら、位置が変わっても描き直さない） */
+    animate: boolean;
     view: ListView;
     empty?: ReactNode;
   }) {
@@ -182,7 +215,7 @@ const ListItem = memo(
     );
   },
   (a, b) =>
-    a.position === b.position &&
+    (!b.animate || a.position === b.position) &&
     a.view === b.view &&
     a.empty === b.empty &&
     sameItem(a.item, b.item),

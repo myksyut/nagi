@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import { type ReactNode, useEffect, useState } from "react";
 import { defer, useDeferred } from "@/lib/deferred";
 import { useReducedMotion } from "@/lib/reduced-motion";
 import { cn } from "@/lib/utils";
@@ -52,7 +52,14 @@ export function BeamLine({
 }) {
   const reduced = useReducedMotion();
   const { module } = useDeferred(borderBeam, active && !reduced);
-  const Beam = reduced ? undefined : module?.BorderBeam;
+  // 出したフレームの次に付ける（付けるときにスタイルを足すので、キーを押した最初のフレームを重くしない。
+  // どうせ 100ms かけてフェードで出る）
+  const [mounted, setMounted] = useState(false);
+  useEffect(() => {
+    const frame = requestAnimationFrame(() => setMounted(true));
+    return () => cancelAnimationFrame(frame);
+  }, []);
+  const Beam = reduced || !mounted ? undefined : module?.BorderBeam;
   return (
     <div className={cn("relative", className)}>
       {children}
