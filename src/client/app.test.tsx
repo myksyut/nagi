@@ -22,6 +22,12 @@ const LISTS = [
   { path: "/logbook", label: "完了ログ" },
 ] as const;
 
+/** 「ビュー」の見出しの下の画面（13）。サイドバーでは「いつやるか」のリストと完了ログのあいだに並ぶ */
+const VIEWS = [{ path: "/calendar", label: "カレンダー" }] as const;
+
+/** サイドバーのリンクの並び（プロジェクトがないとき） */
+const SIDEBAR_LINKS = [...LISTS.slice(0, 4), ...VIEWS, ...LISTS.slice(4)];
+
 function renderAt(path: string) {
   const location = memoryLocation({ path, record: true });
   // 動かさない（start() を呼ばない）ストア。ルーティングの確認には通信も手元の控えも要らない
@@ -37,11 +43,14 @@ function renderAt(path: string) {
 }
 
 describe("各リストの URL", () => {
-  it.each(LISTS)("$path は見出しと document.title に「$label」が出る", async ({ path, label }) => {
-    renderAt(path);
-    expect(await screen.findByRole("heading", { level: 1, name: label })).toBeInTheDocument();
-    expect(document.title).toBe(`${label} — nagi`);
-  });
+  it.each([...LISTS, ...VIEWS])(
+    "$path は見出しと document.title に「$label」が出る",
+    async ({ path, label }) => {
+      renderAt(path);
+      expect(await screen.findByRole("heading", { level: 1, name: label })).toBeInTheDocument();
+      expect(document.title).toBe(`${label} — nagi`);
+    },
+  );
 
   it("/projects/:id は、そのプロジェクトの名前が見出しと document.title に出る", async () => {
     const server = new FakeServer();
@@ -107,9 +116,9 @@ describe("サイドバー", () => {
       within(nav)
         .getAllByRole("link")
         .map((link) => link.textContent),
-    ).toEqual(LISTS.map((list) => list.label));
+    ).toEqual(SIDEBAR_LINKS.map((list) => list.label));
 
-    for (const list of LISTS) {
+    for (const list of SIDEBAR_LINKS) {
       const link = within(nav).getByRole("link", { name: list.label });
       expect(link).toHaveAttribute("href", list.path);
       if (list.path === "/today") {
