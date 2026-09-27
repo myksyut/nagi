@@ -13,15 +13,15 @@
     {
       "binding": "DB",
       "database_name": "nagi",
-      // 仮の値。`wrangler d1 create nagi --location apac` の出力で差し替える（README の事前準備）
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      // `wrangler d1 create nagi --location apac` で作った本番の D1（APAC）
+      "database_id": "770a86db-0365-4b58-ab4f-842f1d0684d3",
       "migrations_dir": "migrations"
     }
   ],
   "vars": {
     "APP_TIMEZONE": "Asia/Tokyo",
-    // GitHub の OAuth App を登録したら、その Client ID に差し替える（README の事前準備）
-    "GITHUB_CLIENT_ID": "",
+    // GitHub の OAuth App「nagi」（myksyut が持ち主）の Client ID。秘密ではない
+    "GITHUB_CLIENT_ID": "Ov23licDbYh47XzAIdS6",
     // ログインを許可する GitHub ユーザー（myksyut）の ID
     "ALLOWED_GITHUB_USER_ID": "51072711"
   }
