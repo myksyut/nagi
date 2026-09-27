@@ -200,7 +200,7 @@ export const DateEntryPanel = observer(function DateEntryPanel({
               <span className="text-muted-foreground">日付として読めません</span>
             ) : (
               <>
-                <span className="text-primary">→ {formatLongDate(parsed, today)}</span>
+                <span className="text-primary-text">→ {formatLongDate(parsed, today)}</span>
                 {moves && <span className="ml-1.5 text-muted-foreground">今日へ入ります</span>}
               </>
             )}

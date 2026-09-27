@@ -1,5 +1,6 @@
 import { observer } from "mobx-react-lite";
 import { useStore } from "@/data";
+import { AddHint } from "@/tasks/add-hint";
 import { TaskList } from "@/tasks/task-list";
 import { useListView } from "@/tasks/ui-context";
 import { ListScreen } from "./list-screen";
@@ -14,11 +15,18 @@ export const InboxScreen = observer(function InboxScreen() {
     addTo: { bucket: "inbox", label: "受信箱に追加" },
     addInSection: "open",
   }));
-  const count = store.lists.inboxCount;
-
   return (
-    <ListScreen title="受信箱" subtitle={count > 0 ? `${count}件` : undefined}>
-      <TaskList view={view} label="受信箱" empty={<p>受信箱は空です</p>} />
+    <ListScreen title="受信箱" list="inbox" count={() => store.lists.inboxCount}>
+      <TaskList view={view} label="受信箱" empty={<Empty />} />
     </ListScreen>
   );
 });
+
+function Empty() {
+  return (
+    <>
+      <p>受信箱は空です</p>
+      <AddHint />
+    </>
+  );
+}

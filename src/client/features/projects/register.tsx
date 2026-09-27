@@ -2,6 +2,7 @@ import { FolderIcon } from "lucide-react";
 import { observer } from "mobx-react-lite";
 import { useStore } from "@/data";
 import { registerKeyBindings } from "@/keyboard/keymap";
+import { projectColorOf } from "@/lib/project-color";
 import { cn } from "@/lib/utils";
 import { selectionForOperation } from "@/tasks/commands";
 import {
@@ -14,6 +15,7 @@ import {
 import { chipClassName } from "@/tasks/task-detail";
 import { useUi } from "@/tasks/ui-context";
 import { ProjectPickerHost, projectPickerOf } from "./picker";
+import { ProjectDot } from "./project-dot";
 
 /**
  * 6 の登録：p（プロジェクト）、行の右側のプロジェクト名、開いたタスクのプロジェクトのボタン。
@@ -41,15 +43,21 @@ function useProjectOf(projectId: string | null) {
 }
 
 /**
- * 行の右側：プロジェクト名。プロジェクトの画面と、プロジェクトごとにまとまるあとでは、名前が見出しと重なるので出さない。
+ * 行の右側：プロジェクト名（色の点付き）。プロジェクトの画面と、プロジェクトごとにまとまるあとでは、名前が見出しと重なるので出さない。
  * p の候補もここから描く（行から広がる）
  */
 const ProjectName = observer(function ProjectName({ task, view }: TaskSlotProps) {
+  const store = useStore();
   const project = useProjectOf(task.projectId);
   const showName = project !== undefined && view.kind !== "project" && view.kind !== "later";
   return (
     <>
-      {showName && <span className="max-w-40 truncate">{project.name}</span>}
+      {showName && (
+        <span className="flex max-w-40 items-center gap-1.5">
+          <ProjectDot color={projectColorOf(store, project.id)} className="size-[7px]" />
+          <span className="truncate">{project.name}</span>
+        </span>
+      )}
       <ProjectPickerHost task={task} />
     </>
   );
@@ -61,13 +69,14 @@ registerRowMeta({ id: "project", order: ROW_META_ORDER.project, Component: Proje
 const ProjectChip = observer(function ProjectChip({ task }: TaskSlotProps) {
   const ui = useUi();
   const project = useProjectOf(task.projectId);
+  const store = useStore();
   return (
     <button
       type="button"
       aria-label={project ? `プロジェクト：${project.name}` : "プロジェクトを付ける"}
       className={cn(
         chipClassName,
-        "max-w-56 outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/70",
+        "max-w-56 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/70",
         !project && "border-dashed text-muted-foreground/70",
       )}
       onClick={(event) => {
@@ -75,7 +84,11 @@ const ProjectChip = observer(function ProjectChip({ task }: TaskSlotProps) {
         projectPickerOf(ui).open(task.id, event.currentTarget);
       }}
     >
-      <FolderIcon aria-hidden="true" className="size-3 flex-none" />
+      {project ? (
+        <ProjectDot color={projectColorOf(store, project.id)} className="size-[7px]" />
+      ) : (
+        <FolderIcon aria-hidden="true" className="size-3 flex-none" />
+      )}
       <span className="truncate">{project ? project.name : "プロジェクト"}</span>
     </button>
   );

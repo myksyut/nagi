@@ -6,7 +6,8 @@ import type { ToastData, Toaster } from "./toaster";
 
 /**
  * 画面下の中央に出るトースト（coss ui と同じ Base UI の Toast を、Core Flows の見た目に合わせて組んだもの）。
- * 下からすっと出て、消えるときはフェードする。一度に出すのは1つ
+ * 下からすっと出て、消えるときはフェードする。一度に出すのは1つ。
+ * 面は不透明（すりガラスはサイドバーとポップオーバー・ダイアログだけ）
  */
 export function ToastHost({ toaster, children }: { toaster: Toaster; children: ReactNode }) {
   return (
@@ -30,7 +31,7 @@ function ToastList() {
       toast={toast}
       swipeDirection="down"
       className={cn(
-        "col-start-1 row-start-1 flex items-center gap-3.5 whitespace-nowrap rounded-lg border bg-popover px-3.5 py-2 text-popover-foreground text-sm shadow-lg/10",
+        "col-start-1 row-start-1 flex items-center gap-3.5 whitespace-nowrap rounded-[10px] border border-glass-edge bg-surface px-3.5 py-2 text-popover-foreground text-sm shadow-xl/35",
         "transition-[transform,opacity] duration-(--duration-base) ease-out",
         "data-starting-style:translate-y-3 data-starting-style:opacity-0",
         "data-ending-style:opacity-0 data-ending-style:duration-(--duration-exit)",
@@ -44,7 +45,7 @@ function ToastList() {
         <Toast.Description className="whitespace-pre-line text-muted-foreground text-xs" />
       </div>
       {toast.actionProps && (
-        <Toast.Action className="rounded-sm text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring" />
+        <Toast.Action className="rounded-sm text-primary-text outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring" />
       )}
       {toast.data?.undo && <Kbd>⌘Z</Kbd>}
     </Toast.Root>

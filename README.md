@@ -53,6 +53,16 @@ components.json  # shadcn / coss ui の設定
 - 動かしてよいのは transform と opacity だけ。速さは `lib/motion.ts` の `DURATION`（CSS では `--duration-*`）。ポップオーバーは、出るときは 100ms、消えるときだけ 150ms でフェードする
 - `prefers-reduced-motion` のときは、Motion の動き（`lib/reduced-motion.ts`）と CSS の動き（`styles.css` の最後）をすべて止め、色の変化だけを残す。動く飾りを足すときも、この2つで止まることを確かめる
 
+見た目の決まり（9。デザインの方向 A「夜の深み」）：
+
+- 色は `styles.css` の `.dark` のトークンから取り、部品に色の値を直接書かない。リストの色は `--list-*`（アイコンは `shell/list-icons.ts`）、プロジェクトの 8 色は `--project-*`
+- すりガラス（`glass`。`backdrop-filter`）は、サイドバーとポップオーバー・ダイアログだけに使う。スクロールする一覧・カード・トーストには使わない（トーストは不透明の `bg-surface`）
+- 選んだ行は `row-selected`（紫の淡い背景と輪郭の光）、フォーカスの輪郭は `outline` で別に出す。上からの光は `body::before` に固定して置くだけで動かさない
+- プロジェクトの色は `lib/project-color.ts` の `projectColorOf` から取る（今は作成順で決める一時の形。データに色が入ったら中身だけを差し替える）
+- 右下の「＋」（`shell/add-button.tsx`）は、キーマップの `task.add`（n）をそのまま呼ぶ。完了の光の輪（`tasks/completion-ring.ts`）は、完了にする操作（`completeTasks`）が受け付けられた直後に、丸をタスクの id から引いて（見えている丸を最大 20 個）、その位置へ画面に固定した要素を置いて 300ms で外す。途中で reduced motion に変わったらすぐ外す
+- 画面の部品で件数などの変わりやすい値を読まない（完了のたびに画面ごと描き直し、一覧の全行を描き直してしまう）。見出しの件数は `ListScreen` に関数で渡し、見出しの一行の中だけで読む。サイドバーの件数も `NavCountOf` の中だけで読む
+- 小さい補助の文字（`--muted-foreground`・`--faint-foreground`）は、地・面・サイドバーの上で 4.5:1 以上を保つ
+
 オフラインと失敗のとき（8）：
 
 - オフラインのあいだは上部に細い帯を出し、オフラインで操作を止めたら帯の色を少し強める（`shell/status-bar.tsx`）。画面の版が古い（409）ときも同じ帯で「新しいバージョンがあります」と出して読み込み直す

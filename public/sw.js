@@ -5,7 +5,7 @@
  * offline.html を変えたら CACHE の番号を上げる（古い控えは activate で消える）。
  * 控えだけが消されたとき（ブラウザの容量の都合など）は、次にページを開けたときに入れ直す
  */
-const CACHE = "nagi-offline-v2";
+const CACHE = "nagi-offline-v3";
 const OFFLINE_URL = "/offline.html";
 
 self.addEventListener("install", (event) => {

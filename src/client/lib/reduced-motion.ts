@@ -31,11 +31,27 @@ function subscribe(onChange: () => void): () => void {
   return () => query?.removeEventListener("change", onChange);
 }
 
-function isReduced(): boolean {
+/**
+ * prefers-reduced-motion が変わったら onChange を呼ぶ（部品の外の飾りが、動いている途中で設定が変わったときに外すため）。
+ * 戻り値を呼ぶとやめる
+ */
+export function watchReducedMotion(
+  onChange: (reduced: boolean) => void,
+  win: Window = window,
+): () => void {
+  const query = win.matchMedia?.(QUERY);
+  if (!query) return () => {};
+  const listener = () => onChange(query.matches);
+  query.addEventListener("change", listener);
+  return () => query.removeEventListener("change", listener);
+}
+
+/** 今 prefers-reduced-motion か（部品の外で、動く飾りを置くかどうかを決めるとき） */
+export function prefersReducedMotion(): boolean {
   return window.matchMedia?.(QUERY).matches ?? false;
 }
 
 /** prefers-reduced-motion か（動きのある飾りを出すかどうかを決めるとき）。設定が変わったら描き直す */
 export function useReducedMotion(): boolean {
-  return useSyncExternalStore(subscribe, isReduced, () => false);
+  return useSyncExternalStore(subscribe, prefersReducedMotion, () => false);
 }

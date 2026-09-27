@@ -50,9 +50,9 @@ describe("アーカイブ", () => {
     expect((await screen.findAllByText("アーカイブできません")).length).toBeGreaterThan(0);
     expect(screen.getAllByText("未完了のタスクが 1 件残っています").length).toBeGreaterThan(0);
     expect(store.project(project.id)?.archivedAt).toBeNull();
-    // サイドバーにまだ出ている
+    // サイドバーにまだ出ている（未完了の件数が付くので、名前の先頭で探す）
     const nav = screen.getByRole("navigation", { name: "リスト" });
-    expect(within(nav).getByRole("link", { name: "AIPR" })).toBeInTheDocument();
+    expect(within(nav).getByRole("link", { name: /^AIPR/ })).toBeInTheDocument();
   });
 
   it("未完了を完了させるとアーカイブでき、サイドバーから消えて /today へ移り、⌘Z で戻る", async () => {

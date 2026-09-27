@@ -1,6 +1,7 @@
 import { MAX_MUTATIONS_PER_BATCH } from "@shared/mutations";
 import { runInAction } from "mobx";
 import type { OperationFailure, OperationResult, TaskRow } from "@/data";
+import { playCompletionRings } from "./completion-ring";
 import type { ListUi } from "./list-ui";
 import { planDrop, planStep } from "./reorder";
 
@@ -127,7 +128,7 @@ export function toastSubject(
 
 /** 完了。今日以外のリストで完了したら「完了しました・元に戻す」。2件以上なら今日でも「3件を完了しました」 */
 export function completeTasks(ui: ListUi, ids: readonly string[]): OperationResult {
-  return runTaskOperation(ui, {
+  const result = runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.completeTasks(ids),
     advance: true,
@@ -138,6 +139,10 @@ export function completeTasks(ui: ListUi, ids: readonly string[]): OperationResu
           ? undefined
           : "完了しました",
   });
+  // 丸から光の輪が広がる（受け付けられたときだけ。prefers-reduced-motion では出さない）。
+  // 受け付けた直後は React がまだ描き直していないので、丸は元の位置にある
+  if (result.ok) playCompletionRings(ids);
+  return result;
 }
 
 /** あとから完了を外す（「完了 N件」や完了ログの行で）。今日の一番下に戻る */

@@ -50,6 +50,10 @@
   --color-info-foreground: var(--info-foreground);
   --color-info: var(--info);
   --color-destructive-foreground: var(--destructive-foreground);
+  --color-primary-text: var(--primary-text);
+  --color-faint-foreground: var(--faint-foreground);
+  --color-surface: var(--surface);
+  --color-glass-edge: var(--glass-edge);
   --radius-sm: calc(var(--radius) * 0.6);
   --radius-md: calc(var(--radius) * 0.8);
   --radius-lg: var(--radius);
@@ -70,7 +74,9 @@
   --duration-exit: 150ms;
   --radius: 0.625rem;
   /* index.html の外枠の CSS と同じ値にそろえる */
-  --sidebar-width: 224px;
+  --sidebar-width: 232px;
+  /* 完了の光の輪（動きのルールの例外。250ms を超える動きはこれだけ） */
+  --duration-complete-ring: 300ms;
 }
 
 /* ライト：coss ui の初期値のまま。今は使わない（ライトは後で足す） */
@@ -119,32 +125,83 @@
 }
 
 /*
- * ダーク：nagi の基調。<html class="dark"> で有効にする
- * - アクセントは1色（--primary）。選択中・リンク・「あと N 日」などに使う
- * - 赤は締切を過ぎたときの文字にだけ使う（--destructive-foreground）
- * - --background・--sidebar・--sidebar-border は index.html の外枠の CSS と同じ値にそろえる
+ * ダーク：nagi の基調（デザインの方向 A「夜の深み」）。<html class="dark"> で有効にする
+ * - 地は深い紺（--background）と、画面の上からのほのかな紫の光（--glow。body::before に置くだけで動かさない）
+ * - アクセントは紫1色（--primary。文字に使うときは明るい --primary-text）
+ * - 面：サイドバーとポップオーバー・ダイアログだけがすりガラス（半透明＋ backdrop-filter。.glass）。
+ *   スクロールする一覧やカード、トーストには使わない（重くなるため。トーストは不透明の --surface）
+ * - 赤は締切を過ぎたときの文字にだけ使う（--destructive-foreground）。リストの色にも使わない
+ * - 色の値は部品に直接書かず、ここのトークンから取る
+ * - --background・--foreground・--sidebar・--sidebar-border は index.html の外枠の CSS と同じ値にそろえる
  */
 .dark {
   color-scheme: dark;
-  --background: #141416;
-  --foreground: #e6e6e9;
+  --background: #0a0b10;
+  --foreground: #e6e7ee;
+  --glow:
+    radial-gradient(900px 380px at 62% -120px, rgb(124 92 255 / 28%), transparent 70%),
+    radial-gradient(600px 300px at 110% 110%, rgb(56 189 248 / 10%), transparent 70%);
   --border: rgb(255 255 255 / 7%);
-  --input: rgb(255 255 255 / 8%);
-  --ring: #7c85ef;
-  --muted: rgb(255 255 255 / 4%);
-  --muted-foreground: #8b8b93;
-  --accent: rgb(255 255 255 / 5%);
-  --accent-foreground: #e6e6e9;
-  --primary: #7c85ef;
+  --input: rgb(255 255 255 / 9%);
+  /* フォーカスの輪郭。選んだ行の紫の光と見分けられるよう、白に近い色にする */
+  --ring: #dcd6ff;
+  --muted: rgb(255 255 255 / 5%);
+  /*
+   * 控えめな文字（日付・行の右側の情報など）と、さらに控えめな文字（件数・まとまりの見出し・空の表示の案内）。
+   * どちらも、地・面（--surface）・サイドバー（ホバーと選んでいる行も）・上からの光の上で 4.5:1 以上
+   * （--muted-foreground は 5.2:1 以上、--faint-foreground は 4.8:1 以上）
+   */
+  --muted-foreground: #8b8fa6;
+  --faint-foreground: #84889e;
+  --accent: rgb(255 255 255 / 6%);
+  --accent-foreground: #f1f1f6;
+  --primary: #8b5cf6;
   --primary-foreground: #ffffff;
+  --primary-text: #c4b5fd;
   --secondary: rgb(255 255 255 / 5%);
-  --secondary-foreground: #e6e6e9;
-  --card: #18181b;
-  --card-foreground: #e6e6e9;
-  --popover: #1a1a1d;
-  --popover-foreground: #e6e6e9;
+  --secondary-foreground: #e6e7ee;
+  --card: rgb(255 255 255 / 3.5%);
+  --card-foreground: #e6e7ee;
+  /* すりガラスの面（ポップオーバー・ダイアログ）。半透明の地に、.glass でぼかしを足す */
+  --popover: rgb(22 23 34 / 78%);
+  --popover-foreground: #e6e7ee;
+  --glass-blur: 18px;
+  --glass-edge: rgb(255 255 255 / 10%);
+  /* すりガラスにしない浮いた面（トースト・上部の帯） */
+  --surface: #14151e;
   --destructive: #c9574a;
   --destructive-foreground: #e5796b;
+  /* 一覧の行：ホバーは白をわずかに重ねる。選んだ行は紫の淡い背景と細い輪郭の光 */
+  --row-hover: rgb(255 255 255 / 3.5%);
+  /* 完了の丸の線（未完了） */
+  --circle: #5b5f75;
+  --selection: rgb(139 92 246 / 10%);
+  --selection-ring: rgb(167 139 250 / 55%);
+  --selection-glow: rgb(139 92 246 / 25%);
+  /* サイドバーの名前の印 */
+  --brand: linear-gradient(135deg, #8b5cf6, #38bdf8);
+  --brand-glow: rgb(139 92 246 / 60%);
+  /* 右下の「＋」：紫から水色へ */
+  --fab: linear-gradient(135deg, #8b5cf6, #6366f1 55%, #38bdf8);
+  --fab-shadow: rgb(99 102 241 / 45%);
+  --fab-edge: rgb(255 255 255 / 12%);
+  /* リストの色（アイコン）。赤系は使わない */
+  --list-inbox: #60a5fa;
+  --list-today: #fbbf24;
+  --list-upcoming: #fb923c;
+  --list-later: #2dd4bf;
+  --list-calendar: #a78bfa;
+  --list-timeline: #34d399;
+  --list-logbook: #94a3b8;
+  /* プロジェクトの 8 色（名前で持つ。lib/project-color.ts の PROJECT_COLORS と同じ順） */
+  --project-violet: #a78bfa;
+  --project-sky: #38bdf8;
+  --project-pink: #f472b6;
+  --project-amber: #fbbf24;
+  --project-emerald: #34d399;
+  --project-orange: #fb923c;
+  --project-teal: #2dd4bf;
+  --project-slate: #94a3b8;
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-400);
   --success: var(--color-emerald-500);
@@ -156,17 +213,19 @@
   --chart-3: var(--color-amber-500);
   --chart-4: var(--color-purple-500);
   --chart-5: var(--color-rose-500);
-  --code: #18181b;
+  --code: #14151e;
   --code-foreground: var(--foreground);
   --code-highlight: rgb(255 255 255 / 4%);
-  --sidebar: #0f0f11;
-  --sidebar-foreground: #a3a3ab;
+  --sidebar: rgb(255 255 255 / 3.5%);
+  --sidebar-foreground: #b9bccb;
   --sidebar-border: rgb(255 255 255 / 6%);
-  --sidebar-accent: rgb(255 255 255 / 5%);
-  --sidebar-accent-foreground: #e6e6e9;
-  --sidebar-primary: #7c85ef;
+  --sidebar-accent: rgb(255 255 255 / 4%);
+  --sidebar-accent-foreground: #ffffff;
+  --sidebar-primary: #a78bfa;
   --sidebar-primary-foreground: #ffffff;
-  --sidebar-ring: #7c85ef;
+  --sidebar-ring: var(--ring);
+  /* 選んでいるリスト：左から紫がにじみ、左の辺に細い線 */
+  --sidebar-active: linear-gradient(90deg, rgb(139 92 246 / 22%), rgb(139 92 246 / 6%));
 }
 
 @layer base {
@@ -175,17 +234,99 @@
   }
   html {
     @apply font-sans;
+    background-color: var(--background);
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
   }
+  /* 地の色は html に置き、body は透かす（上からの光を body::before に重ねるため） */
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
+  }
+  /*
+   * 上からのほのかな紫の光。画面に固定した層に置くだけで動かさない（スクロールで描き直さない。
+   * background-attachment: fixed はスクロールを重くするので使わない）
+   */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background: var(--glow);
   }
   code,
   kbd,
   samp,
   pre {
     font-family: var(--font-mono);
+  }
+}
+
+/*
+ * すりガラス（半透明の面の後ろをぼかす）。サイドバーとポップオーバー・ダイアログだけに使う
+ * （スクロールする一覧・カード・トーストには使わない。ぼかしは描くのが重いため）。
+ * 面の色（bg-sidebar・bg-popover）と縁（--glass-edge）は、使う側で付ける
+ */
+@utility glass {
+  -webkit-backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+  backdrop-filter: blur(var(--glass-blur)) saturate(140%);
+}
+
+/* 選んだ行：紫の淡い背景と、紫の細い輪郭の光（即時に出す。動かさない）。フォーカスの輪郭は outline で別に出す */
+@utility row-selected {
+  background-color: var(--selection);
+  box-shadow:
+    0 0 0 1px var(--selection-ring),
+    0 0 22px var(--selection-glow);
+}
+
+/* 見出しのアイコンの台。色は --tile（例：var(--list-today)）で渡し、その色を淡く敷いて光らせる */
+@utility list-tile {
+  color: var(--tile);
+  background-color: color-mix(in srgb, var(--tile) 14%, transparent);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--tile) 25%, transparent);
+}
+
+/* プロジェクトの色の点。色は --dot（例：var(--project-violet)）で渡し、ほのかな光を付ける */
+@utility project-dot {
+  flex: none;
+  border-radius: 9999px;
+  background-color: var(--dot);
+  box-shadow: 0 0 8px var(--dot);
+}
+
+/*
+ * 完了の光の輪（tasks/completion-ring.ts が画面に固定して置き、終わったら外す）。
+ * 丸が埋まるのに合わせて広がりながら消える。動かすのは transform（scale）と opacity だけ。
+ * prefers-reduced-motion のときは置かない（出ているあいだに設定が変わったら、completion-ring.ts が外し、
+ * 下の規則でも隠す）
+ */
+@layer components {
+  .complete-ring {
+    position: fixed;
+    z-index: 30;
+    pointer-events: none;
+    border: 2px solid var(--primary-text);
+    border-radius: 9999px;
+    box-shadow:
+      0 0 16px 2px var(--selection-glow),
+      inset 0 0 8px var(--selection-glow);
+    animation: complete-ring var(--duration-complete-ring) ease-out forwards;
+  }
+}
+
+/* 広がりは最初に速く、光は途中まで残してから消す（最後まで見えるように） */
+@keyframes complete-ring {
+  from {
+    transform: scale(1);
+    opacity: 1;
+  }
+  45% {
+    opacity: 0.75;
+  }
+  to {
+    transform: scale(2.4);
+    opacity: 0;
   }
 }
 
@@ -205,6 +346,10 @@
         color, background-color, border-color, outline-color, text-decoration-color, fill, stroke !important;
       animation: none !important;
       /* biome-ignore-end lint/complexity/noImportantStyles: 同上 */
+    }
+    /* 完了の光の輪は出さない（輪が出ているあいだに設定を変えたときも、止まった輪を見せない） */
+    .complete-ring {
+      display: none;
     }
   }
 }

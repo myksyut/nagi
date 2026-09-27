@@ -44,7 +44,7 @@ function Bar({ className, children, ...props }: ComponentProps<"div">) {
     <div
       role="status"
       className={cn(
-        "fixed top-0 right-0 left-(--sidebar-width) z-40 flex h-6 items-center justify-center gap-3 border-b bg-muted text-muted-foreground text-xs",
+        "fixed top-0 right-0 left-(--sidebar-width) z-40 flex h-6 items-center justify-center gap-3 border-b bg-surface text-muted-foreground text-xs",
         className,
       )}
       {...props}
@@ -126,7 +126,7 @@ const NewVersionBar = observer(function NewVersionBar() {
             : "新しいバージョンがあります"}
           <button
             type="button"
-            className="rounded-sm text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            className="rounded-sm text-primary-text outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
             onClick={() => {
               ui.persistEditing();
               markReload();

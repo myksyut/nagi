@@ -72,7 +72,7 @@ function logbookSections(
  */
 export function LogbookScreen() {
   return (
-    <ListScreen title="完了ログ">
+    <ListScreen title="完了ログ" list="logbook">
       <LogbookList />
     </ListScreen>
   );

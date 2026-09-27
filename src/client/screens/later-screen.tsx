@@ -1,6 +1,7 @@
 import { observer } from "mobx-react-lite";
 import { useStore } from "@/data";
 import { LATER_NO_PROJECT, laterSections } from "@/features/projects/later-sections";
+import { AddHint } from "@/tasks/add-hint";
 import { TaskList } from "@/tasks/task-list";
 import { useListView } from "@/tasks/ui-context";
 import { ListScreen } from "./list-screen";
@@ -17,8 +18,17 @@ export const LaterScreen = observer(function LaterScreen() {
   }));
 
   return (
-    <ListScreen title="あとで">
-      <TaskList view={view} label="あとで" empty={<p>あとでのタスクはありません</p>} />
+    <ListScreen title="あとで" list="later" count={() => store.lists.later.length}>
+      <TaskList view={view} label="あとで" empty={<Empty />} />
     </ListScreen>
   );
 });
+
+function Empty() {
+  return (
+    <>
+      <p>あとでのタスクはありません</p>
+      <AddHint />
+    </>
+  );
+}

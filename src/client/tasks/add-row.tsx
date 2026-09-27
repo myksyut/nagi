@@ -41,17 +41,17 @@ export const AddRow = observer(function AddRow({ view }: { view: ListView }) {
   };
 
   return (
-    <BeamLine active={focused} radius={8}>
+    <BeamLine active={focused} radius={10}>
       {/* biome-ignore lint/a11y/useSemanticElements: 一覧（listbox）の中に開く追加欄のまとまり */}
       <div
         role="group"
         aria-label={view.addTo.label}
-        className="flex flex-col rounded-md border border-primary/30 px-2.5 py-1.5 text-sm focus-within:border-primary/80 focus-within:ring-1 focus-within:ring-ring/40"
+        className="flex flex-col rounded-[10px] border border-primary/35 bg-(--selection) px-3 py-2 text-sm focus-within:border-(--selection-ring) focus-within:ring-1 focus-within:ring-ring/40"
       >
-        <div className="flex min-h-6 items-center gap-2.5">
+        <div className="flex min-h-6 items-center gap-3">
           <span
             aria-hidden="true"
-            className="size-4 flex-none rounded-full border-[1.5px] border-muted-foreground/45 border-dashed"
+            className="size-[17px] flex-none rounded-full border-(--circle) border-[1.6px] border-dashed"
           />
           <input
             ref={input}
@@ -86,7 +86,7 @@ export const AddRow = observer(function AddRow({ view }: { view: ListView }) {
           </span>
         </div>
         {offline && (
-          <p id={offlineNoteId} className="mt-1 pl-6.5 text-muted-foreground text-xs">
+          <p id={offlineNoteId} className="mt-1 pl-[29px] text-muted-foreground text-xs">
             オフラインのため、今は追加できません。入力は下書きとして残ります
           </p>
         )}

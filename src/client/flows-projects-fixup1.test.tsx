@@ -101,7 +101,8 @@ describe("3：アーカイブをサーバーが断ったとき", () => {
     await user.click(screen.getByRole("button", { name: "アーカイブ" }));
     expect(location.history.at(-1)).toBe("/today");
     const nav = screen.getByRole("navigation", { name: "リスト" });
-    expect(within(nav).queryByRole("link", { name: "AIPR" })).toBeNull();
+    // サイドバーのプロジェクトには未完了の件数（読み上げは「（1件）」）が付くので、名前の先頭で探す
+    expect(within(nav).queryByRole("link", { name: /^AIPR/ })).toBeNull();
 
     // 送る前に、ほかの画面がこのプロジェクトに未完了のタスクを付けた
     server.putTask(
@@ -118,7 +119,7 @@ describe("3：アーカイブをサーバーが断ったとき", () => {
     expect(screen.getAllByText("未完了のタスクが 1 件残っています").length).toBeGreaterThan(0);
     expect(server.projects.get(project.id)?.archivedAt).toBeNull();
     expect(store.project(project.id)?.archivedAt).toBeNull();
-    expect(within(nav).getByRole("link", { name: "AIPR" })).toBeInTheDocument();
+    expect(within(nav).getByRole("link", { name: /^AIPR/ })).toBeInTheDocument();
   });
 });
 

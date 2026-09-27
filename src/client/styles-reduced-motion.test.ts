@@ -45,6 +45,10 @@ describe("styles.css の prefers-reduced-motion", () => {
     expect(mediaBlock).toMatch(/animation:\s*none !important;/);
   });
 
+  it("完了の光の輪（.complete-ring）を隠す（輪が出ているあいだに設定を変えたときも、止まった輪を見せない）", () => {
+    expect(mediaBlock).toMatch(/\.complete-ring\s*\{\s*display:\s*none;\s*\}/);
+  });
+
   it("transform や opacity は !important で止めない（色の変化だけ残す）", () => {
     expect(mediaBlock).not.toMatch(/\btransform\b/);
     expect(mediaBlock).not.toMatch(/\bopacity\b/);
