@@ -1,8 +1,9 @@
 import { logicalDate } from "@shared/logical-date";
 import type { Bucket } from "@shared/model";
+import { type ProjectColor, resolveProjectColors } from "@shared/palette";
 import { compareRank } from "@shared/rank";
 import { compareShallow, computed, type IComputedValue, makeObservable } from "mobx";
-import { dayStart, type LogicalDay } from "./logical-day";
+import { addDays, dayStart, type LogicalDay } from "./logical-day";
 import type { Replica } from "./replica";
 import type { ProjectRow, TaskPartition, TaskRow } from "./rows";
 
@@ -23,6 +24,35 @@ export type ProjectTaskGroups = {
   inbox: readonly TaskRow[];
   completed: readonly TaskRow[];
 };
+
+/**
+ * 今日のボード（状態の列）。未着手と進行中は今日のリストと同じ並び（並び順キーの順）、
+ * 完了は今日の「完了 N件」と同じ（今日完了したもの。新しい順）
+ */
+export type TodayBoard = {
+  notStarted: readonly TaskRow[];
+  inProgress: readonly TaskRow[];
+  completed: readonly TaskRow[];
+};
+
+/**
+ * プロジェクトのボード。未着手は置き場のまとまりごと（今日は進行中を除く。並びはプロジェクトの画面と同じ）、
+ * 進行中は今日の並び順キーの順、完了は直近 PROJECT_BOARD_COMPLETED_DAYS 日（論理日付で今日を含む）に完了したもの
+ * （新しい順）
+ */
+export type ProjectBoard = {
+  notStarted: {
+    today: readonly TaskRow[];
+    scheduled: readonly TaskRow[];
+    later: readonly TaskRow[];
+    inbox: readonly TaskRow[];
+  };
+  inProgress: readonly TaskRow[];
+  completed: readonly TaskRow[];
+};
+
+/** プロジェクトのボードの完了の列に出す日数（今日を含む。それより前は完了ログで見る） */
+export const PROJECT_BOARD_COMPLETED_DAYS = 7;
 
 type Compare = (a: TaskRow, b: TaskRow) => number;
 
@@ -71,10 +101,49 @@ function sameGroups(a: ProjectTaskGroups, b: ProjectTaskGroups): boolean {
   );
 }
 
+function sameTodayBoard(a: TodayBoard, b: TodayBoard): boolean {
+  return (
+    compareShallow(a.notStarted, b.notStarted) &&
+    compareShallow(a.inProgress, b.inProgress) &&
+    compareShallow(a.completed, b.completed)
+  );
+}
+
+function sameProjectBoard(a: ProjectBoard, b: ProjectBoard): boolean {
+  return (
+    compareShallow(a.inProgress, b.inProgress) &&
+    compareShallow(a.completed, b.completed) &&
+    (Object.keys(a.notStarted) as (keyof ProjectBoard["notStarted"])[]).every((key) =>
+      compareShallow(a.notStarted[key], b.notStarted[key]),
+    )
+  );
+}
+
+function sameColors(a: ReadonlyMap<string, ProjectColor>, b: ReadonlyMap<string, ProjectColor>) {
+  if (a.size !== b.size) return false;
+  for (const [id, color] of a) if (b.get(id) !== color) return false;
+  return true;
+}
+
+/**
+ * 今日の行を、未着手と進行中に分ける（並びは保つ）。
+ * startedAt は行ごとに項目だけを観測する（行の並びが同じまま進行中にしても、分け直しが取りこぼされないように）
+ */
+function splitByStarted(rows: readonly TaskRow[]): {
+  notStarted: TaskRow[];
+  inProgress: TaskRow[];
+} {
+  const notStarted: TaskRow[] = [];
+  const inProgress: TaskRow[] = [];
+  for (const row of rows) (row.startedAt !== null ? inProgress : notStarted).push(row);
+  return { notStarted, inProgress };
+}
+
 export class TaskLists {
   readonly #replica: Replica;
   readonly #day: LogicalDay;
   readonly #projectGroups = new Map<string, IComputedValue<ProjectTaskGroups>>();
+  readonly #projectBoards = new Map<string, IComputedValue<ProjectBoard>>();
 
   constructor(replica: Replica, day: LogicalDay) {
     this.#replica = replica;
@@ -88,6 +157,8 @@ export class TaskLists {
       completedToday: list,
       logbook: computed({ equals: sameLogbook }),
       projects: list,
+      todayBoard: computed({ equals: sameTodayBoard }),
+      projectColors: computed({ equals: sameColors }),
     });
   }
 
@@ -177,6 +248,49 @@ export class TaskLists {
       );
   }
 
+  /** 今日のボード：今日のタスクを状態（未着手・進行中・完了）で分けたもの */
+  get todayBoard(): TodayBoard {
+    return { ...splitByStarted(this.today), completed: this.completedToday };
+  }
+
+  /** 今日の進行中のタスク（今日の並び順キーの順） */
+  get inProgressToday(): readonly TaskRow[] {
+    return this.todayBoard.inProgress;
+  }
+
+  get inProgressTodayCount(): number {
+    return this.inProgressToday.length;
+  }
+
+  /** プロジェクトのボード：そのプロジェクトのタスクを状態（未着手・進行中・完了）で分けたもの */
+  projectBoard(projectId: string): ProjectBoard {
+    let board = this.#projectBoards.get(projectId);
+    if (!board) {
+      board = computed(() => this.#computeProjectBoard(projectId), { equals: sameProjectBoard });
+      this.#projectBoards.set(projectId, board);
+    }
+    return board.get();
+  }
+
+  /** そのプロジェクトの進行中のタスクの数 */
+  inProgressCountOfProject(projectId: string): number {
+    return this.projectBoard(projectId).inProgress.length;
+  }
+
+  /**
+   * 各プロジェクトの色（id → パレットの名前）。color があればその色、空なら作成順で決まる色
+   * （削除済みを除くすべてのプロジェクトを、アーカイブ済みも含めて作成順に並べた i 番目に、i を 8 で割った余りの色）。
+   * 削除済みのプロジェクトは入らない
+   */
+  get projectColors(): ReadonlyMap<string, ProjectColor> {
+    return resolveProjectColors(this.#replica.allProjects().map((project) => project.peek()));
+  }
+
+  /** プロジェクトの色（パレットの名前）。削除済みか、ないプロジェクトなら undefined */
+  projectColor(projectId: string): ProjectColor | undefined {
+    return this.projectColors.get(projectId);
+  }
+
   /** プロジェクトの画面のタスク */
   project(projectId: string): ProjectTaskGroups {
     let groups = this.#projectGroups.get(projectId);
@@ -204,6 +318,22 @@ export class TaskLists {
 
   #open(bucket: Bucket): TaskRow[] {
     return sorted(this.#rows(bucket), BUCKET_ORDER[bucket]);
+  }
+
+  #computeProjectBoard(projectId: string): ProjectBoard {
+    const { today, scheduled, later, inbox, completed } = this.project(projectId);
+    const { notStarted, inProgress } = splitByStarted(today);
+    // 論理日付で今日を含む直近 7 日。完了した時刻は行ごとに項目だけを観測する（完了の列の並びが同じまま
+    // 完了した時刻だけが変わっても、区切りの判定を取りこぼさないように）
+    const since = dayStart(
+      addDays(this.#day.today, -(PROJECT_BOARD_COMPLETED_DAYS - 1)),
+      this.#day.timeZone,
+    ).toISOString();
+    return {
+      notStarted: { today: notStarted, scheduled, later, inbox },
+      inProgress,
+      completed: completed.filter((row) => (row.field("completedAt") ?? "") >= since),
+    };
   }
 
   #computeProjectGroups(projectId: string): ProjectTaskGroups {

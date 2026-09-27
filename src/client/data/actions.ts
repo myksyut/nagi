@@ -1,5 +1,6 @@
 import type { Bucket, ChecklistItem, Project, Task } from "@shared/model";
 import type { Mutation } from "@shared/mutations";
+import { nextProjectColor } from "@shared/palette";
 import { arrivalRanks, rankBetween, ranksBetween } from "@shared/rank";
 import type { LogicalDay } from "./logical-day";
 import { targetOf } from "./overlay";
@@ -103,8 +104,10 @@ function sameValue(key: string, a: unknown, b: unknown): boolean {
 }
 
 /**
- * 変える項目だけを残し、bucket と scheduledOn の対応を満たすようにそろえる。
- * scheduled にするときは scheduledOn も、scheduled から外すときは scheduledOn: null も、同じ changes に入れる。
+ * 変える項目だけを残し、bucket と scheduledOn の対応、進行中と今日の対応を満たすようにそろえる。
+ * - scheduled にするときは scheduledOn も、scheduled から外すときは scheduledOn: null も、同じ changes に入れる
+ * - 進行中（startedAt あり）のタスクを今日から出すときは、同じ changes で startedAt: null にする（未着手に戻る）。
+ *   今日の外で startedAt を入れようとしたら受け付けない
  * 受け付けられない内容なら null
  */
 export function normalizeTaskChanges(current: Task, changes: TaskChanges): TaskChanges | null {
@@ -124,7 +127,26 @@ export function normalizeTaskChanges(current: Task, changes: TaskChanges): TaskC
     if ("scheduledOn" in next) return null;
     next.scheduledOn = null;
   }
+  const startedAt = "startedAt" in next ? (next.startedAt as string | null) : current.startedAt;
+  if (startedAt !== null && bucket !== "today") {
+    if ("startedAt" in next) return null;
+    next.startedAt = null;
+  }
   return next as TaskChanges;
+}
+
+/**
+ * 元に戻す操作を、今の表示に重ねても「進行中なら今日」が崩れないようにそろえる。
+ * 1つのタブの中の操作では崩れないが、戻すまでのあいだにほかのタブが同じタスクを動かしていると、
+ * 今日の外で進行中に戻そうとしてサーバーに断られるため、そのときは未着手のまま戻す
+ */
+function keepStartedInToday(mutation: Mutation, current: Task | undefined): Mutation {
+  if (mutation.type !== "task.update" || !current) return mutation;
+  const { changes } = mutation;
+  const bucket = changes.bucket ?? current.bucket;
+  const startedAt = changes.startedAt !== undefined ? changes.startedAt : current.startedAt;
+  if (startedAt === null || bucket === "today") return mutation;
+  return { ...mutation, changes: { ...changes, startedAt: null } };
 }
 
 export class TaskActions {
@@ -220,7 +242,11 @@ export class TaskActions {
     return this.#updateMany("task.complete", updates);
   }
 
-  /** あとから完了を外す（「完了 N件」や完了ログから）。今日の一番下に戻る */
+  /**
+   * あとから完了を外す（「完了 N件」や完了ログから）。今日の一番下に、未着手で戻る
+   * （進行中のまま完了していても startedAt を消す）。
+   * 完了の直後の取り消しは、この操作ではなく元に戻す（completedAt を消すだけなので、進行中に戻る）
+   */
   uncompleteTasks(ids: readonly string[]): OperationResult {
     const targets = this.#rows(ids).filter(
       (task) => task.completedAt !== null && task.deletedAt === null,
@@ -228,14 +254,44 @@ export class TaskActions {
     const ranks = this.bottomRanks("today", targets.length);
     const updates = targets.map((task, i) => ({
       id: task.id,
-      changes: { completedAt: null, bucket: "today" as const, rank: ranks[i] },
+      changes: { completedAt: null, startedAt: null, bucket: "today" as const, rank: ranks[i] },
     }));
     return this.#updateMany("task.uncomplete", updates);
   }
 
   /**
+   * 進行中にする（未完了で、まだ進行中でないタスクだけ）。今日以外にあるタスクは、同じ操作で今日の一番上へ移す
+   * （移すタスクどうしは渡した順で上から並ぶ）。すでに今日にあるタスクは位置を変えない
+   */
+  startTasks(ids: readonly string[]): OperationResult {
+    const startedAt = this.#now().toISOString();
+    const targets = this.#rows(ids).filter(
+      (task) => task.completedAt === null && task.deletedAt === null && task.startedAt === null,
+    );
+    const ranks = this.topRanks("today", targets.filter((task) => task.bucket !== "today").length);
+    let next = 0;
+    const updates = targets.map((task) =>
+      task.bucket === "today"
+        ? { id: task.id, changes: { startedAt } }
+        : { id: task.id, changes: { startedAt, bucket: "today" as const, rank: ranks[next++] } },
+    );
+    return this.#updateMany("task.start", updates);
+  }
+
+  /** 未着手に戻す（進行中のタスクだけ）。startedAt を消すだけで、位置は変えない */
+  stopTasks(ids: readonly string[]): OperationResult {
+    const updates = this.#rows(ids)
+      .filter(
+        (task) => task.startedAt !== null && task.completedAt === null && task.deletedAt === null,
+      )
+      .map((task) => ({ id: task.id, changes: { startedAt: null } }));
+    return this.#updateMany("task.stop", updates);
+  }
+
+  /**
    * 置き場を移す（未完了のタスクだけ）。移した先の一番下に、渡した順で並ぶ。
-   * 予定へ移すときに、日付が今日か過去なら今日に入れる
+   * 予定へ移すときに、日付が今日か過去なら今日に入れる。
+   * 進行中のタスクを今日から出すと、同じ操作で未着手に戻る（startedAt を消す。normalizeTaskChanges）
    */
   moveTasks(ids: readonly string[], destination: Destination): OperationResult {
     const to: Destination =
@@ -354,7 +410,11 @@ export class TaskActions {
   createProject(name: string, assignTo: readonly string[] = []): OperationResult {
     if (!isNonBlank(name)) return { ok: false, reason: "invalid" };
     const id = this.#newId();
-    const mutations: Mutation[] = [{ type: "project.create", project: { id, name: name.trim() } }];
+    // 色は作るときに決めて入れる（作成順で次に来る色。あとから前のプロジェクトが消えても変わらないように）
+    const color = nextProjectColor(this.#replica.allProjects().map((project) => project.peek()));
+    const mutations: Mutation[] = [
+      { type: "project.create", project: { id, name: name.trim(), color } },
+    ];
     for (const task of this.#rows(assignTo)) {
       if (task.deletedAt === null) {
         mutations.push({ type: "task.update", id: task.id, changes: { projectId: id } });
@@ -377,7 +437,10 @@ export class TaskActions {
     return this.#updateMany("task.update", updates);
   }
 
-  /** 名前の変更・アーカイブ。未完了のタスクが残っているとアーカイブできない */
+  /**
+   * 名前の変更・色の変更・アーカイブ。未完了のタスクが残っているとアーカイブできない。
+   * 色はパレットの名前だけ（ほかは invalid）。null にすると作成順の色に戻る
+   */
   updateProject(id: string, changes: ProjectChanges): OperationResult {
     const current = this.#replica.project(id)?.peek();
     if (!current || current.deletedAt !== null) return { ok: false, reason: "invalid" };
@@ -415,12 +478,17 @@ export class TaskActions {
     const entry = this.#undoStack.pop();
     if (!entry) return { ok: false, reason: "nothing-to-undo" };
     // 戻す先の行がもうない（削除から 30 日たって捨てた）操作は送らない
-    const mutations = entry.inverse(this.#now().toISOString()).filter((mutation) => {
-      const target = targetOf(mutation);
-      return target.kind === "task"
-        ? this.#replica.task(target.id) !== undefined
-        : this.#replica.project(target.id) !== undefined;
-    });
+    const mutations = entry
+      .inverse(this.#now().toISOString())
+      .filter((mutation) => {
+        const target = targetOf(mutation);
+        return target.kind === "task"
+          ? this.#replica.task(target.id) !== undefined
+          : this.#replica.project(target.id) !== undefined;
+      })
+      .map((mutation) =>
+        keepStartedInToday(mutation, this.#replica.task(targetOf(mutation).id)?.peek()),
+      );
     const result = this.#perform("undo", mutations, { undoable: false });
     if (result.ok) {
       this.#undoStack.undoing(result.operationId, entry);

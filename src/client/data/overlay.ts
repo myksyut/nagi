@@ -68,6 +68,7 @@ export function applyTaskMutation(
     id: task.id,
     ...fields,
     completedAt: null,
+    startedAt: null,
     createdAt: at,
     updatedAt: at,
     deletedAt: null,
@@ -84,10 +85,12 @@ export function applyProjectMutation(
     return base && withChanges(base, mutation.changes);
   }
   const { project } = mutation;
-  if (base) return { ...base, name: project.name };
+  const color = project.color ?? null;
+  if (base) return { ...base, name: project.name, color };
   return {
     id: project.id,
     name: project.name,
+    color,
     archivedAt: null,
     createdAt: at,
     updatedAt: at,

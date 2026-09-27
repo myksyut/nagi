@@ -37,8 +37,11 @@ export const LOCAL_DB_NAME = "nagi";
 /**
  * 保存形式の版。形を変えたら上げる。版が変わると、開いたときに手元のデータを捨てて作り直し、
  * カーソル 0 から取り直す
+ * - 2：行に startedAt（タスク）と color（プロジェクト）を足した。前の版の行にはこの項目がなく
+ *   （undefined は「空」の null と違い、進行中と読み違える）、サーバーの seq は変わらないので差分でも届かない。
+ *   そのため捨てて全件を取り直す
  */
-export const LOCAL_DB_VERSION = 1;
+export const LOCAL_DB_VERSION = 2;
 
 const TASKS = "tasks";
 const PROJECTS = "projects";

@@ -27,6 +27,7 @@ export function makeTask(overrides: Partial<Task> = {}): Task {
     arrivedOn: null,
     checklist: [],
     completedAt: null,
+    startedAt: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",
     deletedAt: null,
@@ -39,6 +40,7 @@ export function makeProject(overrides: Partial<Project> = {}): Project {
   return {
     id: nextId(),
     name: "プロジェクト",
+    color: null,
     archivedAt: null,
     createdAt: "2026-01-01T00:00:00.000Z",
     updatedAt: "2026-01-01T00:00:00.000Z",

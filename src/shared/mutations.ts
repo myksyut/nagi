@@ -1,5 +1,6 @@
 import { z } from "zod";
 import { BUCKETS } from "./model";
+import { PROJECT_COLORS } from "./palette";
 import { isValidRank } from "./rank";
 
 /**
@@ -23,6 +24,8 @@ export const dateSchema = z.iso.date();
 export const timestampSchema = z.iso.datetime().transform((value) => new Date(value).toISOString());
 export const bucketSchema = z.enum(BUCKETS);
 export const rankSchema = z.string().refine(isValidRank, "invalid_rank");
+/** プロジェクトの色。パレットの名前だけ（palette.ts） */
+export const projectColorSchema = z.enum(PROJECT_COLORS);
 /** 空白だけのタイトルや名前は不可 */
 const nonBlankSchema = z.string().refine((value) => value.trim().length > 0, "blank");
 
@@ -43,6 +46,8 @@ const taskFields = {
   arrivedOn: dateSchema.nullable(),
   checklist: z.array(checklistItemSchema),
   completedAt: timestampSchema.nullable(),
+  /** 進行中にした時刻。入れるときは、同じ操作のあとの bucket が today でなければならない（サーバーが検証する） */
+  startedAt: timestampSchema.nullable(),
   deletedAt: timestampSchema.nullable(),
 };
 
@@ -67,6 +72,8 @@ export const taskCreateSchema = z.strictObject({
 
 /**
  * 更新。変える項目だけを送る。削除は deletedAt を入れる更新、削除の取り消しは deletedAt を null にする更新。
+ * 進行中は startedAt を入れる更新、未着手に戻すのは startedAt を null にする更新（変えたあとの行で、
+ * startedAt があるなら bucket は today。そうでなければ started_outside_today で断る）。
  * チェックリストは配列をまるごと置き換えるので、変える前の配列（baseChecklist）を添える。
  * サーバーは今の配列がそれと違えば（ほかの画面が先に変えていたら）、まとまりごと断る（checklist_conflict）
  */
@@ -77,18 +84,27 @@ export const taskUpdateSchema = z.strictObject({
   baseChecklist: taskFields.checklist.optional(),
 });
 
+/** 作成。色は省略すると空（作成順で決まる色）。画面は、作るときに作成順で次に来る色を入れる */
 export const projectCreateSchema = z.strictObject({
   type: z.literal("project.create"),
-  project: z.strictObject({ id: idSchema, name: nonBlankSchema }),
+  project: z.strictObject({
+    id: idSchema,
+    name: nonBlankSchema,
+    color: projectColorSchema.nullable().default(null),
+  }),
 });
 
-/** 更新。アーカイブは archivedAt を入れる更新（未完了のタスクが残っていると 400） */
+/**
+ * 更新。アーカイブは archivedAt を入れる更新（未完了のタスクが残っていると 400）。
+ * 色は null にすると作成順の色に戻る（元に戻すで使う）
+ */
 export const projectUpdateSchema = z.strictObject({
   type: z.literal("project.update"),
   id: idSchema,
   changes: z
     .strictObject({
       name: nonBlankSchema,
+      color: projectColorSchema.nullable(),
       archivedAt: timestampSchema.nullable(),
       deletedAt: timestampSchema.nullable(),
     })

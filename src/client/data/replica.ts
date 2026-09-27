@@ -17,6 +17,8 @@ export type OperationKind =
   | "task.update"
   | "task.complete"
   | "task.uncomplete"
+  | "task.start"
+  | "task.stop"
   | "task.move"
   | "task.reorder"
   | "task.deadline"
