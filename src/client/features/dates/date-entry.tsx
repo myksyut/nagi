@@ -2,7 +2,7 @@ import { ja } from "@daypicker/react/locale/ja";
 import { parseDateInput } from "@shared/date-input";
 import { action, makeObservable, observable, observableRef } from "mobx";
 import { observer } from "mobx-react-lite";
-import { type KeyboardEvent, useRef, useState } from "react";
+import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import { Calendar } from "@/components/ui/calendar";
 import { Kbd } from "@/components/ui/kbd";
 import { Popover, PopoverPopup } from "@/components/ui/popover";
@@ -11,7 +11,7 @@ import { keymap } from "@/keyboard/keymap";
 import { formatKey, isComposingKey } from "@/keyboard/keys";
 import { cn } from "@/lib/utils";
 import { moveTasks } from "@/tasks/commands";
-import type { ListUi } from "@/tasks/list-ui";
+import type { ListUi, ListView } from "@/tasks/list-ui";
 import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
 import { scheduleTasks, setDeadline } from "./commands";
@@ -21,8 +21,10 @@ import { formatLongDate } from "./labels";
  * 日付の入力（d と ⇧D で共通）。小さな入力欄が開き、打つと解釈した日付がその場で出る。
  * Enter で決定、Esc でやめる。カレンダーのクリックでも選べる。締切は欄を空にして Enter で外せる。
  *
- * 開いているかどうかは一覧の状態（ListUi）ごとに1つだけ持つ。ポップオーバーは、対象のタスク（複数なら先頭）の
- * 行の右側の枠（register.tsx の締切の表示）が描く。行に合わせて開き、小さなボタンから開いたときはボタンに合わせる
+ * 開いているかどうかは一覧の状態（ListUi）ごとに1つだけ持つ。ポップオーバーは、開いた画面の中の、対象のタスク
+ * （複数なら先頭）の行の右側の枠（register.tsx の締切の表示）が描く。行に合わせて開き、小さなボタンから開いたときは
+ * ボタンに合わせる。対象の行が一覧から消えたとき（同期・完了・振り分け）や画面を切り替えたときは閉じて、
+ * 一覧にフォーカスを戻す（あとで同じ行が出てきても、前の入力を開き直さない）
  */
 
 export type DateEntryKind = "schedule" | "deadline";
@@ -32,6 +34,8 @@ type DateEntryRequest = {
   id: number;
   kind: DateEntryKind;
   taskIds: readonly string[];
+  /** 開いた画面。ほかの画面に同じタスクの行があっても、そこには描かない */
+  view: ListView;
   /** ポップオーバーを合わせる要素。null なら対象の行 */
   anchor: Element | null;
 };
@@ -46,11 +50,16 @@ export class DateEntry {
     makeObservable(this, { request: observableRef, open: action, close: action });
   }
 
-  open(kind: DateEntryKind, taskIds: readonly string[], anchor: Element | null = null): void {
+  open(
+    kind: DateEntryKind,
+    taskIds: readonly string[],
+    view: ListView | null,
+    anchor: Element | null = null,
+  ): void {
     const host = taskIds[0];
     this.close();
-    if (host === undefined) return;
-    this.request = { id: this.#nextId++, kind, taskIds: [...taskIds], anchor };
+    if (host === undefined || view === null) return;
+    this.request = { id: this.#nextId++, kind, taskIds: [...taskIds], view, anchor };
     this.#hosts.set(host, true);
   }
 
@@ -59,13 +68,16 @@ export class DateEntry {
     this.#hosts.clear();
   }
 
+  /** 開いているのが id の入力なら閉じる（もう次の入力を開いていたら何もしない）。閉じたら true */
+  dismiss(id: number): boolean {
+    if (this.request?.id !== id) return false;
+    this.close();
+    return true;
+  }
+
   /** この行がポップオーバーを描くか */
   isHost(taskId: string): boolean {
     return this.#hosts.has(taskId);
-  }
-
-  isOpenFor(kind: DateEntryKind, taskId: string): boolean {
-    return this.request?.kind === kind && this.request.taskIds[0] === taskId;
   }
 }
 
@@ -107,13 +119,41 @@ function keyLabel(id: string): string | undefined {
 
 // --- ポップオーバー ---------------------------------------------------------------------------
 
-/** 行の右側の枠から描く。開いていなければ何も描かない */
-export const DateEntryPopover = observer(function DateEntryPopover({ task }: { task: TaskRow }) {
+/** 行の右側の枠から描く。開いていないとき・開いた画面の行でないときは何も描かない */
+export const DateEntryPopover = observer(function DateEntryPopover({
+  task,
+  view,
+}: {
+  task: TaskRow;
+  view: ListView;
+}) {
   const ui = useUi();
   const request = dateEntryOf(ui).request;
-  if (!request || request.taskIds[0] !== task.id) return null;
+  if (!request || request.taskIds[0] !== task.id || request.view !== view) return null;
   return <DateEntryPanel key={request.id} request={request} task={task} />;
 });
+
+/**
+ * 入力の後始末：対象の行が今の画面の一覧から消えたら閉じる。行ごと外れた（画面の切り替え、抜けていく動きの終わり）
+ * ときも閉じる。どちらも一覧にフォーカスを戻す（ポップオーバーの入力欄にあったフォーカスが行き場を失うため）。
+ * 外れたかどうかは、StrictMode の付け直しと区別するため、外れた直後の microtask で確かめる
+ */
+function useDismissWhenGone(request: DateEntryRequest, inList: boolean) {
+  const ui = useUi();
+  const mounted = useRef(false);
+  useEffect(() => {
+    if (!inList && dateEntryOf(ui).dismiss(request.id)) ui.focusList();
+  }, [ui, request.id, inList]);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      queueMicrotask(() => {
+        if (!mounted.current && dateEntryOf(ui).dismiss(request.id)) ui.focusList();
+      });
+    };
+  }, [ui, request.id]);
+}
 
 const DateEntryPanel = observer(function DateEntryPanel({
   request,
@@ -132,6 +172,8 @@ const DateEntryPanel = observer(function DateEntryPanel({
   const parsed = text.trim() === "" ? null : parseDateInput(text, today);
   const [month, setMonth] = useState(() => monthOf(current ?? today));
   const input = useRef<HTMLInputElement>(null);
+  const inList = ui.view === request.view && ui.rows.some((row) => row.id === task.id);
+  useDismissWhenGone(request, inList);
   const anchor = request.anchor ?? document.getElementById(taskRowId(task.id));
 
   /** 閉じて一覧にフォーカスを戻す（キーの操作を続けられるように） */
@@ -177,6 +219,9 @@ const DateEntryPanel = observer(function DateEntryPanel({
 
   const label = kind === "schedule" ? "予定の日付" : "締切";
   const selected = parsed ?? current;
+
+  // 行が一覧から消えた（抜けていく動きのあいだも）ら描かない。閉じるのは useDismissWhenGone
+  if (!inList) return null;
 
   return (
     <Popover

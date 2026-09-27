@@ -27,7 +27,7 @@ const selectedOpenTask = ({ ui }: KeyContext) => {
 function openDateEntry(kind: DateEntryKind) {
   return (context: KeyContext) => {
     const task = selectedOpenTask(context);
-    if (task) dateEntryOf(context.ui).open(kind, [task.id]);
+    if (task) dateEntryOf(context.ui).open(kind, [task.id], context.ui.view);
   };
 }
 
@@ -64,7 +64,7 @@ const DeadlineMeta = observer(function DeadlineMeta({ task, view }: TaskSlotProp
   return (
     <>
       {show && <DeadlineLabel deadlineOn={deadlineOn} />}
-      {host && <DateEntryPopover task={task} />}
+      {host && <DateEntryPopover task={task} view={view} />}
     </>
   );
 });
@@ -100,8 +100,11 @@ const chipButtonClassName = cn(
   "hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring/70",
 );
 
-/** 開いたタスクの一番下の列：いつやる（置き場と予定の日付）。押すと日付の入力が開く（今日・あとでも選べる） */
-const WhenChip = observer(function WhenChip({ task }: TaskSlotProps) {
+/**
+ * 開いたタスクの一番下の列：いつやる（置き場と予定の日付）。押すと日付の入力が開く（今日・あとでも選べる）。
+ * 完了したタスクでは「完了」と出すだけ（d・⇧D と同じく、日付の入力は開けない）
+ */
+const WhenChip = observer(function WhenChip({ task, view }: TaskSlotProps) {
   const ui = useUi();
   const today = useStore().today;
   if (task.completedAt !== null) return <span className={chipClassName}>完了</span>;
@@ -115,7 +118,7 @@ const WhenChip = observer(function WhenChip({ task }: TaskSlotProps) {
       aria-haspopup="dialog"
       aria-label={`いつやる：${label}`}
       className={chipButtonClassName}
-      onClick={(event) => dateEntryOf(ui).open("schedule", [task.id], event.currentTarget)}
+      onClick={(event) => dateEntryOf(ui).open("schedule", [task.id], view, event.currentTarget)}
     >
       {label}
     </button>
@@ -129,23 +132,24 @@ registerDetailField({
   Component: WhenChip,
 });
 
-/** 開いたタスクの一番下の列：締切（「締切 10/2(金)」）。押すと日付の入力が開く */
-const DeadlineChip = observer(function DeadlineChip({ task }: TaskSlotProps) {
+/**
+ * 開いたタスクの一番下の列：締切（「締切 10/2(金)」）。押すと日付の入力が開く。
+ * 完了したタスクでは出さない（行の右側と同じく、完了したタスクと完了ログには締切を出さない）
+ */
+const DeadlineChip = observer(function DeadlineChip({ task, view }: TaskSlotProps) {
   const ui = useUi();
   const today = useStore().today;
+  if (task.completedAt !== null) return null;
   const deadlineOn = task.deadlineOn;
   const label =
     deadlineOn === null ? "締切" : `締切 ${formatShortDateWithWeekday(deadlineOn, today)}`;
-  if (task.completedAt !== null) {
-    return deadlineOn === null ? null : <span className={chipClassName}>{label}</span>;
-  }
   return (
     <button
       type="button"
       aria-haspopup="dialog"
       aria-label={deadlineOn === null ? "締切を付ける" : label}
       className={cn(chipButtonClassName, deadlineOn === null && "border-dashed")}
-      onClick={(event) => dateEntryOf(ui).open("deadline", [task.id], event.currentTarget)}
+      onClick={(event) => dateEntryOf(ui).open("deadline", [task.id], view, event.currentTarget)}
     >
       {label}
     </button>

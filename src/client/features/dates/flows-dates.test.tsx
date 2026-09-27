@@ -1,7 +1,12 @@
-import { act, fireEvent, screen, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { StrictMode } from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AppStore } from "@/data";
+import { Router } from "wouter";
+import { memoryLocation } from "wouter/memory-location";
+import { App } from "@/app";
+import { AppStore, StoreProvider } from "@/data";
+import { createMemoryLocalDb } from "@/data/local-db";
 import { FakeServer } from "@/test/fake-server";
 import { makeTask } from "@/test/fixtures";
 import { optionTitles, setupApp } from "@/test/render-app";
@@ -518,31 +523,38 @@ describe("完了の条件1：受信箱で d → 来週月曜 → Enter で予定
     expect(store.lists.scheduled[0]?.scheduledOn).toBe("2026-10-05");
     expect(optionTitles("受信箱")).toEqual([]);
 
-    // 10/5 の 3:59（1分未満前）に画面を見ても、まだ今日に出ない
-    vi.setSystemTime(new Date("2026-10-05T03:59:00+09:00"));
-    await act(async () => {
-      window.dispatchEvent(new Event("focus"));
-      await store.sync();
-    });
-    // 4時前なので、論理日付はまだ前日（10/4）のまま
-    expect(store.today).toBe("2026-10-04");
-    expect(store.lists.today.map((t) => t.title)).toEqual(["既存"]);
-
-    // 10/5 の 4:00 を過ぎてから画面を見ると、今日の一番上に印付きで出る（既存のタスクより上）
-    vi.setSystemTime(new Date("2026-10-05T04:00:05+09:00"));
-    await act(async () => {
-      window.dispatchEvent(new Event("focus"));
-      await store.sync();
-    });
-    expect(store.today).toBe("2026-10-05");
-    expect(store.lists.today.map((t) => t.title)).toEqual(["A", "既存"]);
-    const arrived = store.lists.today.find((t) => t.title === "A");
-    expect(arrived && store.lists.isArrivedToday(arrived)).toBe(true);
-    expect(arrived?.scheduledOn).toBeNull();
-
-    await user.click(screen.getByRole("link", { name: /^今日/ }));
+    // 今日の画面で待つ（画面の変化で、自動の同期が済んだことを確かめる）
+    await user.keyboard("2");
     await screen.findByRole("listbox", { name: "今日" });
-    expect(screen.getByRole("img", { name: "今日来たタスク" })).toBeInTheDocument();
+    expect(optionTitles("今日")).toEqual(["既存"]);
+
+    // 10/5 の 3:59 に画面を見る（focus）：論理日付はまだ 10/4 なので、同期は走るが今日には出ない。
+    // 手で同期は呼ばず、focus が始めた差分の取得が終わるのを待つ
+    const syncsBefore = server.requestsTo("/api/sync").length;
+    vi.setSystemTime(new Date("2026-10-05T03:59:00+09:00"));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(server.requestsTo("/api/sync").length).toBe(syncsBefore + 1));
+    // 応答を取り込み終えるまで待つ（タイマーは本物なので、1回だけ後回しにする）
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(store.today).toBe("2026-10-04");
+    expect(optionTitles("今日")).toEqual(["既存"]);
+    expect(screen.queryByRole("img", { name: "今日来たタスク" })).toBeNull();
+
+    // 10/5 の 4:00 を過ぎてから画面を見ると、focus だけで日付が変わって同期が走り、
+    // 今日の一番上（既存のタスクより上）に印付きで出る
+    vi.setSystemTime(new Date("2026-10-05T04:00:05+09:00"));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    expect(await screen.findByRole("img", { name: "今日来たタスク" })).toBeInTheDocument();
+    expect(store.today).toBe("2026-10-05");
+    expect(optionTitles("今日")).toEqual(["A", "既存"]);
+    const arrived = store.lists.today.find((t) => t.title === "A");
+    expect(arrived?.scheduledOn).toBeNull();
   });
 
   it("午前4時のタイマーでも、予定の日付が来たタスクが今日の一番上に入る（画面を見なくても、日をまたぐタイマーの経路で自動的に移る）", async () => {
@@ -628,5 +640,295 @@ describe("d・⇧D が効かないとき", () => {
     expect(screen.queryByRole("textbox", { name: "予定の日付" })).toBeNull();
     await user.keyboard("{Shift>}D{/Shift}");
     expect(screen.queryByRole("textbox", { name: "締切" })).toBeNull();
+  });
+});
+
+describe("5-修正1：予定の見出しは、並びが変わらない日付の変更でも変わる", () => {
+  it("1件だけの予定日を d で変えると、見出しが変わる", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00")); // 月曜
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "A", bucket: "scheduled", scheduledOn: "2026-10-05" }));
+    const { store } = await setupApp("/upcoming", server);
+    stores.push(store);
+    const list = await screen.findByRole("listbox", { name: "予定" });
+    expect(
+      within(list)
+        .getAllByRole("heading")
+        .map((h) => h.textContent),
+    ).toEqual(["10/5(月)"]);
+
+    await user.keyboard("j");
+    await user.keyboard("d");
+    await user.type(await screen.findByRole("textbox", { name: "予定の日付" }), "10/6{Enter}");
+
+    expect(store.lists.scheduled[0]?.scheduledOn).toBe("2026-10-06");
+    expect(
+      within(list)
+        .getAllByRole("heading")
+        .map((h) => h.textContent),
+    ).toEqual(["10/6(火)"]);
+  });
+
+  it("並びが変わらない複数件で予定日を変えても、見出しが変わる", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "A", bucket: "scheduled", scheduledOn: "2026-10-05" }));
+    server.putTask(makeTask({ title: "B", bucket: "scheduled", scheduledOn: "2026-10-07" }));
+    const { store } = await setupApp("/upcoming", server);
+    stores.push(store);
+    const list = await screen.findByRole("listbox", { name: "予定" });
+    expect(
+      within(list)
+        .getAllByRole("heading")
+        .map((h) => h.textContent),
+    ).toEqual(["10/5(月)", "10/7(水)"]);
+
+    await user.keyboard("j"); // A
+    await user.keyboard("d");
+    await user.type(await screen.findByRole("textbox", { name: "予定の日付" }), "10/6{Enter}");
+
+    expect(optionTitles("予定")).toEqual(["A", "B"]);
+    expect(
+      within(list)
+        .getAllByRole("heading")
+        .map((h) => h.textContent),
+    ).toEqual(["10/6(火)", "10/7(水)"]);
+  });
+});
+
+describe("5-修正1：入力中の行が消えたり画面が変わったりしたら、日付の入力を閉じる", () => {
+  it("同期で行が一覧から消えたら閉じて一覧にフォーカスを戻し、行が戻ってきても勝手に開かない", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const server = new FakeServer();
+    const a = server.putTask(
+      makeTask({ title: "A", bucket: "inbox", createdAt: "2026-01-01T00:00:00.000Z" }),
+    );
+    server.putTask(
+      makeTask({ title: "B", bucket: "inbox", createdAt: "2026-01-02T00:00:00.000Z" }),
+    );
+    const { store } = await setupApp("/inbox", server);
+    stores.push(store);
+    await screen.findByRole("listbox", { name: "受信箱" });
+
+    await user.keyboard("j"); // A
+    await user.keyboard("d");
+    await screen.findByRole("textbox", { name: "予定の日付" });
+
+    // ほかの端末で A が今日へ移された（同期で受信箱から消える）
+    server.putTask({ id: a.id, bucket: "today" });
+    await act(async () => {
+      await store.sync();
+    });
+    await waitFor(() => expect(optionTitles("受信箱")).toEqual(["B"]));
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "予定の日付" })).toBeNull());
+    expect(document.activeElement).toBe(screen.getByRole("listbox", { name: "受信箱" }));
+
+    // A が受信箱に戻ってきても、前の入力は開かない
+    server.putTask({ id: a.id, bucket: "inbox" });
+    await act(async () => {
+      await store.sync();
+    });
+    await waitFor(() => expect(optionTitles("受信箱")).toEqual(["A", "B"]));
+    expect(screen.queryByRole("textbox", { name: "予定の日付" })).toBeNull();
+  });
+
+  it("画面を切り替えたら閉じ、戻っても勝手に開かない", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "A", bucket: "inbox" }));
+    const { store, location } = await setupApp("/inbox", server);
+    stores.push(store);
+    await screen.findByRole("listbox", { name: "受信箱" });
+
+    await user.keyboard("j");
+    await user.keyboard("{Shift>}D{/Shift}");
+    await screen.findByRole("textbox", { name: "締切" });
+
+    act(() => location.navigate("/today"));
+    const today = await screen.findByRole("listbox", { name: "今日" });
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "締切" })).toBeNull());
+    expect(document.activeElement).toBe(today);
+
+    act(() => location.navigate("/inbox"));
+    await screen.findByRole("listbox", { name: "受信箱" });
+    expect(optionTitles("受信箱")).toEqual(["A"]);
+    expect(screen.queryByRole("textbox", { name: "締切" })).toBeNull();
+  });
+
+  it("入力中の行を完了しても閉じる（開いた欄のボタンから開いたとき）", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const server = new FakeServer();
+    const a = server.putTask(makeTask({ title: "A", bucket: "later" }));
+    const { store } = await setupApp("/later", server);
+    stores.push(store);
+    await screen.findByRole("listbox", { name: "あとで" });
+
+    await user.keyboard("j{Enter}");
+    await user.click(screen.getByRole("button", { name: "締切を付ける" }));
+    await screen.findByRole("textbox", { name: "締切" });
+
+    // ほかの端末で完了された
+    server.putTask({ id: a.id, completedAt: "2026-09-28T01:00:00.000Z" });
+    await act(async () => {
+      await store.sync();
+    });
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "締切" })).toBeNull());
+    expect(store.lists.later).toEqual([]);
+  });
+});
+
+describe("5-修正1：StrictMode（開発時の効果の付け直し）でも、日付の入力は閉じない", () => {
+  it("StrictMode で描いても d で開いた入力欄が残り、Enter で決まる", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "A", bucket: "inbox" }));
+    const store = new AppStore({
+      fetch: server.fetch,
+      openLocalDb: async () => createMemoryLocalDb(),
+    });
+    stores.push(store);
+    await store.start();
+    const location = memoryLocation({ path: "/inbox" });
+    render(
+      <StrictMode>
+        <StoreProvider store={store}>
+          <Router hook={location.hook} searchHook={location.searchHook}>
+            <App />
+          </Router>
+        </StoreProvider>
+      </StrictMode>,
+    );
+    await screen.findByRole("listbox", { name: "受信箱" });
+
+    await user.keyboard("j");
+    await user.keyboard("d");
+    const input = await screen.findByRole("textbox", { name: "予定の日付" });
+    // 付け直しの後始末（microtask）が済んでも開いたまま
+    await act(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+    });
+    expect(screen.getByRole("textbox", { name: "予定の日付" })).toBe(input);
+    await user.type(input, "来週月曜{Enter}");
+    expect(store.lists.scheduled[0]?.scheduledOn).toBe("2026-10-05");
+  });
+});
+
+describe("5-修正1：完了したタスクを開いても、締切の欄は出さず、日付の入力も開けない", () => {
+  it("今日の「完了 N件」と完了ログの行を開くと、締切の欄がなく、いつやるはボタンではない", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00"));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const server = new FakeServer();
+    server.putTask(
+      makeTask({
+        title: "今日完了",
+        bucket: "today",
+        deadlineOn: "2026-10-02",
+        completedAt: "2026-09-28T01:00:00.000Z",
+      }),
+    );
+    server.putTask(
+      makeTask({
+        title: "前に完了",
+        bucket: "later",
+        deadlineOn: "2026-10-02",
+        completedAt: "2026-09-20T01:00:00.000Z",
+      }),
+    );
+    const { store } = await setupApp("/today", server);
+    stores.push(store);
+    await screen.findByRole("listbox", { name: "今日" });
+
+    await user.click(screen.getByRole("button", { name: /完了 1件/ }));
+    await user.keyboard("j{Enter}");
+    const details = screen.getByRole("group", { name: "「今日完了」の詳細" });
+    expect(within(details).queryByText(/締切/)).toBeNull();
+    expect(within(details).queryByRole("button", { name: /いつやる/ })).toBeNull();
+    expect(within(details).getByText("完了")).toBeInTheDocument();
+
+    await user.keyboard("5");
+    await screen.findByRole("listbox", { name: "完了ログ" });
+    await user.keyboard("j{Enter}");
+    const logDetails = screen.getByRole("group", { name: "「前に完了」の詳細" });
+    expect(within(logDetails).queryByText(/締切/)).toBeNull();
+    expect(within(logDetails).queryByRole("button", { name: /締切|いつやる/ })).toBeNull();
+  });
+});
+
+describe("5-修正1：まとまりの見出しの間の余白", () => {
+  it("一覧の最初の見出しには上の余白を付けず、2つ目からは付ける", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00"));
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "A", bucket: "scheduled", scheduledOn: "2026-10-05" }));
+    server.putTask(makeTask({ title: "B", bucket: "scheduled", scheduledOn: "2026-10-07" }));
+    const { store } = await setupApp("/upcoming", server);
+    stores.push(store);
+    const list = await screen.findByRole("listbox", { name: "予定" });
+    const [first, second] = within(list).getAllByRole("heading");
+    expect(first?.className).not.toMatch(/\bmt-6\b/);
+    expect(second?.className).toMatch(/\bmt-6\b/);
+    // すべての見出しに効いてしまう first: の指定は使わない
+    expect(second?.className).not.toMatch(/first:mt-0/);
+  });
+});
+
+describe("5-修正1：午前0時〜3時59分の入力は前日を今日として読む", () => {
+  it("3:59 に「今日」「明日」と打つと前日基準、4:00 を過ぎて画面を見たあとは当日基準", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-10-05T03:59:00+09:00")); // 月曜の 3:59 → 論理日付は 10/4（日）
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const server = new FakeServer();
+    server.putTask(
+      makeTask({ title: "A", bucket: "inbox", createdAt: "2026-01-01T00:00:00.000Z" }),
+    );
+    server.putTask(
+      makeTask({ title: "B", bucket: "inbox", createdAt: "2026-01-02T00:00:00.000Z" }),
+    );
+    const { store } = await setupApp("/inbox", server);
+    stores.push(store);
+    await screen.findByRole("listbox", { name: "受信箱" });
+    expect(store.today).toBe("2026-10-04");
+
+    await user.keyboard("j"); // A
+    await user.keyboard("d");
+    const input = await screen.findByRole("textbox", { name: "予定の日付" });
+    await user.type(input, "今日");
+    expect(screen.getByText("→ 10月4日(日)")).toBeInTheDocument();
+    await user.clear(input);
+    await user.type(input, "明日");
+    expect(screen.getByText("→ 10月5日(月)")).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    // 3:59 の「明日」は 10/5。論理日付の今日（10/4）より先なので予定に入る
+    expect(store.lists.scheduled.map((t) => [t.title, t.scheduledOn])).toEqual([
+      ["A", "2026-10-05"],
+    ]);
+
+    // 4:00 を過ぎてから画面を見る（focus）と、今日は 10/5 になり「明日」は 10/6
+    vi.setSystemTime(new Date("2026-10-05T04:00:05+09:00"));
+    act(() => {
+      window.dispatchEvent(new Event("focus"));
+    });
+    await waitFor(() => expect(store.today).toBe("2026-10-05"));
+    await user.keyboard("j"); // B
+    await user.keyboard("d");
+    const input2 = await screen.findByRole("textbox", { name: "予定の日付" });
+    await user.type(input2, "今日");
+    expect(screen.getByText("→ 10月5日(月)")).toBeInTheDocument();
+    await user.clear(input2);
+    await user.type(input2, "明日{Enter}");
+    expect(store.lists.scheduled.find((t) => t.title === "B")?.scheduledOn).toBe("2026-10-06");
   });
 });

@@ -1,3 +1,4 @@
+import { computed, type IComputedValue } from "mobx";
 import type { TaskRow } from "@/data";
 import { addDays } from "@/data/logical-day";
 import type { TaskSection } from "@/tasks/list-ui";
@@ -66,14 +67,27 @@ export function scheduleHeading(date: string, today: string): string {
   return formatShortDateWithWeekday(date, today);
 }
 
+/** 行ごとの予定日の観測値。予定日が変わったときだけ知らせる（タイトルやメモを直しても知らせない） */
+const scheduledOnCache = new WeakMap<TaskRow, IComputedValue<string | null>>();
+
+function scheduledOnOf(row: TaskRow): string | null {
+  let value = scheduledOnCache.get(row);
+  if (!value) {
+    value = computed(() => row.scheduledOn);
+    scheduledOnCache.set(row, value);
+  }
+  return value.get();
+}
+
 /**
  * 予定の一覧（日付の順）を、日付ごとのまとまりにする。
- * 予定の日付はリストの並びに効く項目なので、変わればリストごと計算し直される。行は観測しない（peek）
+ * 予定日を変えても行の並びが変わらなければ、予定のリストは知らせてこない（同じ並びは同じものと見なす）。
+ * そのため予定日は行ごとに観測する。ただし予定日だけを見るので、タイトルの入力ではまとまりを計算し直さない
  */
 export function sectionsByDate(rows: readonly TaskRow[], today: string): TaskSection[] {
   const sections: { key: string; heading: string; rows: TaskRow[] }[] = [];
   for (const row of rows) {
-    const date = row.peek().scheduledOn ?? "";
+    const date = scheduledOnOf(row) ?? "";
     let section = sections.at(-1);
     if (section?.key !== date) {
       section = { key: date, heading: date === "" ? "" : scheduleHeading(date, today), rows: [] };

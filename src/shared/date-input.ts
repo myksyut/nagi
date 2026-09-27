@@ -5,7 +5,7 @@
  * - 曜日（「金」「金曜」「金曜日」）：今日より後で一番近いその曜日（今日が金曜なら来週の金曜）
  * - 今週・来週・再来週＋曜日（「来週月曜」「来週の月曜日」）：週は月曜始まり。今週の過ぎた曜日はそのまま過去の日付
  * - N日後・N週間後（「3日後」「2週間後」）
- * - 月/日（「10/3」「10月3日」）：今日以降で一番近いその日（今年のその日が過ぎていれば来年）
+ * - 月/日（「10/3」「10月3日」）：今日以降で一番近いその日（今年のその日が過ぎていれば来年。2/29 は次のうるう年）
  * - 日だけ（「15日」）：今日以降で一番近いその日（今月のその日が過ぎていれば来月）
  * - 年/月/日（「2026-10-03」「2026/10/3」「2026年10月3日」）
  * 全角の数字・記号と空白は吸収し、後ろの「まで」「までに」「に」と、表示の形の曜日「(月)」は読み飛ばす。
@@ -32,6 +32,9 @@ const WEEK_OFFSETS: Record<string, number> = { 今週: 0, 来週: 1, 再来週: 
 
 /** N日後・N週間後の N の上限（打ち間違いで遠い未来にしない） */
 const MAX_OFFSET_DAYS = 3660;
+
+/** うるう年の間隔の最大（2096 年の次は 2104 年） */
+const MAX_LEAP_GAP_YEARS = 8;
 
 function toUtc(year: number, month: number, day: number): Date {
   return new Date(Date.UTC(year, month - 1, day));
@@ -109,9 +112,12 @@ export function parseDateInput(input: string, today: string): string | null {
     const month = Number(monthDay[1] ?? monthDay[3]);
     const day = Number(monthDay[2] ?? monthDay[4]);
     const year = Number(today.slice(0, 4));
-    const thisYear = validDate(year, month, day);
-    if (thisYear !== null && thisYear >= today) return thisYear;
-    return validDate(year + 1, month, day);
+    // 今日以降で、その日がある一番近い年。2/29 は次のうるう年（2100 年のような世紀の年を挟むと 8 年あく）
+    for (let ahead = 0; ahead <= MAX_LEAP_GAP_YEARS; ahead++) {
+      const date = validDate(year + ahead, month, day);
+      if (date !== null && date >= today) return date;
+    }
+    return null;
   }
 
   const dayOfMonth = text.match(/^(\d{1,2})日$/);

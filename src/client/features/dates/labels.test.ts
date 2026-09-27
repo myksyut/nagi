@@ -1,5 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { computed, reaction } from "mobx";
+import { afterEach, describe, expect, it } from "vitest";
+import { AppStore } from "@/data";
+import { createMemoryLocalDb } from "@/data/local-db";
 import { TaskRow } from "@/data/rows";
+import { FakeServer } from "@/test/fake-server";
 import { makeTask } from "@/test/fixtures";
 import {
   daysBetween,
@@ -96,5 +100,71 @@ describe("sectionsByDate", () => {
 
   it("行が空なら、まとまりも空", () => {
     expect(sectionsByDate([], TODAY)).toEqual([]);
+  });
+});
+
+describe("sectionsByDate の計算し直し（予定の画面の見出し）", () => {
+  const stores: AppStore[] = [];
+  afterEach(() => {
+    for (const store of stores.splice(0)) store.dispose();
+  });
+
+  /** 予定のリストからまとまりを作る計算と、それが計算し直された回数 */
+  async function setup(tasks: { title: string; scheduledOn: string; rank: string }[]) {
+    const server = new FakeServer();
+    for (const task of tasks) server.putTask(makeTask({ ...task, bucket: "scheduled" }));
+    const store = new AppStore({
+      fetch: server.fetch,
+      openLocalDb: async () => createMemoryLocalDb(),
+    });
+    stores.push(store);
+    await store.start();
+    let runs = 0;
+    const sections = computed(() => {
+      runs++;
+      return sectionsByDate(store.lists.scheduled, TODAY);
+    });
+    const headings = () => sections.get().map((section) => section.heading);
+    const dispose = reaction(headings, () => {});
+    return { store, headings, runs: () => runs, dispose };
+  }
+
+  const idOf = (store: AppStore, title: string) =>
+    store.lists.scheduled.find((task) => task.title === title)?.id ?? "";
+
+  it("1件だけの予定日を変えると、見出しが変わる（行の並びは変わらない）", async () => {
+    const { store, headings, dispose } = await setup([
+      { title: "A", scheduledOn: "2026-10-05", rank: "a0" },
+    ]);
+    expect(headings()).toEqual(["10/5(月)"]);
+    store.actions.moveTasks([idOf(store, "A")], { bucket: "scheduled", on: "2026-10-06" });
+    expect(headings()).toEqual(["10/6(火)"]);
+    dispose();
+  });
+
+  it("並びが変わらない複数件で予定日を変えても、見出しが変わる", async () => {
+    const { store, headings, dispose } = await setup([
+      { title: "A", scheduledOn: "2026-10-05", rank: "a0" },
+      { title: "B", scheduledOn: "2026-10-07", rank: "a0" },
+    ]);
+    expect(headings()).toEqual(["10/5(月)", "10/7(水)"]);
+    store.actions.moveTasks([idOf(store, "A")], { bucket: "scheduled", on: "2026-10-06" });
+    expect(store.lists.scheduled.map((task) => task.title)).toEqual(["A", "B"]);
+    expect(headings()).toEqual(["10/6(火)", "10/7(水)"]);
+    dispose();
+  });
+
+  it("タイトルを直しただけでは、まとまりを計算し直さない", async () => {
+    const { store, runs, dispose } = await setup([
+      { title: "A", scheduledOn: "2026-10-05", rank: "a0" },
+      { title: "B", scheduledOn: "2026-10-07", rank: "a0" },
+    ]);
+    const before = runs();
+    store.actions.updateTask(idOf(store, "A"), { title: "A2" });
+    store.actions.updateTask(idOf(store, "B"), { memo: "メモ" });
+    expect(runs()).toBe(before);
+    store.actions.moveTasks([idOf(store, "B")], { bucket: "scheduled", on: "2026-10-08" });
+    expect(runs()).toBe(before + 1);
+    dispose();
   });
 });
