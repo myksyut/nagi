@@ -129,6 +129,21 @@ ssh -L 5317:localhost:5317 <M7 のホスト>
   api /api/sync '{"cursor":0,"baseCursor":0}'
   ```
 
+### 速さの確認
+
+技術計画の「速さの目安」は、本番に近いビルドを Mac のブラウザで開いて測る（開発サーバーは遅いので使わない）。
+
+```sh
+cp .dev.vars.example .dev.vars   # AUTH_DISABLED=true
+pnpm db:migrate:local
+pnpm build && pnpm preview       # http://localhost:5317（Mac からはポート転送で開く）
+node scripts/seed-local.mjs today100     # 今日に 100 件など
+node scripts/seed-local.mjs fill 20000   # 完了ログを足して、タスクを合計 2 万件に
+```
+
+- データは手元の D1 にだけ入れる（送り先は localhost の `/api/mutate`）
+- 起動の時間は、画面が付ける印 `nagi:local-loaded`・`nagi:list-ready`・`nagi:first-sync`（`src/client/startup-marks.ts`）を `performance.getEntriesByType("mark")` で読む。キーを押してから画面が変わるまでは、Event Timing API（`PerformanceObserver` の `event`）か、keydown から次のフレームまでを `requestAnimationFrame` で測る
+
 ## コマンド
 
 | コマンド | 内容 |
