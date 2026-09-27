@@ -18,7 +18,8 @@ import { useUi } from "./ui-context";
  */
 
 type Item =
-  | { type: "heading"; key: string; section: TaskSection }
+  /** first：一覧の最初の項目（上の余白を付けない） */
+  | { type: "heading"; key: string; section: TaskSection; first: boolean }
   | { type: "row"; key: string; task: TaskRow }
   | { type: "add"; key: string }
   | { type: "empty"; key: string }
@@ -73,7 +74,12 @@ export const TaskList = observer(function TaskList({
       items.push({ type: "fold", key: `fold:${section.key}`, section, open });
       if (!open) continue;
     } else if (section.heading && section.rows.length > 0) {
-      items.push({ type: "heading", key: `heading:${section.key}`, section });
+      items.push({
+        type: "heading",
+        key: `heading:${section.key}`,
+        section,
+        first: items.length === 0,
+      });
     }
     for (const task of section.rows) items.push({ type: "row", key: task.id, task });
     if (adding && view.addInSection === section.key) items.push({ type: "add", key: "add" });
@@ -123,8 +129,14 @@ function ItemView({ item, view, empty }: { item: Item; view: ListView; empty?: R
     case "empty":
       return <div className="py-14 text-center text-muted-foreground text-sm">{empty}</div>;
     case "heading":
+      // 見出しはそれぞれ別の動きの要素に包まれるので、first: ではなく一覧の中の位置で上の余白を決める
       return (
-        <h2 className="mt-6 mb-1 px-2.5 font-medium text-muted-foreground text-xs first:mt-0">
+        <h2
+          className={cn(
+            "mb-1 px-2.5 font-medium text-muted-foreground text-xs",
+            !item.first && "mt-6",
+          )}
+        >
           {item.section.heading}
         </h2>
       );

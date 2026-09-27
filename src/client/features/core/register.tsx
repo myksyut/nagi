@@ -3,17 +3,11 @@ import { observer } from "mobx-react-lite";
 import { type KeyBinding, type KeyContext, registerKeyBindings } from "@/keyboard/keymap";
 import { BUCKET_LISTS, LOGBOOK } from "@/navigation";
 import { deleteTasks, moveTasks, toggleComplete, undo } from "@/tasks/commands";
-import {
-  DETAIL_ORDER,
-  ROW_META_ORDER,
-  registerDetailField,
-  registerRowMeta,
-  type TaskSlotProps,
-} from "@/tasks/extensions";
-import { chipClassName, titleInputId } from "@/tasks/task-detail";
+import { ROW_META_ORDER, registerRowMeta, type TaskSlotProps } from "@/tasks/extensions";
+import { titleInputId } from "@/tasks/task-detail";
 
 /**
- * 4 の登録：毎日の流れのキー、行の右側の「メモの印」、開いたタスクの「いつやる」の表示。
+ * 4 の登録：毎日の流れのキーと、行の右側の「メモの印」。
  * 5・6 も同じ形で、features/<名前>/register.ts(x) から登録する
  */
 
@@ -163,25 +157,4 @@ const MemoMark = observer(function MemoMark({ task }: TaskSlotProps) {
 
 registerRowMeta({ id: "memo", order: ROW_META_ORDER.memo, Component: MemoMark });
 
-const BUCKET_LABELS = {
-  inbox: "受信箱",
-  today: "今日",
-  scheduled: "予定",
-  later: "あとで",
-} as const;
-
-/** 開いたタスクの一番下の列：いつやる（表示だけ。変えるのは t・l、日付は 5 の d） */
-const WhenChip = observer(function WhenChip({ task }: TaskSlotProps) {
-  return (
-    <span className={chipClassName}>
-      {task.completedAt !== null ? "完了" : BUCKET_LABELS[task.bucket]}
-    </span>
-  );
-});
-
-registerDetailField({
-  id: "when",
-  placement: "chip",
-  order: DETAIL_ORDER.when,
-  Component: WhenChip,
-});
+// 開いたタスクの「いつやる」の小さなボタンは、日付と一緒に features/dates で登録する
