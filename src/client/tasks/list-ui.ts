@@ -67,6 +67,12 @@ export type ListView = {
   addInSection?: string;
   /** ↓ で一番下の行より先へ進もうとしたとき（完了ログの続きを読み込むなど） */
   onReachEnd?: () => void;
+  /** ↑ で一番上の行より先へ進もうとしたとき（完了ログの窓より新しい側を読み込む） */
+  onReachStart?: () => void;
+  /**
+   * 描く範囲が飛んだとき（完了ログの窓の始まりが変わったとき）に変わる値。変わると、行の動きなしで一覧を描き直す
+   */
+  layoutKey?: () => string;
   /** そのタスクの行を一覧に出す（⌘K の検索で選んだとき。完了ログの続きを読み込むなど） */
   reveal?: (taskId: string) => void;
 };
@@ -296,10 +302,17 @@ export class ListUi {
   moveSelection(delta: number): void {
     let rows = this.rows;
     if (rows.length === 0) return;
-    const index = this.selectedId === null ? -1 : rows.findIndex((r) => r.id === this.selectedId);
+    const indexOfSelected = () =>
+      this.selectedId === null ? -1 : rows.findIndex((r) => r.id === this.selectedId);
+    let index = indexOfSelected();
     if (delta > 0 && index === rows.length - 1 && this.view?.onReachEnd) {
       this.view.onReachEnd();
       rows = this.rows;
+    } else if (delta < 0 && index === 0 && this.view?.onReachStart) {
+      // 上に行が足されると、選んでいる行の位置も変わる
+      this.view.onReachStart();
+      rows = this.rows;
+      index = indexOfSelected();
     }
     let next: number;
     if (index < 0) next = delta > 0 ? 0 : rows.length - 1;

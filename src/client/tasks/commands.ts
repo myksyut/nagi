@@ -1,6 +1,6 @@
 import { MAX_MUTATIONS_PER_BATCH } from "@shared/mutations";
 import { runInAction } from "mobx";
-import type { OperationResult, TaskRow } from "@/data";
+import type { OperationFailure, OperationResult, TaskRow } from "@/data";
 import type { ListUi } from "./list-ui";
 import { planDrop, planStep } from "./reorder";
 
@@ -47,9 +47,36 @@ export type TaskOperation = {
    * false なら、一覧から抜けたときだけ移す
    */
   advance?: boolean;
-  /** 「元に戻す」付きのトーストの文言。left は一覧から抜けた行の id。返さなければ出さない */
-  toast?: (left: readonly string[]) => string | undefined;
+  /**
+   * 「元に戻す」付きのトーストの文言。left は一覧から抜けた行の id、changed は実際に変えたタスクの id
+   * （変えるものがなかった行や、同じ操作で作ったプロジェクトは入らない）。返さなければ出さない
+   */
+  toast?: (left: readonly string[], changed: readonly string[]) => string | undefined;
 };
+
+/**
+ * 受け付けられなかった操作を知らせる。黙って何も起きないように見えないようにするため。
+ * 変えるものがなかった（noop）ときは知らせない。オフライン・ログインが切れた・版が古いは、それぞれの知らせ
+ * （上部の帯、ログイン画面、新しいバージョン）が受け持つ
+ */
+function notifyFailure(ui: ListUi, reason: OperationFailure): void {
+  switch (reason) {
+    case "too-many":
+      // プロジェクトの作成と付けるのを合わせると上限を超える、など
+      ui.toaster.error(TOO_MANY_MESSAGE);
+      return;
+    case "invalid":
+      // 並び順キーが長くなりすぎた（同じ隙間へ入れ続けた）など
+      ui.toaster.error("保存できませんでした");
+      return;
+    case "noop":
+    case "offline":
+    case "stopped":
+    case "has-open-tasks":
+    case "nothing-to-undo":
+      return;
+  }
+}
 
 export function runTaskOperation(ui: ListUi, operation: TaskOperation): OperationResult {
   const { ids, perform, advance = false, toast } = operation;
@@ -58,19 +85,20 @@ export function runTaskOperation(ui: ListUi, operation: TaskOperation): Operatio
   const next = ui.neighborAfter(ids);
   const result = perform();
   if (!result.ok) {
-    // プロジェクトの作成と付けるのを合わせると上限を超える、など
-    if (result.reason === "too-many") ui.toaster.error(TOO_MANY_MESSAGE);
+    notifyFailure(ui, result.reason);
     return result;
   }
   const visible = new Set(ui.rows.map((row) => row.id));
   const left = ids.filter((id) => !visible.has(id));
+  const targets = new Set(ids);
+  const changed = result.ids.filter((id) => targets.has(id));
   runInAction(() => {
     const moves = (id: string | null) =>
       id !== null && ids.includes(id) && (advance || !visible.has(id));
     if (moves(ui.openId)) ui.close();
     if (moves(selectedBefore)) ui.select(next);
   });
-  const message = toast?.(left);
+  const message = toast?.(left, changed);
   if (message) ui.toaster.undoable(message, result.operationId, () => undo(ui));
   return result;
 }
@@ -82,24 +110,33 @@ function rowsOf(ui: ListUi, ids: readonly string[]): TaskRow[] {
   });
 }
 
-/** トーストの対象の書き方：1件ならタイトル、複数なら件数 */
-function subject(ui: ListUi, ids: readonly string[]): string {
-  if (ids.length === 1) return `「${ui.store.task(ids[0] ?? "")?.title ?? ""}」`;
-  return `${ids.length}件`;
+/**
+ * トーストの対象の書き方。2件以上をまとめて変えたら、一覧に残っていても件数（「3件」）。
+ * 1件なら、一覧から抜けたときだけタイトル（「「請求書の確認」」）。残っているときは出さない（undefined）
+ */
+export function toastSubject(
+  ui: ListUi,
+  left: readonly string[],
+  changed: readonly string[],
+): string | undefined {
+  if (changed.length >= 2) return `${changed.length}件`;
+  const id = left[0];
+  if (id === undefined) return undefined;
+  return left.length === 1 ? `「${ui.store.task(id)?.title ?? ""}」` : `${left.length}件`;
 }
 
-/** 完了。今日以外のリストで完了したら「完了しました・元に戻す」 */
+/** 完了。今日以外のリストで完了したら「完了しました・元に戻す」。2件以上なら今日でも「3件を完了しました」 */
 export function completeTasks(ui: ListUi, ids: readonly string[]): OperationResult {
   return runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.completeTasks(ids),
     advance: true,
-    toast: () =>
-      ui.view?.kind === "today"
-        ? undefined
-        : ids.length === 1
-          ? "完了しました"
-          : `${ids.length}件を完了しました`,
+    toast: (_, changed) =>
+      changed.length >= 2
+        ? `${changed.length}件を完了しました`
+        : ui.view?.kind === "today"
+          ? undefined
+          : "完了しました",
   });
 }
 
@@ -108,7 +145,10 @@ export function uncompleteTasks(ui: ListUi, ids: readonly string[]): OperationRe
   return runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.uncompleteTasks(ids),
-    toast: (left) => (left.length > 0 ? `${subject(ui, left)}を今日に戻しました` : undefined),
+    toast: (left, changed) => {
+      const subject = toastSubject(ui, left, changed);
+      return subject === undefined ? undefined : `${subject}を今日に戻しました`;
+    },
   });
 }
 
@@ -125,7 +165,7 @@ export function toggleComplete(ui: ListUi, ids: readonly string[]): OperationRes
 
 const BUCKET_NAMES = { inbox: "受信箱", today: "今日", later: "あとで" } as const;
 
-/** 振り分け（t：今日の一番下へ、l：あとでへ）。一覧から抜けたら「今日へ・元に戻す」 */
+/** 振り分け（t：今日の一番下へ、l：あとでへ）。一覧から抜けたら（2件以上なら残っていても）「今日へ・元に戻す」 */
 export function moveTasks(
   ui: ListUi,
   ids: readonly string[],
@@ -134,8 +174,10 @@ export function moveTasks(
   return runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.moveTasks(ids, { bucket }),
-    toast: (left) =>
-      left.length > 0 ? `${subject(ui, left)}を${BUCKET_NAMES[bucket]}へ` : undefined,
+    toast: (left, changed) => {
+      const subject = toastSubject(ui, left, changed);
+      return subject === undefined ? undefined : `${subject}を${BUCKET_NAMES[bucket]}へ`;
+    },
   });
 }
 
@@ -182,7 +224,8 @@ export function deleteTasks(ui: ListUi, ids: readonly string[]): OperationResult
   return runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.deleteTasks(ids),
-    toast: () => (ids.length === 1 ? "削除しました" : `${ids.length}件を削除しました`),
+    toast: (_, changed) =>
+      changed.length >= 2 ? `${changed.length}件を削除しました` : "削除しました",
   });
 }
 

@@ -1,6 +1,6 @@
 import { reaction } from "mobx";
 import type { AppStore, Notice, OperationResult, ProjectRow } from "@/data";
-import { runTaskOperation, undo } from "@/tasks/commands";
+import { runTaskOperation, toastSubject, undo } from "@/tasks/commands";
 import type { ListUi } from "@/tasks/list-ui";
 import { projectNameDraftsOf } from "./name-drafts";
 
@@ -15,11 +15,6 @@ export function normalizeName(name: string): string {
   return name.normalize("NFKC").trim().toLowerCase();
 }
 
-function subject(ui: ListUi, ids: readonly string[]): string {
-  if (ids.length === 1) return `「${ui.store.task(ids[0] ?? "")?.title ?? ""}」`;
-  return `${ids.length}件`;
-}
-
 /** タスクにプロジェクトを付ける・外す（null） */
 export function setTaskProject(
   ui: ListUi,
@@ -29,12 +24,13 @@ export function setTaskProject(
   return runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.setProject(ids, projectId),
-    toast: (left) => {
-      if (left.length === 0) return undefined;
+    toast: (left, changed) => {
+      const subject = toastSubject(ui, left, changed);
+      if (subject === undefined) return undefined;
       const name = projectId === null ? undefined : ui.store.project(projectId)?.name;
       return name === undefined
-        ? `${subject(ui, left)}のプロジェクトを外しました`
-        : `${subject(ui, left)}を「${name}」へ`;
+        ? `${subject}のプロジェクトを外しました`
+        : `${subject}を「${name}」へ`;
     },
   });
 }
@@ -48,7 +44,10 @@ export function createProjectFor(
   return runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.createProject(name, ids),
-    toast: (left) => (left.length > 0 ? `${subject(ui, left)}を「${name.trim()}」へ` : undefined),
+    toast: (left, changed) => {
+      const subject = toastSubject(ui, left, changed);
+      return subject === undefined ? undefined : `${subject}を「${name.trim()}」へ`;
+    },
   });
 }
 

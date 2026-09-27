@@ -8,26 +8,59 @@ import { TaskList } from "@/tasks/task-list";
 import { useListView } from "@/tasks/ui-context";
 import { ListScreen } from "./list-screen";
 
-/** 一度に描く完了ログの行数。続きは「さらに表示」か、一番下で ↓ を押すと読み込む */
+/**
+ * 一度に描く完了ログの行数。続きは「さらに表示」か、一番下で ↓ を押すと読み込む。
+ * ⌘K の検索で深い位置のタスクを選んだときは、そのタスクを含むこの行数ほどの窓だけを描き、
+ * 窓より新しい側は「新しい完了を表示」か、一番上で ↑ を押すと読み込む（2 万件目へ飛んでも 2 万行は描かない）
+ */
 export const LOGBOOK_PAGE_SIZE = 200;
+
+/** 描く範囲。新しい順に数えた行の [start, end) */
+export type LogbookWindow = { start: number; end: number };
 
 /** 続きを表示したときの上限。全部表示していたら増やさない（一番下で ↓ を押し続けても計算し直さない） */
 export function nextLogbookLimit(limit: number, total: number): number {
   return limit >= total ? limit : limit + LOGBOOK_PAGE_SIZE;
 }
 
+/** 窓より新しい側を1ページぶん足したときの start（先頭まで出ていれば 0 のまま） */
+export function previousLogbookStart(start: number): number {
+  return Math.max(0, start - LOGBOOK_PAGE_SIZE);
+}
+
+/**
+ * index 番目の行を描く窓。今の窓に入っていれば今の窓のまま。入っていなければ、その行が真ん中あたりに来る
+ * 1ページぶんの窓にする（一番古い側では、終わりまで1ページぶん）
+ */
+export function logbookWindowFor(
+  current: LogbookWindow,
+  index: number,
+  total: number,
+): LogbookWindow {
+  if (index < 0 || (index >= current.start && index < current.end)) return current;
+  const start = Math.max(0, Math.min(index - LOGBOOK_PAGE_SIZE / 2, total - LOGBOOK_PAGE_SIZE));
+  return { start, end: start + LOGBOOK_PAGE_SIZE };
+}
+
 function countRows(days: readonly LogbookDay[]): number {
   return days.reduce((sum, day) => sum + day.tasks.length, 0);
 }
 
-/** 完了した日ごとに新しい順の見出しつきのまとまりを、先頭から limit 行ぶん */
-function logbookSections(days: readonly LogbookDay[], limit: number, today: string): TaskSection[] {
+/** 完了した日ごとに新しい順の見出しつきのまとまりのうち、[start, end) 行目だけ（窓にかかる日の見出しは出す） */
+function logbookSections(
+  days: readonly LogbookDay[],
+  { start, end }: LogbookWindow,
+  today: string,
+): TaskSection[] {
   const sections: TaskSection[] = [];
-  let remaining = limit;
+  let offset = 0;
   for (const day of days) {
-    if (remaining <= 0) break;
-    const rows = day.tasks.length <= remaining ? day.tasks : day.tasks.slice(0, remaining);
-    remaining -= rows.length;
+    if (offset >= end) break;
+    const from = Math.max(start - offset, 0);
+    const to = Math.min(end - offset, day.tasks.length);
+    offset += day.tasks.length;
+    if (from >= to) continue;
+    const rows = from === 0 && to === day.tasks.length ? day.tasks : day.tasks.slice(from, to);
     sections.push({ key: day.date, heading: formatDayHeading(day.date, today), rows });
   }
   return sections;
@@ -39,42 +72,55 @@ function logbookSections(days: readonly LogbookDay[], limit: number, today: stri
  */
 export const LogbookScreen = observer(function LogbookScreen() {
   const store = useStore();
-  const [limit] = useState(() => observable.box(LOGBOOK_PAGE_SIZE));
+  const [range] = useState(() =>
+    observable.box<LogbookWindow>({ start: 0, end: LOGBOOK_PAGE_SIZE }, { deep: false }),
+  );
   const showMore = () =>
     runInAction(() => {
-      const next = nextLogbookLimit(limit.get(), countRows(store.lists.logbook));
-      if (next !== limit.get()) limit.set(next);
+      const { start, end } = range.get();
+      const next = nextLogbookLimit(end, countRows(store.lists.logbook));
+      if (next !== end) range.set({ start, end: next });
     });
-  // ⌘K の検索で選んだタスクがまだ描いていない続きにあれば、そこまで読み込む
+  const showNewer = () =>
+    runInAction(() => {
+      const { start, end } = range.get();
+      if (start > 0) range.set({ start: previousLogbookStart(start), end });
+    });
+  // ⌘K の検索で選んだタスクが描いていないところにあれば、そのタスクを含む窓に移す
   const reveal = (taskId: string) =>
     runInAction(() => {
-      const index = store.lists.logbook
-        .flatMap((day) => day.tasks)
-        .findIndex((task) => task.id === taskId);
-      if (index >= limit.get()) {
-        limit.set(Math.ceil((index + 1) / LOGBOOK_PAGE_SIZE) * LOGBOOK_PAGE_SIZE);
-      }
+      const rows = store.lists.logbook.flatMap((day) => day.tasks);
+      const index = rows.findIndex((task) => task.id === taskId);
+      const next = logbookWindowFor(range.get(), index, rows.length);
+      if (next !== range.get()) range.set(next);
     });
   const view = useListView(() => ({
     key: "logbook",
     kind: "logbook",
-    sections: () => logbookSections(store.lists.logbook, limit.get(), store.today),
+    sections: () => logbookSections(store.lists.logbook, range.get(), store.today),
     addTo: { bucket: "inbox", label: "受信箱に追加" },
     onReachEnd: showMore,
+    onReachStart: showNewer,
     reveal,
+    // 窓の始まりが変わったら、行の動きなしで描き直す（上に足した行の分だけ、残りの行が動いて見えないように）
+    layoutKey: () => String(range.get().start),
   }));
   const total = countRows(store.lists.logbook);
-  const hidden = total - limit.get();
+  const { start, end } = range.get();
+  const hidden = total - end;
+  const buttonClassName =
+    "rounded-md px-2.5 py-1 text-muted-foreground text-sm hover:text-foreground";
 
   return (
     <ListScreen title="完了ログ">
+      {start > 0 && (
+        <button type="button" className={`mt-4 ${buttonClassName}`} onClick={showNewer}>
+          新しい完了を表示（ほかに {start} 件）
+        </button>
+      )}
       <TaskList view={view} label="完了ログ" empty={<p>完了したタスクはまだありません</p>} />
       {hidden > 0 && (
-        <button
-          type="button"
-          className="mt-4 rounded-md px-2.5 py-1 text-muted-foreground text-sm hover:text-foreground"
-          onClick={showMore}
-        >
+        <button type="button" className={`mt-4 ${buttonClassName}`} onClick={showMore}>
           さらに表示（残り {hidden} 件）
         </button>
       )}

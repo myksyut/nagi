@@ -58,8 +58,13 @@ export function locationOf(store: AppStore, task: TaskRow): TaskLocation {
 type Normalized = { title: string; memo: string; normalizedTitle: string; normalizedMemo: string };
 const normalizedCache = new WeakMap<TaskRow, Normalized>();
 
+/**
+ * タイトルとメモは観測して読む（⌘K を開いたまま同期でタイトルやメモが変わったら、結果を作り直す。
+ * 置き場の区分はタイトルやメモの変更を知らせないため）
+ */
 function normalizedOf(row: TaskRow): Normalized {
-  const { title, memo } = row.peek();
+  const title = row.title;
+  const memo = row.memo;
   const cached = normalizedCache.get(row);
   if (cached && cached.title === title && cached.memo === memo) return cached;
   const next = {

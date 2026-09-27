@@ -99,12 +99,17 @@ function setCountImage(event: DragEvent, count: number): void {
 export function startRowDrag(ui: ListUi, task: TaskRow, event: DragEvent): void {
   let rows: readonly TaskRow[];
   if (ui.isSelected(task.id) && ui.selectedIds.length > 1) {
+    // 500 件の判定は、未完了に絞る前の選んだ件数で（キーの操作と同じ決まり）
+    if (!withinBulkLimit(ui, ui.selectedRows.length)) {
+      event.preventDefault();
+      return;
+    }
     rows = openRowsOf(ui.selectedRows);
   } else {
     ui.select(task.id);
     rows = [task];
   }
-  if (rows.length === 0 || !withinBulkLimit(ui, rows.length)) {
+  if (rows.length === 0) {
     event.preventDefault();
     return;
   }

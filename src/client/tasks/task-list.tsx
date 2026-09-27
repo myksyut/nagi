@@ -108,7 +108,8 @@ export const TaskList = observer(function TaskList({
         "[&:focus-visible:not([aria-activedescendant])]:ring-2 [&:focus-visible:not([aria-activedescendant])]:ring-ring/60 [&:focus-visible:not([aria-activedescendant])]:ring-offset-4 [&:focus-visible:not([aria-activedescendant])]:ring-offset-background",
       )}
     >
-      <AnimatePresence initial={false} mode="popLayout">
+      {/* 描く範囲が飛んだら（完了ログの窓）作り直して、行の動きを出さない */}
+      <AnimatePresence key={view.layoutKey?.() ?? "list"} initial={false} mode="popLayout">
         {items.map((item) => (
           <motion.div
             key={item.key}

@@ -6,7 +6,11 @@ import { generateKeyBetween, generateNKeysBetween } from "fractional-indexing";
  */
 
 const RANK_PATTERN = /^[0-9A-Za-z]+$/;
-export const MAX_RANK_LENGTH = 128;
+/**
+ * 並び順キーの長さの上限（画面とサーバーで共通）。同じ2行のあいだへ別々の行を入れ続けると、
+ * 6 回ほどで 1 文字ずつ伸びる（128 文字では 757 回目で届いた）。振り直しはしないので、長めにとる
+ */
+export const MAX_RANK_LENGTH = 1024;
 
 /** 並び順キーとして正しい形か（サーバーで保存する前にも確かめる） */
 export function isValidRank(rank: string): boolean {
