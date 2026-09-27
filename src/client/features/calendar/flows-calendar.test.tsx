@@ -5,7 +5,7 @@ import type { AppStore } from "@/data";
 import { FakeServer } from "@/test/fake-server";
 import { makeProject, makeTask } from "@/test/fixtures";
 import { setupApp } from "@/test/render-app";
-import { CELL_CAPACITY } from "./calendar-screen";
+import { CELL_CAPACITY } from "./model";
 
 /**
  * チケット13：カレンダー（features/calendar）。チケットの「完了の条件」ごとに describe を分ける。
@@ -513,5 +513,219 @@ describe("完了の条件6：その他（6・[ ]・⌘K）", () => {
       "追加（カレンダー・タイムライン）{Enter}",
     );
     expect(await screen.findByRole("textbox", { name: "受信箱に追加" })).toBeInTheDocument();
+  });
+});
+
+// --- 13-修正1（レビューの指摘） ------------------------------------------------------------------
+
+/** 9/30 に予定を5件（T1〜T5。T5 が一番下で「ほか 3 件」に隠れる）置いて開き、「ほか 3 件」の一覧から T5 の詳細を開く */
+async function openHiddenFromMore(server = new FakeServer()) {
+  const tasks = ["T1", "T2", "T3", "T4", "T5"].map((title, i) =>
+    server.putTask(
+      makeTask({ title, bucket: "scheduled", scheduledOn: "2026-09-30", rank: `a${i}` }),
+    ),
+  );
+  const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+  const opened = await openCalendar(server);
+  await user.click(within(cell("2026-09-30")).getByRole("button", { name: "ほか 3 件" }));
+  const list = await screen.findByRole("dialog", { name: /のタスク$/ });
+  await user.click(within(list).getByRole("button", { name: "T5" }));
+  expect(await screen.findByRole("dialog", { name: "「T5」の詳細" })).toBeInTheDocument();
+  const t5 = tasks[4];
+  if (!t5) throw new Error("T5 がありません");
+  return { ...opened, user, t5 };
+}
+
+describe("13-修正1：「ほか N 件」から開いた詳細は、タスクを追う", () => {
+  it("別の日へ移って見えるようになったら、移った先のタスクから開き直す（元の日の「ほか N 件」に付いたままにしない）", async () => {
+    const { store, t5 } = await openHiddenFromMore();
+
+    act(() => {
+      store.actions.moveTasks([t5.id], { bucket: "scheduled", on: "2026-10-02" });
+    });
+
+    // 元の日はまだ4件あり「ほか N 件」が残るが、詳細は移った先のタスクに付く
+    expect(
+      within(cell("2026-09-30")).getByRole("button", { name: "ほか 2 件" }),
+    ).toBeInTheDocument();
+    const moved = within(cell("2026-10-02")).getByRole("button", { name: "T5" });
+    await waitFor(() => expect(moved).toHaveClass("row-selected"));
+    expect(screen.getByRole("dialog", { name: "「T5」の詳細" })).toBeInTheDocument();
+  });
+
+  it("移った先の日でも「ほか N 件」に隠れたら、その日の「ほか N 件」に付く", async () => {
+    const server = new FakeServer();
+    for (const [i, title] of ["U1", "U2", "U3"].entries()) {
+      server.putTask(
+        makeTask({ title, bucket: "scheduled", scheduledOn: "2026-10-02", rank: `a${i + 5}` }),
+      );
+    }
+    const { store, t5 } = await openHiddenFromMore(server);
+
+    act(() => {
+      // 予定の一番下に入るので、10/2 の4件目になって「ほか 2 件」に隠れる
+      store.actions.moveTasks([t5.id], { bucket: "scheduled", on: "2026-10-02" });
+    });
+
+    const more = within(cell("2026-10-02")).getByRole("button", { name: "ほか 2 件" });
+    await waitFor(() => expect(more).toHaveAttribute("data-anchored"));
+    expect(
+      within(cell("2026-09-30")).getByRole("button", { name: "ほか 2 件" }),
+    ).not.toHaveAttribute("data-anchored");
+    expect(screen.getByRole("dialog", { name: "「T5」の詳細" })).toBeInTheDocument();
+  });
+
+  it("完了してカレンダーから消えたら閉じる（元の日の「ほか N 件」が残っていても）", async () => {
+    const { store, t5 } = await openHiddenFromMore();
+
+    act(() => {
+      store.actions.completeTasks([t5.id]);
+    });
+
+    expect(
+      within(cell("2026-09-30")).getByRole("button", { name: "ほか 2 件" }),
+    ).toBeInTheDocument();
+    await waitFor(() => expect(screen.queryByRole("dialog", { name: "「T5」の詳細" })).toBeNull());
+  });
+});
+
+describe("13-修正1：カレンダーのドラッグの後始末（元のチップの dragend に頼らない）", () => {
+  /** ドラッグの状態が残っていないこと：半透明のチップがなく、つかまずにマスへ落としても何も変わらない */
+  async function expectNoDragLeft(store: AppStore, taskId: string) {
+    expect(document.querySelector("[data-calendar-entry].opacity-50")).toBeNull();
+    const before = { ...store.task(taskId)?.peek() };
+    // 9月の表の最後の日（8/30〜10/3）
+    fireEvent.drop(cell("2026-10-03"));
+    await act(async () => {});
+    expect(store.task(taskId)?.bucket).toBe(before.bucket);
+    expect(store.task(taskId)?.scheduledOn).toBe(before.scheduledOn);
+  }
+
+  it.each([
+    ["今日", "today"],
+    ["あとで", "later"],
+  ] as const)(
+    "サイドバーの「%s」へ落としたあと（元のチップがマスから消える）",
+    async (label, bucket) => {
+      const server = new FakeServer();
+      const task = server.putTask(
+        makeTask({ title: "予定X", bucket: "scheduled", scheduledOn: "2026-10-01" }),
+      );
+      const { store } = await openCalendar(server);
+
+      const chip = within(cell("2026-10-01")).getByRole("button", { name: "予定X" });
+      fireEvent.dragStart(chip);
+      const nav = screen.getByRole("navigation", { name: "リスト" });
+      fireEvent.drop(within(nav).getByRole("link", { name: new RegExp(`^${label}`) }));
+      // 元のチップは消えるので、dragend は届かない（送らない）
+      await waitFor(() => expect(store.task(task.id)?.bucket).toBe(bucket));
+
+      await expectNoDragLeft(store, task.id);
+    },
+  );
+
+  it("サイドバーのプロジェクトへ落としたあと", async () => {
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ name: "P1" }));
+    const task = server.putTask(
+      makeTask({ title: "予定Y", bucket: "scheduled", scheduledOn: "2026-10-01" }),
+    );
+    const { store } = await openCalendar(server);
+
+    fireEvent.dragStart(within(cell("2026-10-01")).getByRole("button", { name: "予定Y" }));
+    const nav = screen.getByRole("navigation", { name: "リスト" });
+    fireEvent.drop(within(nav).getByRole("link", { name: /^P1/ }));
+    await waitFor(() => expect(store.task(task.id)?.projectId).toBe(project.id));
+
+    await expectNoDragLeft(store, task.id);
+  });
+
+  it("落とせないところへ落としたあと", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "予定Z", bucket: "scheduled", scheduledOn: "2026-10-01" }),
+    );
+    const { store } = await openCalendar(server);
+
+    fireEvent.dragStart(within(cell("2026-10-01")).getByRole("button", { name: "予定Z" }));
+    fireEvent.drop(document.body);
+
+    await expectNoDragLeft(store, task.id);
+  });
+
+  it("やめたあと（Esc など。元のチップに dragend が届く）", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "予定W", bucket: "scheduled", scheduledOn: "2026-10-01" }),
+    );
+    const { store } = await openCalendar(server);
+
+    const chip = within(cell("2026-10-01")).getByRole("button", { name: "予定W" });
+    fireEvent.dragStart(chip);
+    fireEvent.dragEnd(chip);
+
+    await expectNoDragLeft(store, task.id);
+  });
+});
+
+describe("13-修正1：小さな追加欄を閉じたときのフォーカス", () => {
+  it("タスクにフォーカスして n で開き、Esc で閉じると、そのタスクへ戻る", async () => {
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "予定F", bucket: "scheduled", scheduledOn: "2026-10-01" }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await openCalendar(server);
+
+    const chip = within(cell("2026-10-01")).getByRole("button", { name: "予定F" });
+    act(() => chip.focus());
+    await user.keyboard("n");
+    await waitFor(() =>
+      expect(document.activeElement).toBe(screen.getByRole("textbox", { name: "受信箱に追加" })),
+    );
+    await user.keyboard("{Escape}");
+
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "受信箱に追加" })).toBeNull());
+    expect(document.activeElement).toBe(chip);
+  });
+
+  it("右下の「＋」をもう一度押して閉じると、「＋」にフォーカスが置かれる", async () => {
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await openCalendar();
+
+    const fab = screen.getByRole("button", { name: "タスクを追加" });
+    await user.click(fab);
+    await screen.findByRole("textbox", { name: "受信箱に追加" });
+    await user.click(fab);
+
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "受信箱に追加" })).toBeNull());
+    expect(document.activeElement).toBe(fab);
+  });
+});
+
+describe("13-修正1：絞り込んでいたプロジェクトをアーカイブしたら、絞り込みは「すべて」に戻る", () => {
+  it("あとでアーカイブを解除しても、絞り込みは「すべて」のまま", async () => {
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ name: "P1" }));
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { store } = await openCalendar(server);
+
+    await user.click(
+      screen.getByRole("button", { name: "プロジェクトで絞り込む：すべてのプロジェクト" }),
+    );
+    await user.click(await screen.findByRole("menuitemradio", { name: "P1" }));
+    expect(screen.getByRole("button", { name: "プロジェクトで絞り込む：P1" })).toBeInTheDocument();
+
+    act(() => {
+      store.actions.updateProject(project.id, { archivedAt: new Date().toISOString() });
+    });
+    expect(
+      screen.getByRole("button", { name: "プロジェクトで絞り込む：すべてのプロジェクト" }),
+    ).toBeInTheDocument();
+
+    act(() => {
+      store.actions.updateProject(project.id, { archivedAt: null });
+    });
+    expect(
+      screen.getByRole("button", { name: "プロジェクトで絞り込む：すべてのプロジェクト" }),
+    ).toBeInTheDocument();
   });
 });

@@ -38,7 +38,9 @@ import {
   CalendarModel,
   effectiveFilter,
   entriesInOrder,
+  locateEntry,
   monthWeeks,
+  shownCount,
 } from "./model";
 import { type CalendarDrag, calendarOf, monthOf, type ProjectFilter } from "./state";
 
@@ -58,9 +60,6 @@ import { type CalendarDrag, calendarOf, monthOf, type ProjectFilter } from "./st
  */
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"] as const;
-
-/** 1つのマスに出す行の数（超えたら、この数から1つ減らして「ほか N 件」を出す） */
-export const CELL_CAPACITY = 3;
 
 function monthLabel(month: string): string {
   return `${Number(month.slice(0, 4))}年${Number(month.slice(5, 7))}月`;
@@ -107,7 +106,8 @@ export const CalendarScreen = observer(function CalendarScreen({
       ),
     [ui, state, store],
   );
-  useFollowDetailAnchor(ui, grid, store.loaded);
+  useFollowDetailAnchor(ui, grid, model, store.loaded);
+  useEndDragAnywhere(ui);
 
   const today = store.today;
   const month = state.shownMonth(today);
@@ -303,8 +303,8 @@ const DayCell = observer(function DayCell({
   const state = calendarOf(ui);
   const [over, setOver] = useState(false);
   const entries = entriesInOrder(model.entriesOn(date));
-  const overflow = entries.length > CELL_CAPACITY;
-  const shown = overflow ? entries.slice(0, CELL_CAPACITY - 1) : entries;
+  const shown = entries.slice(0, shownCount(entries.length));
+  const overflow = shown.length < entries.length;
   const isToday = date === today;
   const past = date < today;
   const inMonth = monthOf(date) === month;
@@ -406,12 +406,19 @@ const DayAddButton = observer(function DayAddButton({
 const MoreButton = observer(function MoreButton({ date, count }: { date: string; count: number }) {
   const ui = useUi();
   const state = calendarOf(ui);
+  const self = useRef<HTMLButtonElement>(null);
+  // 隠れているタスクの小さな詳細が、ここから開いているあいだ（先に詳細の状態を読んで観測する。
+  // 最初の描画では要素がまだないので、あとから付いたときに描き直せるように）
+  const detailAnchor = taskDetailPopoverOf(ui).request?.anchor;
+  const anchored = detailAnchor !== undefined && detailAnchor === self.current;
   return (
     <button
+      ref={self}
       type="button"
       data-calendar-entry={`more:${date}`}
+      data-anchored={anchored || undefined}
       aria-expanded={state.dayList === date}
-      className="self-start rounded-[5px] px-1.5 text-[11.5px] text-faint-foreground leading-[18px] outline-none hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+      className="self-start rounded-[5px] px-1.5 text-[11.5px] text-faint-foreground leading-[18px] outline-none hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring data-anchored:bg-accent data-anchored:text-foreground"
       onClick={() => {
         if (state.dayList === date) state.closeDayList();
         else state.openDayList(date);
@@ -448,13 +455,17 @@ const EntryChip = observer(function EntryChip({
   const color = projectId === null ? undefined : projectColorOf(store, projectId);
   const self = useRef<HTMLDivElement>(null);
   const dragging = state.drag?.taskId === task.id && state.drag.kind === kind;
-  // 小さな詳細をこの要素から開いているあいだは、選んだ行と同じ光で示す
-  const open = self.current !== null && taskDetailPopoverOf(ui).request?.anchor === self.current;
+  // 小さな詳細をこの要素から開いているあいだは、選んだ行と同じ光で示す（先に詳細の状態を読んで観測する。
+  // 最初の描画では要素がまだないので、あとから付いたときに描き直せるように）
+  const detailAnchor = taskDetailPopoverOf(ui).request?.anchor;
+  const open = detailAnchor !== undefined && detailAnchor === self.current;
   const deadline = kind === "deadline";
   const overdue = deadline && (task.deadlineOn ?? "") < today;
   const openDetail = (element: HTMLElement) => {
     const from = anchor?.() ?? element;
     onOpen?.();
+    // 開いたもの（タスクか◆か）を覚えておく。移ったり隠れたりしたら、これで付く先を決め直す（useFollowDetailAnchor）
+    state.detail = { taskId: task.id, kind };
     taskDetailPopoverOf(ui).open(task.id, from);
   };
 
@@ -609,15 +620,24 @@ const DayListHost = observer(function DayListHost({
 // --- 小さな詳細の付いていく先 --------------------------------------------------------------------
 
 /**
- * 小さな詳細を開いた要素がマスから消えたら（日付を変えて別のマスへ移った・「ほか N 件」に入ったなど）、
- * 同じもの（タスクか◆）の新しい要素から開き直す。なければ、同じタスクのほかの要素から。どこにもなければ閉じる
- * （消えた要素に合わせたままだと、画面の左上へ飛ぶため）
+ * 小さな詳細の付く先を、開いたもの（タスクか◆か。CalendarState.detail）の今の場所から決め直す。表が描き直されるたびに見る。
+ * - マスに出ていれば、そのタスク（◆）の要素に付く
+ * - 「ほか N 件」に隠れていれば、その日の「ほか N 件」に付く（「ほか N 件」の一覧から開いたときも、ここに付いている）
+ * - 表のどこにもなければ（完了・削除・絞り込みの外・表の外の日）閉じる
+ * 付いていた要素がまだ画面にあっても、タスクが移っていれば決め直す（元の日の「ほか N 件」に残ったままにしない）。
+ * 消えた要素に合わせたままだと、画面の左上へ飛ぶため、付く先がなくなったらフェードを待たずに閉じる
  */
-function useFollowDetailAnchor(ui: ListUi, grid: RefObject<HTMLElement | null>, ready: boolean) {
+function useFollowDetailAnchor(
+  ui: ListUi,
+  grid: RefObject<HTMLElement | null>,
+  model: CalendarModel,
+  ready: boolean,
+) {
   useEffect(() => {
     const root = grid.current;
     if (!ready || !root) return;
     const popover = taskDetailPopoverOf(ui);
+    const state = calendarOf(ui);
     const follow = () => {
       const request = popover.request;
       if (request === null) {
@@ -625,18 +645,56 @@ function useFollowDetailAnchor(ui: ListUi, grid: RefObject<HTMLElement | null>, 
         if (popover.leaving && !popover.leaving.anchor.isConnected) popover.dismiss();
         return;
       }
-      if (request.anchor.isConnected) return;
-      const key =
-        request.anchor instanceof HTMLElement ? request.anchor.dataset.calendarEntry : undefined;
-      const candidates = Array.from(root.querySelectorAll<HTMLElement>("[data-calendar-entry]"));
-      const next =
-        candidates.find((element) => key !== undefined && element.dataset.calendarEntry === key) ??
-        candidates.find((element) => element.dataset.calendarTask === request.taskId);
-      if (next) popover.open(request.taskId, next);
-      else popover.dismiss();
+      const target =
+        state.detail?.taskId === request.taskId
+          ? state.detail
+          : { taskId: request.taskId, kind: "task" as const };
+      const dates = Array.from(
+        root.querySelectorAll<HTMLElement>("td[data-date]"),
+        (cell) => cell.dataset.date ?? "",
+      );
+      const location = locateEntry(model, dates, target);
+      if (location === null) {
+        popover.dismiss();
+        return;
+      }
+      const key = location.shown ? `${target.kind}:${target.taskId}` : `more:${location.date}`;
+      const cell = root.querySelector(`td[data-date="${location.date}"]`);
+      const element = Array.from(
+        cell?.querySelectorAll<HTMLElement>("[data-calendar-entry]") ?? [],
+      ).find((candidate) => candidate.dataset.calendarEntry === key);
+      if (element === undefined) {
+        // 表がまだ描き直されていない（次の描き直しでもう一度見る）。付いていた要素が消えていれば閉じる
+        if (!request.anchor.isConnected) popover.dismiss();
+        return;
+      }
+      if (element !== request.anchor) popover.open(request.taskId, element);
     };
     const observer = new MutationObserver(follow);
-    observer.observe(root, { childList: true, subtree: true });
+    // 件数の文字（「ほか 3 件」→「ほか 2 件」）だけが変わるときも見る
+    observer.observe(root, { childList: true, subtree: true, characterData: true });
     return () => observer.disconnect();
-  }, [ui, grid, ready]);
+  }, [ui, grid, model, ready]);
+}
+
+/**
+ * カレンダーのドラッグの後始末。どこかへ落としたとき（日のマス・サイドバー・落とせないところ）と、やめたとき（Esc など）に、
+ * カレンダーとサイドバー向け（taskDragOf）の両方のドラッグの状態を終える。
+ * 元のチップの onDragEnd だけに頼らない（サイドバーの今日へ落とすと元のチップがマスから消え、dragend が届かないことがあるため）。
+ * 念のため、次に押したとき（pointerdown。ドラッグのあいだは起きない）にも、残っていれば終える
+ */
+function useEndDragAnywhere(ui: ListUi) {
+  useEffect(() => {
+    const finish = () => {
+      if (calendarOf(ui).drag !== null) endDrag(ui);
+    };
+    document.addEventListener("drop", finish);
+    document.addEventListener("dragend", finish);
+    document.addEventListener("pointerdown", finish, true);
+    return () => {
+      document.removeEventListener("drop", finish);
+      document.removeEventListener("dragend", finish);
+      document.removeEventListener("pointerdown", finish, true);
+    };
+  }, [ui]);
 }

@@ -104,6 +104,36 @@ export function entriesByDate(
   return days;
 }
 
+/** 1つのマスに出す行の数（超えたら、この数から1つ減らして「ほか N 件」を出す） */
+export const CELL_CAPACITY = 3;
+
+/** その日の中身が total 件のとき、マスに出す件数（残りは「ほか N 件」） */
+export function shownCount(total: number): number {
+  return total > CELL_CAPACITY ? CELL_CAPACITY - 1 : total;
+}
+
+/** マスの中の1つを指す（タスクか◆か） */
+export type EntryKey = { taskId: string; kind: CalendarEntry["kind"] };
+
+/**
+ * key のものが、dates（表に出ている日）のどのマスにあるか。マスに出ているか（shown）、「ほか N 件」に隠れているか。
+ * どのマスにもなければ null（完了・削除・絞り込みの外・表の外の日）
+ */
+export function locateEntry(
+  model: CalendarModel,
+  dates: readonly string[],
+  key: EntryKey,
+): { date: string; shown: boolean } | null {
+  for (const date of dates) {
+    const entries = entriesInOrder(model.entriesOn(date));
+    const index = entries.findIndex(
+      (entry) => entry.kind === key.kind && entry.task.id === key.taskId,
+    );
+    if (index >= 0) return { date, shown: index < shownCount(entries.length) };
+  }
+  return null;
+}
+
 /** マスに出す順（締切の◆が先、そのあとにタスク） */
 export function entriesInOrder({ deadlines, tasks }: DayEntries): CalendarEntry[] {
   return [

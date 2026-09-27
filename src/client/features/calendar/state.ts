@@ -1,4 +1,4 @@
-import { action, makeObservable, observable, observableRef } from "mobx";
+import { action, makeObservable, observable, observableRef, reaction } from "mobx";
 import { type KeyBinding, registerKeyBindings } from "@/keyboard/keymap";
 import type { ListUi } from "@/tasks/list-ui";
 
@@ -14,6 +14,9 @@ export type ProjectFilter = { kind: "all" } | { kind: "none" } | { kind: "projec
 
 /** つかんでいるもの：タスク（予定の日付を変える）か締切の◆（締切を変える） */
 export type CalendarDrag = { taskId: string; kind: "task" | "deadline" };
+
+/** 小さな詳細を開いたもの（タスクか◆か）。開いた要素とは別に持ち、移ったり隠れたりしても付く先を決め直す */
+export type DetailTarget = { taskId: string; kind: "task" | "deadline" };
 
 /** YYYY-MM の月に delta か月を足す */
 export function shiftMonth(month: string, delta: number): string {
@@ -37,8 +40,10 @@ export class CalendarState {
   dayList: string | null = null;
   /** 画面が出ている数（キーの割り当てが効くか） */
   screens = 0;
+  /** 小さな詳細を開いたもの（観測しない。付く先を決め直すときに読む） */
+  detail: DetailTarget | null = null;
 
-  constructor() {
+  constructor(ui: ListUi) {
     makeObservable(this, {
       month: observable,
       filter: observableRef,
@@ -55,6 +60,24 @@ export class CalendarState {
       addScreen: action,
       removeScreen: action,
     });
+    // 絞り込んでいたプロジェクトがアーカイブ・削除されて一覧から外れたら、絞り込みを「すべて」に戻す
+    // （表示だけでなく状態も。あとでアーカイブを解除しても、黙って絞り込みが戻らないように）。
+    // 手元の控えを読み終える前は、プロジェクトの一覧が空なので見ない
+    reaction(
+      () => {
+        const { filter } = this;
+        const { store } = ui;
+        return (
+          filter.kind === "project" &&
+          store.loaded &&
+          !store.lists.projects.some((project) => project.id === filter.id)
+        );
+      },
+      (gone) => {
+        if (gone) this.setFilter({ kind: "all" });
+      },
+      { fireImmediately: true },
+    );
   }
 
   get active(): boolean {
@@ -117,7 +140,7 @@ const states = new WeakMap<ListUi, CalendarState>();
 export function calendarOf(ui: ListUi): CalendarState {
   let state = states.get(ui);
   if (!state) {
-    state = new CalendarState();
+    state = new CalendarState(ui);
     states.set(ui, state);
   }
   return state;

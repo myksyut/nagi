@@ -1,6 +1,6 @@
 import { action, computed, makeObservable, observable, observableRef } from "mobx";
 import { registerKeyBindings } from "@/keyboard/keymap";
-import { QUICK_ADD_BINDING_ID } from "@/shell/add-button";
+import { ADD_BUTTON_ELEMENT_ID, QUICK_ADD_BINDING_ID } from "@/shell/add-button";
 import type { ListUi } from "@/tasks/list-ui";
 
 /**
@@ -74,12 +74,17 @@ export class QuickAddState {
   }
 
   /**
-   * 右下の「＋」と n：「＋」の上に「受信箱｜今日」から選ぶ欄を開く。すでに開いていれば閉じる
+   * 右下の「＋」と n：「＋」の上に「受信箱｜今日」から選ぶ欄を開く。Esc で閉じたら returnFocus（開く前にフォーカスのあった要素。
+   * なければ「＋」）へ戻す。すでに開いていれば閉じて true を返す
    * （「＋」を押すたびに開閉する。欄の外を押すと閉じるが、「＋」を押したときは欄が閉じずにここへ来る）
    */
-  toggleFromFab(): void {
-    if (this.request?.anchor === null) this.close();
-    else this.open({ kind: "choice" });
+  toggleFromFab(returnFocus: Element | null = null): boolean {
+    if (this.request?.anchor === null) {
+      this.close();
+      return true;
+    }
+    this.open({ kind: "choice" }, null, returnFocus);
+    return false;
   }
 
   /** 閉じる（消えるときのフェードのあいだは描き続ける）。id を渡すと、それが開いているときだけ閉じる */
@@ -137,5 +142,14 @@ registerKeyBindings({
   // 一覧の画面の n（task.add）とは同時に効かない（こちらは一覧の画面がないときだけ）
   scope: "quick-add",
   when: ({ ui }) => ui.view === null && quickAddOf(ui).available,
-  run: ({ ui }) => quickAddOf(ui).toggleFromFab(),
+  run: ({ ui }) => {
+    // 開く前にフォーカスのあった要素（Tab で移ったタスクなど）へ、Esc で閉じたら戻す。
+    // 右下の「＋」は押してもフォーカスを奪わないので、押したときも同じ
+    const active = document.activeElement;
+    const closed = quickAddOf(ui).toggleFromFab(
+      active instanceof HTMLElement && active !== document.body ? active : null,
+    );
+    // 「＋」を押して閉じたら、「＋」にフォーカスを置く（欄の中にあったフォーカスの行き場をなくさない）
+    if (closed) document.getElementById(ADD_BUTTON_ELEMENT_ID)?.focus();
+  },
 });
