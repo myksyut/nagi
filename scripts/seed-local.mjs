@@ -1,11 +1,25 @@
 // 速さの確認用のデータを、手元のサーバー（http://localhost:5317、.dev.vars の AUTH_DISABLED=true）の
 // /api/mutate で入れる。送り先は localhost だけで、本番の D1 には触らない（README「速さの確認」）。
 //   node scripts/seed-local.mjs today100     … 今日に 100 件、受信箱とあとでに 10 件ずつ、プロジェクト 2 つ
+//                                              （優先度と工数は一部のタスクにだけ付ける）
 //   node scripts/seed-local.mjs fill 20000   … タスクの合計がこの件数になるまで、完了ログ（過去 2 年に散らばる完了）を足す
+// ほかのポートで動かしているときは SEED_PORT=5319 のように渡す
+import { readFileSync } from "node:fs";
 import { generateNKeysBetween } from "fractional-indexing";
 
-const BASE = "http://localhost:5317";
-const API_VERSION = "1";
+const BASE = `http://localhost:${process.env.SEED_PORT ?? "5317"}`;
+
+/**
+ * API の版は src/shared/api.ts の API_VERSION を読んで使う（古いまま残って 409 にならないように）。
+ * api.ts は TypeScript で、zod などを import しているので、ここでは import せずに文字として読み取る
+ */
+function readApiVersion() {
+  const source = readFileSync(new URL("../src/shared/api.ts", import.meta.url), "utf8");
+  const match = source.match(/^export const API_VERSION = (\d+);$/m);
+  if (!match) throw new Error("src/shared/api.ts から API_VERSION を読み取れませんでした");
+  return match[1];
+}
+const API_VERSION = readApiVersion();
 const [mode = "today100", countArg] = process.argv.slice(2);
 
 let seq = 0;
@@ -70,6 +84,13 @@ if (mode === "today100") {
     { type: "project.create", project: project2 },
   ];
   const task = (fields) => ({ type: "task.create", task: { id: uuidv7(), ...fields } });
+  // 優先度と工数は一部のタスクにだけ付ける（なしも残す）。値は src/shared/priority-points.ts と同じ
+  const PRIORITY_CYCLE = ["high", null, "medium", "low", null];
+  const POINTS_CYCLE = [1, 2, null, 3, 5, null, 8, 13, null];
+  const estimate = (i) => ({
+    priority: PRIORITY_CYCLE[i % PRIORITY_CYCLE.length],
+    points: POINTS_CYCLE[i % POINTS_CYCLE.length],
+  });
   mutations.push(
     ...generateNKeysBetween(null, null, 100).map((rank, i) =>
       task({
@@ -78,17 +99,28 @@ if (mode === "today100") {
         rank,
         projectId: i % 3 === 0 ? project.id : i % 5 === 0 ? project2.id : null,
         memo: i % 7 === 0 ? "https://example.com/doc のメモ" : "",
+        ...estimate(i),
       }),
     ),
     ...generateNKeysBetween(null, null, 10).map((rank, i) =>
-      task({ title: `受信箱 ${i + 1}`, bucket: "inbox", rank }),
+      task({ title: `受信箱 ${i + 1}`, bucket: "inbox", rank, ...estimate(i * 2 + 1) }),
     ),
     ...generateNKeysBetween(null, null, 10).map((rank, i) =>
-      task({ title: `あとで ${i + 1}`, bucket: "later", rank, projectId: project.id }),
+      task({
+        title: `あとで ${i + 1}`,
+        bucket: "later",
+        rank,
+        projectId: project.id,
+        ...estimate(i + 3),
+      }),
     ),
   );
   await send(mutations);
-  console.log("入れた：今日 100・受信箱 10・あとで 10・プロジェクト 2");
+  const withPriority = mutations.filter((m) => m.task?.priority).length;
+  const withPoints = mutations.filter((m) => m.task?.points).length;
+  console.log(
+    `入れた：今日 100・受信箱 10・あとで 10・プロジェクト 2（優先度あり ${withPriority}・工数あり ${withPoints}）`,
+  );
 } else if (mode === "fill") {
   const target = Number(countArg ?? 20000);
   const have = await countRows();

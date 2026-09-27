@@ -40,8 +40,10 @@ export const LOCAL_DB_NAME = "nagi";
  * - 2：行に startedAt（タスク）と color（プロジェクト）を足した。前の版の行にはこの項目がなく
  *   （undefined は「空」の null と違い、進行中と読み違える）、サーバーの seq は変わらないので差分でも届かない。
  *   そのため捨てて全件を取り直す
+ * - 3：タスクの行に priority と points を足した。2 と同じく、前の版の行にはこの項目がなく差分でも届かないので、
+ *   捨てて全件を取り直す
  */
-export const LOCAL_DB_VERSION = 2;
+export const LOCAL_DB_VERSION = 3;
 
 const TASKS = "tasks";
 const PROJECTS = "projects";

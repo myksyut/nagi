@@ -61,6 +61,8 @@ export function applyTaskMutation(
     rank: task.rank,
     arrivedOn: task.arrivedOn ?? null,
     checklist: task.checklist ?? [],
+    priority: task.priority ?? null,
+    points: task.points ?? null,
   };
   // 応答より先に、差分の取得で確定した行が届いていたら、その上に重ねる
   if (base) return { ...base, ...fields };

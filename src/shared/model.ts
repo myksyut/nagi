@@ -1,4 +1,5 @@
 import type { ProjectColor } from "./palette";
+import type { Points, Priority } from "./priority-points";
 
 /**
  * タスクとプロジェクトの形。D1 の行（src/worker/db/schema.ts）と同じ形で、
@@ -38,6 +39,10 @@ export type Task = {
    * 完了しても残す（直後に完了を取り消すと進行中に戻る）
    */
   startedAt: string | null;
+  /** 優先度（高・中・低）。なしは null（3 番目の版で追加。priority-points.ts） */
+  priority: Priority | null;
+  /** 工数（1・2・3・5・8・13）。なしは null（3 番目の版で追加。priority-points.ts） */
+  points: Points | null;
   createdAt: string;
   updatedAt: string;
   /** 削除した時刻（論理削除）。サーバーは 30 日後に物理削除する */

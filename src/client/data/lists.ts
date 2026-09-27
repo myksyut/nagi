@@ -1,6 +1,7 @@
 import { logicalDate } from "@shared/logical-date";
 import type { Bucket } from "@shared/model";
 import { autoProjectColor, orderForAutoColor, type ProjectColor } from "@shared/palette";
+import type { Points } from "@shared/priority-points";
 import { compareRank } from "@shared/rank";
 import { compareShallow, computed, type IComputedValue, makeObservable } from "mobx";
 import { addDays, dayStart, type LogicalDay } from "./logical-day";
@@ -53,6 +54,27 @@ export type ProjectBoard = {
 
 /** プロジェクトのボードの完了の列に出す日数（今日を含む。それより前は完了ログで見る） */
 export const PROJECT_BOARD_COMPLETED_DAYS = 7;
+
+/**
+ * ボードの列ごとの工数の合計（列の見出しに出す）。プロジェクトのボードの未着手は、置き場のまとまりを合わせた列全体の合計
+ */
+export type BoardPoints = { notStarted: number; inProgress: number; completed: number };
+
+/**
+ * 工数の合計。工数のないタスクは数えない（0 として足す）。
+ * 行ごとに points だけを観測する（TaskRow を渡したとき。タイトルなどの変化では計算し直さない）
+ */
+export function sumPoints(rows: Iterable<{ readonly points: Points | null }>): number {
+  let total = 0;
+  for (const row of rows) total += row.points ?? 0;
+  return total;
+}
+
+function sameBoardPoints(a: BoardPoints, b: BoardPoints): boolean {
+  return (
+    a.notStarted === b.notStarted && a.inProgress === b.inProgress && a.completed === b.completed
+  );
+}
 
 type Compare = (a: TaskRow, b: TaskRow) => number;
 
@@ -145,6 +167,8 @@ export class TaskLists {
   readonly #projectGroups = new Map<string, IComputedValue<ProjectTaskGroups>>();
   readonly #projectBoards = new Map<string, IComputedValue<ProjectBoard>>();
   readonly #projectColors = new Map<string, IComputedValue<ProjectColor | undefined>>();
+  readonly #projectPoints = new Map<string, IComputedValue<number>>();
+  readonly #projectBoardPoints = new Map<string, IComputedValue<BoardPoints>>();
   /**
    * 作成順の色を決める並び：削除済みを除くプロジェクトの id を、作成の時刻の順（同じなら id の順）に。
    * 行の出入りと、各行の createdAt・deletedAt だけを観測する（名前や色の変更では並べ直さない）
@@ -176,6 +200,8 @@ export class TaskLists {
       projects: list,
       todayBoard: computed({ equals: sameTodayBoard }),
       projectColors: computed({ equals: sameColors }),
+      todayPoints: computed,
+      todayBoardPoints: computed({ equals: sameBoardPoints }),
     });
   }
 
@@ -287,6 +313,64 @@ export class TaskLists {
       this.#projectBoards.set(projectId, board);
     }
     return board.get();
+  }
+
+  /**
+   * 今日の工数の合計（未完了。見出しの「N 件 ・ 工数 M」）。
+   * 今日のリストの出入りと、各行の points だけを観測する（タイトルなどの変化では計算し直さない）
+   */
+  get todayPoints(): number {
+    return sumPoints(this.today);
+  }
+
+  /** 今日のボードの列ごとの工数の合計。列の出入りと、各行の points だけを観測する */
+  get todayBoardPoints(): BoardPoints {
+    const { notStarted, inProgress, completed } = this.todayBoard;
+    return {
+      notStarted: sumPoints(notStarted),
+      inProgress: sumPoints(inProgress),
+      completed: sumPoints(completed),
+    };
+  }
+
+  /**
+   * そのプロジェクトの工数の合計（未完了。今日・予定・あとで・受信箱。見出しの「N 件 ・ 工数 M」）。
+   * ID ごとの計算で、そのプロジェクトのタスクの出入りと、各行の points だけを観測する
+   */
+  projectPoints(projectId: string): number {
+    let points = this.#projectPoints.get(projectId);
+    if (!points) {
+      points = computed(() => {
+        const { today, scheduled, later, inbox } = this.project(projectId);
+        return sumPoints(today) + sumPoints(scheduled) + sumPoints(later) + sumPoints(inbox);
+      });
+      this.#projectPoints.set(projectId, points);
+    }
+    return points.get();
+  }
+
+  /** プロジェクトのボードの列ごとの工数の合計。ID ごとの計算で、列の出入りと、各行の points だけを観測する */
+  projectBoardPoints(projectId: string): BoardPoints {
+    let points = this.#projectBoardPoints.get(projectId);
+    if (!points) {
+      points = computed(
+        () => {
+          const { notStarted, inProgress, completed } = this.projectBoard(projectId);
+          return {
+            notStarted:
+              sumPoints(notStarted.today) +
+              sumPoints(notStarted.scheduled) +
+              sumPoints(notStarted.later) +
+              sumPoints(notStarted.inbox),
+            inProgress: sumPoints(inProgress),
+            completed: sumPoints(completed),
+          };
+        },
+        { equals: sameBoardPoints },
+      );
+      this.#projectBoardPoints.set(projectId, points);
+    }
+    return points.get();
   }
 
   /** そのプロジェクトの進行中のタスクの数 */

@@ -27,8 +27,12 @@ export default defineConfig(async () => {
             cloudflareTest({
               wrangler: { configPath: "./wrangler.jsonc" },
               miniflare: {
-                // マイグレーションのテスト用の、空の D1（DB とは別。好きな版まで当てて、行を入れてから次を当てる）
-                d1Databases: { MIGRATION_TEST_DB: "migration-test" },
+                // マイグレーションのテスト用の、空の D1（DB とは別。好きな版まで当てて、行を入れてから次を当てる）。
+                // 版ごとに分ける（前の版のテストが最後まで当てた D1 を、次の版のテストが使わないように）
+                d1Databases: {
+                  MIGRATION_TEST_DB: "migration-test",
+                  MIGRATION_0003_TEST_DB: "migration-0003-test",
+                },
                 // テスト用の値。wrangler.jsonc や .dev.vars の値より優先される
                 bindings: {
                   TEST_MIGRATIONS: migrations,

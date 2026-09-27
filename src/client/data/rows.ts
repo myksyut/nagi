@@ -7,6 +7,7 @@ import {
   taskStatus,
 } from "@shared/model";
 import type { ProjectColor } from "@shared/palette";
+import type { Points, Priority } from "@shared/priority-points";
 import { createAtom, type IAtom } from "mobx";
 
 /**
@@ -117,6 +118,14 @@ export class TaskRow extends ObservedRow<Task> {
   get isInProgress(): boolean {
     return this.status === "in-progress";
   }
+  /** 優先度（なしは null）。この項目だけを観測する（並べ替えがタイトルなどの変化で計算し直さないように） */
+  get priority(): Priority | null {
+    return this.field("priority");
+  }
+  /** 工数（なしは null）。この項目だけを観測する（合計がタイトルなどの変化で計算し直さないように） */
+  get points(): Points | null {
+    return this.field("points");
+  }
   get createdAt(): string {
     return this.value.createdAt;
   }
@@ -185,7 +194,8 @@ export function partitionOf(
 
 /**
  * どのリストに入るか・どう並ぶかに効く項目。これが変わったら、その区分のリストを計算し直す。
- * startedAt は区分にも並びにも効かないので入れない（進行中で分ける計算は、TaskRow.startedAt で項目ごとに観測する）
+ * startedAt は区分にも並びにも効かないので入れない（進行中で分ける計算は、TaskRow.startedAt で項目ごとに観測する）。
+ * priority・points も入れない（並べ替えと工数の合計は、TaskRow.priority・points で項目ごとに観測する）
  */
 const LIST_FIELDS = [
   "bucket",

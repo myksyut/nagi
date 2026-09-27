@@ -155,6 +155,8 @@ export class FakeServer {
       checklist: [],
       completedAt: null,
       startedAt: null,
+      priority: null,
+      points: null,
       createdAt: timestamp,
       deletedAt: null,
       ...current,
