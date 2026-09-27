@@ -17,6 +17,8 @@ export type OperationKind =
   | "task.update"
   | "task.complete"
   | "task.uncomplete"
+  | "task.start"
+  | "task.stop"
   | "task.move"
   | "task.reorder"
   | "task.deadline"
@@ -68,9 +70,20 @@ export class Replica {
     return this.#projects.get(id);
   }
 
-  /** すべてのプロジェクト（削除済み・アーカイブ済みも含む。並びは決めない） */
+  /**
+   * すべてのプロジェクト（削除済み・アーカイブ済みも含む。並びは決めない）。
+   * どれかのプロジェクトの中身が変わるたびに知らせる
+   */
   allProjects(): readonly ProjectRow[] {
     this.#projectsAtom.reportObserved();
+    return Array.from(this.#projects.values());
+  }
+
+  /**
+   * すべてのプロジェクトの行（削除済み・アーカイブ済みも含む。並びは決めない）。
+   * allProjects と違い、行の出入りだけを観測する（中身は、行ごと・項目ごとに観測する）
+   */
+  projectRows(): readonly ProjectRow[] {
     return Array.from(this.#projects.values());
   }
 

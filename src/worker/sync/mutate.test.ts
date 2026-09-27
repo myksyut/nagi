@@ -15,6 +15,7 @@ import {
   mutationBatch,
   projectInput,
   resetSyncTables,
+  syncBody,
   taskInput,
 } from "../test/sync-app";
 
@@ -617,6 +618,209 @@ describe("チェックリストのぶつかり（baseChecklist）", () => {
   });
 });
 
+describe("進行中（startedAt）の検証", () => {
+  it("★ task.create は startedAt を受け付けない（schema）", async () => {
+    const { post } = apiApp();
+    const before = await snapshot();
+    const res = await post(
+      "/api/mutate",
+      mutationBatch([
+        {
+          type: "task.create",
+          task: { ...taskInput(), startedAt: new Date().toISOString() },
+        },
+      ]),
+    );
+    expect(res.status).toBe(400);
+    expect((await errorBody(res)).reason).toBe("schema");
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("★ 今日以外の bucket に startedAt を入れる更新は started_outside_today で何も書かれない。今日に移すのと同時に入れるのは通る", async () => {
+    const { post } = apiApp();
+    const inboxId = crypto.randomUUID();
+    await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.create", task: taskInput({ id: inboxId, bucket: "inbox" }) }]),
+    );
+
+    const before = await snapshot();
+    const failRes = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "task.update", id: inboxId, changes: { startedAt: new Date().toISOString() } },
+      ]),
+    );
+    expect(failRes.status).toBe(400);
+    expect((await errorBody(failRes)).reason).toBe("started_outside_today");
+    expect(await snapshot()).toEqual(before);
+
+    const startedAt = new Date().toISOString();
+    const okRes = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "task.update", id: inboxId, changes: { bucket: "today", startedAt } },
+      ]),
+    );
+    expect(okRes.status).toBe(200);
+    const row = asTaskRow(at((await mutateBody(okRes)).rows, 0));
+    expect(row.bucket).toBe("today");
+    expect(row.startedAt).toBe(startedAt);
+  });
+
+  it("★ 進行中のまま bucket を今日の外へ変える更新は started_outside_today で何も書かれない。startedAt: null を同じ changes に入れれば通る", async () => {
+    const { post } = apiApp();
+    const taskId = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "task.create", task: taskInput({ id: taskId, bucket: "today" }) },
+        { type: "task.update", id: taskId, changes: { startedAt } },
+      ]),
+    );
+
+    const before = await snapshot();
+    const failRes = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.update", id: taskId, changes: { bucket: "later" } }]),
+    );
+    expect(failRes.status).toBe(400);
+    expect((await errorBody(failRes)).reason).toBe("started_outside_today");
+    expect(await snapshot()).toEqual(before);
+
+    const okRes = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "task.update", id: taskId, changes: { bucket: "later", startedAt: null } },
+      ]),
+    );
+    expect(okRes.status).toBe(200);
+    const row = asTaskRow(at((await mutateBody(okRes)).rows, 0));
+    expect(row.bucket).toBe("later");
+    expect(row.startedAt).toBeNull();
+  });
+
+  it("同じまとまりで今日以外に作ってから進行中にすると started_outside_today で何も書かれない", async () => {
+    const { post } = apiApp();
+    const before = await snapshot();
+    const taskId = crypto.randomUUID();
+    const res = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "task.create", task: taskInput({ id: taskId, bucket: "later" }) },
+        {
+          type: "task.update",
+          id: taskId,
+          changes: { startedAt: new Date().toISOString() },
+        },
+      ]),
+    );
+    expect(res.status).toBe(400);
+    expect((await errorBody(res)).reason).toBe("started_outside_today");
+    expect(await snapshot()).toEqual(before);
+  });
+});
+
+describe("プロジェクトの色（color）の検証", () => {
+  it("★ project.create で省略すると null、パレットの名前なら入る", async () => {
+    const { post } = apiApp();
+    const withoutColor = crypto.randomUUID();
+    const withColor = crypto.randomUUID();
+    const res = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "project.create", project: projectInput({ id: withoutColor }) },
+        { type: "project.create", project: projectInput({ id: withColor, color: "sky" }) },
+      ]),
+    );
+    expect(res.status).toBe(200);
+    const body = await mutateBody(res);
+    expect(asProjectRow(at(body.rows, 0)).color).toBeNull();
+    expect(asProjectRow(at(body.rows, 1)).color).toBe("sky");
+  });
+
+  it("★ project.update で色を変えられる。null にすると戻る", async () => {
+    const { post } = apiApp();
+    const id = crypto.randomUUID();
+    await post(
+      "/api/mutate",
+      mutationBatch([{ type: "project.create", project: projectInput({ id, color: "violet" }) }]),
+    );
+
+    const changeRes = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "project.update", id, changes: { color: "amber" } }]),
+    );
+    expect(changeRes.status).toBe(200);
+    expect(asProjectRow(at((await mutateBody(changeRes)).rows, 0)).color).toBe("amber");
+
+    const clearRes = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "project.update", id, changes: { color: null } }]),
+    );
+    expect(clearRes.status).toBe(200);
+    expect(asProjectRow(at((await mutateBody(clearRes)).rows, 0)).color).toBeNull();
+  });
+
+  it.each(["red", "", "Violet"])(
+    "★ パレットにない色 %s は 400（schema）で何も書かれない（作成でも更新でも）",
+    async (color) => {
+      const { post } = apiApp();
+      const before = await snapshot();
+      const createRes = await post(
+        "/api/mutate",
+        mutationBatch([{ type: "project.create", project: projectInput({ color }) }]),
+      );
+      expect(createRes.status).toBe(400);
+      expect((await errorBody(createRes)).reason).toBe("schema");
+      expect(await snapshot()).toEqual(before);
+
+      const id = crypto.randomUUID();
+      await post(
+        "/api/mutate",
+        mutationBatch([{ type: "project.create", project: projectInput({ id }) }]),
+      );
+      const before2 = await snapshot();
+      const updateRes = await post(
+        "/api/mutate",
+        mutationBatch([{ type: "project.update", id, changes: { color } }]),
+      );
+      expect(updateRes.status).toBe(400);
+      expect((await errorBody(updateRes)).reason).toBe("schema");
+      expect(await snapshot()).toEqual(before2);
+    },
+  );
+});
+
+describe("/api/sync と /api/mutate の応答に startedAt・color が届く", () => {
+  it("★ 進行中のタスクと色のあるプロジェクトを作ると、/api/mutate と /api/sync のどちらの応答にも startedAt・color が入る", async () => {
+    const { post } = apiApp();
+    const taskId = crypto.randomUUID();
+    const projectId = crypto.randomUUID();
+    const startedAt = new Date().toISOString();
+    const mutateRes = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "project.create", project: projectInput({ id: projectId, color: "teal" }) },
+        { type: "task.create", task: taskInput({ id: taskId, bucket: "today" }) },
+        { type: "task.update", id: taskId, changes: { startedAt } },
+      ]),
+    );
+    expect(mutateRes.status).toBe(200);
+    const mutateRows = (await mutateBody(mutateRes)).rows;
+    expect(asProjectRow(at(mutateRows, 0)).color).toBe("teal");
+    expect(asTaskRow(at(mutateRows, 1)).startedAt).toBe(startedAt);
+
+    const syncRes = await post("/api/sync", { cursor: 0, baseCursor: 0 });
+    const syncRows = (await syncBody(syncRes)).rows;
+    const projectRow = syncRows.find((r) => r.kind === "project" && r.row.id === projectId);
+    const taskRow = syncRows.find((r) => r.kind === "task" && r.row.id === taskId);
+    expect(projectRow?.kind === "project" && projectRow.row.color).toBe("teal");
+    expect(taskRow?.kind === "task" && taskRow.row.startedAt).toBe(startedAt);
+  });
+});
+
 describe("版とログイン", () => {
   it("★ X-Api-Versionがない、または違うと、どちらのAPIも409になる。/api/session には要らない", async () => {
     const { post, app } = apiApp();
@@ -638,6 +842,18 @@ describe("版とログイン", () => {
       { [API_VERSION_HEADER]: "999" },
     );
     expect(resWrong.status).toBe(409);
+
+    // 1 つ前の版（進行中と色を知らない画面）も 409
+    const resOld = await post(
+      "/api/sync",
+      { cursor: 0, baseCursor: 0 },
+      { [API_VERSION_HEADER]: String(API_VERSION - 1) },
+    );
+    expect(resOld.status).toBe(409);
+    const resMutateOld = await post("/api/mutate", mutationBatch([]), {
+      [API_VERSION_HEADER]: String(API_VERSION - 1),
+    });
+    expect(resMutateOld.status).toBe(409);
 
     const resMutateMissing = await post("/api/mutate", mutationBatch([]), {
       [API_VERSION_HEADER]: undefined,

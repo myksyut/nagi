@@ -9,6 +9,7 @@ import {
 } from "@shared/api";
 import {
   isScheduleConsistent,
+  isStartConsistent,
   type Project,
   type SyncRow,
   sameChecklist,
@@ -153,6 +154,7 @@ export class FakeServer {
       arrivedOn: null,
       checklist: [],
       completedAt: null,
+      startedAt: null,
       createdAt: timestamp,
       deletedAt: null,
       ...current,
@@ -169,6 +171,7 @@ export class FakeServer {
     const current = this.projects.get(project.id);
     const row: Project = {
       name: "プロジェクト",
+      color: null,
       archivedAt: null,
       createdAt: timestamp,
       deletedAt: null,
@@ -300,6 +303,7 @@ export class FakeServer {
         }
         const next = { ...current, ...mutation.changes };
         if (!isScheduleConsistent(next)) throw new Rejection("schedule_mismatch");
+        if (!isStartConsistent(next)) throw new Rejection("started_outside_today");
         if (next.projectId !== current.projectId) this.#assertAttachable(next.projectId);
         return { kind: "task", row: this.putTask({ ...mutation.changes, id: mutation.id }) };
       }

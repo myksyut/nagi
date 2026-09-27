@@ -97,6 +97,7 @@ export class AppStore {
       now: this.#now,
       newId: () => uuidv7(this.#now().getTime()),
       perform: (kind, mutations, performOptions) => this.#perform(kind, mutations, performOptions),
+      onUndoConflict: () => this.#onUndoConflict(),
     });
     this.#queue = new SendQueue({
       replica: this.replica,
@@ -343,6 +344,22 @@ export class AppStore {
         this.#notices.emit({ type: "save-failed", reason: "network", ...detail });
         return;
     }
+  }
+
+  /**
+   * 元に戻す操作が、ほかの画面の変更とぶつかって戻せなかった（送っていない。表示もそのまま）。
+   * 保存のぶつかりと同じ知らせにし、捨てた操作として、種類が "undo" で中身が空の操作を1つ載せる
+   * （新しい id にする。元の操作の id だと、その操作に付けた失敗の処理が動いてしまうため。
+   * 中身を空にするのは、画面が打った文字を下書きに戻す処理に巻き込まないため）。最新を取りに行く
+   */
+  #onUndoConflict(): void {
+    this.#notices.emit({
+      type: "save-failed",
+      reason: "conflict",
+      discarded: [{ operationId: uuidv7(this.#now().getTime()), kind: "undo", mutations: [] }],
+      failedCreates: [],
+    });
+    void this.sync();
   }
 
   #onSyncFailed(error: ApiFailure): void {

@@ -1,14 +1,26 @@
-import type { Bucket, ChecklistItem, Project, Task } from "@shared/model";
+import {
+  type Bucket,
+  type ChecklistItem,
+  type Project,
+  type Task,
+  type TaskStatus,
+  taskStatus,
+} from "@shared/model";
+import type { ProjectColor } from "@shared/palette";
 import { createAtom, type IAtom } from "mobx";
 
 /**
  * 画面に出す1行（確定データに送信中の操作を重ねたもの）。
  * 行ごとに観測値を1つ持つので、中身が変わった行を読んでいる部品だけが再描画される。
- * 同じ id のあいだは同じオブジェクトのまま、中身だけが入れ替わる
+ * 同じ id のあいだは同じオブジェクトのまま、中身だけが入れ替わる。
+ *
+ * 行全体ではなく項目ごとに観測したいときは field(key) で読む（ビューの計算が、ほかの項目の変化で
+ * 計算し直さず、しかも peek() のように変化を取りこぼさないように）。項目ごとの観測値は、読まれた項目だけ作る
  */
 abstract class ObservedRow<T extends { id: string }> {
   readonly #atom: IAtom;
   #data: T;
+  #fieldAtoms: Map<keyof T, IAtom> | undefined;
 
   constructor(data: T) {
     this.#data = data;
@@ -31,10 +43,28 @@ abstract class ObservedRow<T extends { id: string }> {
     return this.#data;
   }
 
+  /** 項目 key だけを観測して読む。ほかの項目が変わっても知らせない（値が変わったときだけ知らせる） */
+  field<K extends keyof T>(key: K): T[K] {
+    this.#fieldAtoms ??= new Map();
+    let atom = this.#fieldAtoms.get(key);
+    if (!atom) {
+      atom = createAtom(`row:${this.#data.id}:${String(key)}`);
+      this.#fieldAtoms.set(key, atom);
+    }
+    atom.reportObserved();
+    return this.#data[key];
+  }
+
   /** データ層の中だけで使う。中身を入れ替えて、観測している部品に知らせる */
   replace(data: T): void {
+    const previous = this.#data;
     this.#data = data;
     this.#atom.reportChanged();
+    if (this.#fieldAtoms) {
+      for (const [key, atom] of this.#fieldAtoms) {
+        if (previous[key] !== data[key]) atom.reportChanged();
+      }
+    }
   }
 }
 
@@ -69,6 +99,24 @@ export class TaskRow extends ObservedRow<Task> {
   get completedAt(): string | null {
     return this.value.completedAt;
   }
+  /**
+   * 進行中にした時刻（進行中でなければ null）。ほかの getter と違い、この項目だけを観測する
+   * （タイトルなどが変わっても知らせない）。完了したタスクにも残っていることがあるので、状態は status で見る
+   */
+  get startedAt(): string | null {
+    return this.field("startedAt");
+  }
+  /** 状態（未着手・進行中・完了）。completedAt と startedAt だけを観測する */
+  get status(): TaskStatus {
+    return taskStatus({
+      completedAt: this.field("completedAt"),
+      startedAt: this.field("startedAt"),
+    });
+  }
+  /** 進行中（startedAt があり、未完了）。completedAt と startedAt だけを観測する */
+  get isInProgress(): boolean {
+    return this.status === "in-progress";
+  }
   get createdAt(): string {
     return this.value.createdAt;
   }
@@ -87,6 +135,13 @@ export class TaskRow extends ObservedRow<Task> {
 export class ProjectRow extends ObservedRow<Project> {
   get name(): string {
     return this.value.name;
+  }
+  /**
+   * 選んだ色（パレットの名前）。空なら null で、表示には作成順で決まる色を使う
+   * （store.lists.projectColor(id) が両方を合わせた色を返す）。この項目だけを観測する
+   */
+  get color(): ProjectColor | null {
+    return this.field("color");
   }
   get archivedAt(): string | null {
     return this.value.archivedAt;
@@ -128,7 +183,10 @@ export function partitionOf(
   return task.bucket;
 }
 
-/** どのリストに入るか・どう並ぶかに効く項目。これが変わったら、その区分のリストを計算し直す */
+/**
+ * どのリストに入るか・どう並ぶかに効く項目。これが変わったら、その区分のリストを計算し直す。
+ * startedAt は区分にも並びにも効かないので入れない（進行中で分ける計算は、TaskRow.startedAt で項目ごとに観測する）
+ */
 const LIST_FIELDS = [
   "bucket",
   "completedAt",
