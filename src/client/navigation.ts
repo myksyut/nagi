@@ -39,3 +39,14 @@ export const PROJECT_PATH_PATTERN = "/projects/:id";
 export function projectPath(id: string): string {
   return `/projects/${encodeURIComponent(id)}`;
 }
+
+/** プロジェクトの画面の URL なら、そのプロジェクトの id（ほかの画面なら undefined） */
+export function projectIdOfPath(path: string): string | undefined {
+  const match = /^\/projects\/([^/]+)$/.exec(path);
+  if (!match?.[1]) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return undefined;
+  }
+}

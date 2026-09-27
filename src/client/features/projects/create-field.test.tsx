@@ -1,4 +1,4 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it } from "vitest";
 import type { AppStore } from "@/data";
@@ -163,10 +163,103 @@ describe("保存できなかったとき", () => {
     expect(store.lists.projects).toHaveLength(0);
     await waitFor(() => expect(location.history?.at(-1)).toBe("/today"));
     expect(
-      (await screen.findAllByText("「断られる」は、＋ で開く名前の欄に戻しました")).length,
+      (await screen.findAllByText("作れなかったプロジェクトの名前は、＋ で開く欄に戻しました"))
+        .length,
     ).toBeGreaterThan(0);
     await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
     expect(nameField()).toHaveValue("断られる");
+  });
+
+  it("2件続けて作って両方断られたら、どちらの名前も失わず、欄を開くたびに古い順に入る", async () => {
+    const user = userEvent.setup();
+    const { store, server } = await open("/today");
+    await screen.findByRole("listbox", { name: "今日" });
+    const create = () => user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+
+    const release = server.hold("/api/mutate");
+    server.fail("/api/mutate", 400);
+    await create();
+    await user.type(nameField(), "1つ目{Enter}");
+    await create();
+    await user.type(nameField(), "2つ目{Enter}");
+    release();
+    await act(async () => {
+      await store.idle();
+    });
+    expect(store.lists.projects).toHaveLength(0);
+
+    await create();
+    expect(nameField()).toHaveValue("1つ目");
+    expect(screen.getByText(/ほかに 1件/)).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    await create();
+    expect(nameField()).toHaveValue("2つ目");
+    expect(screen.queryByText(/ほかに/)).toBeNull();
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      await store.idle();
+    });
+    expect(store.lists.projects.map((project) => project.name)).toEqual(["1つ目", "2つ目"]);
+  });
+
+  it("断られたときに次の名前を打っている途中なら、その名前は上書きせず、断られた名前は次に開いたときに入る", async () => {
+    const user = userEvent.setup();
+    const { store, server } = await open("/today");
+    await screen.findByRole("listbox", { name: "今日" });
+    const create = () => user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+
+    const release = server.hold("/api/mutate");
+    server.fail("/api/mutate", 400);
+    await create();
+    await user.type(nameField(), "先に作った{Enter}");
+    await create();
+    await user.type(nameField(), "打っている途中");
+    release();
+    await act(async () => {
+      await store.idle();
+    });
+
+    expect(nameField()).toHaveValue("打っている途中");
+    expect(screen.getByText(/ほかに 1件/)).toBeInTheDocument();
+    await user.keyboard("{Enter}");
+    await create();
+    expect(nameField()).toHaveValue("先に作った");
+  });
+
+  it("ログインが切れた（401）ときも、名前は残り、ログインし直したあとに欄を開くと入っている", async () => {
+    const user = userEvent.setup();
+    const { store, server, location } = await open("/today");
+    await screen.findByRole("listbox", { name: "今日" });
+
+    server.fail("/api/mutate", 401);
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "401で消える{Enter}");
+    await act(async () => {
+      await store.idle();
+    });
+    await waitFor(() => expect(location.history?.at(-1)).toBe("/login"));
+    expect(store.stoppedBy).toBe("unauthorized");
+
+    // ログインし直す（ページを読み込み直すので、画面とストアを作り直す）
+    cleanup();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("401で消える");
+  });
+
+  it("欄に打っている名前は、読み込み直しても残る", async () => {
+    const user = userEvent.setup();
+    const { server } = await open("/today");
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "打ちかけ");
+
+    cleanup();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("打ちかけ");
   });
 });
 

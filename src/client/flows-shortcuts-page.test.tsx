@@ -177,11 +177,9 @@ describe("開いて戻るのを繰り返す", () => {
     expect(document.querySelector("h1")?.textContent).toBe(month);
   });
 
-  // 不具合（報告済み・未修正）：作ったプロジェクトの画面からページを開き、ページで作成を ⌘Z で取り消してから Esc で戻ると、
-  // 消えたプロジェクトの画面（「プロジェクトが見つかりません」）に戻る。戻り先がもうないときは今日へ移るのが、
-  // 「取り消したときにそのプロジェクトの画面を開いていれば、今日へ移る」と同じ扱いのはず。
-  // 直したら it.fails を it に戻す
-  it.fails("戻り先のプロジェクトが、ページを開いているあいだに消えたら（作成の ⌘Z）、Esc で今日へ移る", async () => {
+  // 17-修正1 の 7：戻り先のプロジェクトがもうないときは、今日へ移る
+  // （「取り消したときにそのプロジェクトの画面を開いていれば、今日へ移る」と同じ扱い）
+  it("戻り先のプロジェクトが、ページを開いているあいだに消えたら（作成の ⌘Z）、Esc で今日へ移る", async () => {
     const user = userEvent.setup();
     const { store, location } = await open("/today");
     await screen.findByRole("listbox", { name: "今日" });
@@ -373,7 +371,9 @@ describe("並び", () => {
 
     await user.clear(filterInput());
     await user.type(filterInput(), "esc");
-    expect(screen.getByText("前の画面に戻る", { exact: true })).toBeInTheDocument();
+    // ページの Esc（絞り込みを消す・前の画面に戻る）は当たり、? だけの「前の画面に戻る」は当たらない
+    expect(screen.getByText("絞り込みを消す・前の画面に戻る", { exact: true })).toBeInTheDocument();
+    expect(screen.queryByText("前の画面に戻る", { exact: true })).toBeNull();
     expect(screen.queryByText("完了（もう一度で戻す）")).toBeNull();
     // 候補や欄の中の Esc も当たる
     expect(screen.getByRole("region", { name: "候補や欄の中" })).toBeInTheDocument();

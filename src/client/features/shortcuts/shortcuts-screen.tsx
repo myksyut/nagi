@@ -1,12 +1,12 @@
 import { SearchIcon } from "lucide-react";
 import { observer } from "mobx-react-lite";
-import { type ComponentType, type ReactNode, useEffect, useId, useRef, useState } from "react";
+import { type ComponentType, type ReactNode, useEffect, useId, useRef } from "react";
 import { Kbd } from "@/components/ui/kbd";
 import { QuickAddHost } from "@/features/quick-add/quick-add";
 import { fieldKeyScenes } from "@/keyboard/field-keys";
 import { useKeyContext } from "@/keyboard/key-context";
 import { keymap } from "@/keyboard/keymap";
-import { formatKey, isComposingKey } from "@/keyboard/keys";
+import { formatKey } from "@/keyboard/keys";
 import { cn } from "@/lib/utils";
 import {
   bindingSections,
@@ -22,7 +22,8 @@ import { shortcutsPageOf } from "./state";
  *   各行は操作の名前と、右にキー（割り当てたキーはすべて）。決まった画面だけで効くキーには、効く画面を添える
  * - 一番下に、候補や欄の中のキー（keyboard/field-keys.ts に各機能が登録したもの）を場面ごとに
  * - 見出しの右の欄で、操作の名前かキーの一部で絞り込む。開くとここにフォーカスがある。当てはまらなければ「見つかりません」。
- *   欄の Esc は、文字があれば消し、空なら前の画面に戻る（欄の中の `?` は文字として入る）
+ *   Esc は、欄の中でも外でも、文字があれば消し、空なら前の画面に戻る（キーマップの `shortcuts.escape`。文字は state.ts）。
+ *   欄の中の `?` は文字として入る
  * どちらの一覧も登録から作る（ページに手で書かない）ので、割り当てを足すとそのまま出る。
  * 右下の「＋」と n は、このページでも小さな追加欄を開く（一覧の追加欄がないため）
  */
@@ -32,14 +33,18 @@ export const ShortcutsScreen = observer(function ShortcutsScreen({
   /** 見出し（起動側の lazy.tsx の部品。読み込む前と同じ形で、右に絞り込みの欄を置く） */
   Heading: ComponentType<{ actions?: ReactNode }>;
 }) {
-  const [filter, setFilter] = useState("");
+  const { ui } = useKeyContext();
+  const page = shortcutsPageOf(ui);
+  const { filter } = page;
   const bindings = bindingSections(keymap.list(), filter);
   const fields = fieldKeySections(fieldKeyScenes(), filter);
   const empty = bindings.length === 0 && fields.length === 0;
 
   return (
     <>
-      <Heading actions={<FilterInput value={filter} onChange={setFilter} />} />
+      <Heading
+        actions={<FilterInput value={filter} onChange={(value) => page.setFilter(value)} />}
+      />
       {empty ? (
         <p role="status" className="py-14 text-center text-muted-foreground text-sm">
           見つかりません
@@ -70,7 +75,6 @@ export const ShortcutsScreen = observer(function ShortcutsScreen({
 
 /** 絞り込みの欄。開くとフォーカスがある */
 function FilterInput({ value, onChange }: { value: string; onChange: (value: string) => void }) {
-  const context = useKeyContext();
   const input = useRef<HTMLInputElement>(null);
   const hintId = useId();
   useEffect(() => {
@@ -90,14 +94,6 @@ function FilterInput({ value, onChange }: { value: string; onChange: (value: str
         className="h-8 w-full rounded-lg border border-input bg-card ps-8 pe-2.5 text-[13px] outline-none placeholder:text-muted-foreground/70 focus-visible:border-(--selection-ring) focus-visible:shadow-[0_0_14px_var(--selection-glow)]"
         value={value}
         onChange={(event) => onChange(event.target.value)}
-        onKeyDown={(event) => {
-          if (isComposingKey(event.nativeEvent) || event.key !== "Escape") return;
-          if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
-          // 文字があれば先に消す。空なら前の画面に戻る
-          event.preventDefault();
-          if (value !== "") onChange("");
-          else shortcutsPageOf(context.ui).close(context);
-        }}
       />
       <span id={hintId} className="sr-only">
         Esc で文字を消す。空のときは前の画面に戻る

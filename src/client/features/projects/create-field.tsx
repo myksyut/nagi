@@ -1,14 +1,15 @@
 import { autoProjectColor } from "@shared/palette";
 import { PlusIcon } from "lucide-react";
-import { action, makeObservable, observable, when } from "mobx";
+import { action, makeObservable, observable, runInAction, when } from "mobx";
 import { observer } from "mobx-react-lite";
 import { useEffect, useId, useRef } from "react";
-import { useStore } from "@/data";
+import { type AppStore, type Notice, useStore } from "@/data";
 import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { useKeyContext } from "@/keyboard/key-context";
 import { type KeyContext, keymap } from "@/keyboard/keymap";
 import { isComposingKey } from "@/keyboard/keys";
 import { projectPath } from "@/navigation";
+import type { DraftStorage } from "@/tasks/draft-storage";
 import type { ListUi } from "@/tasks/list-ui";
 import { useUi } from "@/tasks/ui-context";
 import { normalizeName } from "./commands";
@@ -22,8 +23,10 @@ import { projectScreenKey } from "./project-view";
  * - Enter で作り、そのプロジェクトの画面を開いて一覧にフォーカスを移す（そのまま n でそのプロジェクトの「あとで」に足せる）。
  *   同じ名前（p の候補と同じ比べ方。アーカイブ済み・削除済みは比べない）があれば、作らずにそのプロジェクトを開く
  * - Esc で閉じる。何も打たずに外を押しても閉じる。打った名前があるまま外を押したときは欄を残す
- * - 変換を確定する Enter では作らない。オフラインなどで受け付けられなかったら、打った名前を残して開いたままにする。
- *   送ったあとに保存できなかったときは、打った名前を欄に戻す（次に ＋ で開くと入っている）
+ * - 変換を確定する Enter では作らない。オフラインなどで受け付けられなかったら、打った名前を残して開いたままにする
+ * - 打った名前は黙って消さない（ProjectCreator）：欄に打っている名前は下書きとして残し（再読み込みでも消えない）、
+ *   送ったあとに保存できなかった作成（保存の失敗・ログインが切れた・版が古い）の名前は、すべて控えの列に残して、
+ *   次に欄を開いたときに古い順に入れる。打っている途中の名前は上書きしない
  * 作成はデータ層の createProject（⌘Z で取り消せる。トーストは出さない。取り消したときにそのプロジェクトの画面を
  * 開いていれば、プロジェクトの画面が今日へ移る）
  */
@@ -31,37 +34,76 @@ import { projectScreenKey } from "./project-view";
 /** ＋ と ⌘K が呼ぶ割り当て（キーはなし。register.tsx） */
 export const PROJECT_CREATE_BINDING_ID = "project.create";
 
-/** 名前の欄の開閉と、打った名前。一覧の状態（ListUi）ごとに1つ */
+/**
+ * 名前の欄の開閉と、打った名前。一覧の状態（ListUi）ごとに1つ。
+ * 打った名前と、保存できずに戻ってきた名前の控えの列は、一覧の下書きと同じ置き場（ui.drafts。localStorage）に残す。
+ * ストアの知らせ（保存の失敗・ログインが切れた・版が古い）で捨てられた作成は、何件あってもすべて控えの列へ入れる
+ */
 export class ProjectCreator {
   open = false;
   name = "";
   /** 開くたびに変わる番号（開いたままもう一度開くと、欄にフォーカスを戻す） */
   focusRequest = 0;
+  /** 控えの列の残り（まだ欄に入れていない、保存できなかった名前）の数 */
+  returnedCount = 0;
+  readonly #drafts: DraftStorage;
 
-  constructor() {
+  constructor(store: AppStore, drafts: DraftStorage) {
+    this.#drafts = drafts;
+    // 前に打っていた名前と控えの列を戻す（再読み込み・ログインのし直し・新しいバージョン）
+    this.name = drafts.loadProjectNameDraft();
+    this.returnedCount = drafts.loadProjectNames().length;
     makeObservable(this, {
       open: observable,
       name: observable,
       focusRequest: observable,
+      returnedCount: observable,
       show: action,
       close: action,
       setName: action,
     });
+    store.subscribe((notice) => this.#onNotice(notice));
   }
 
+  /** 開く。欄が空なら、控えの列の先頭を入れる */
   show(): void {
     this.open = true;
     this.focusRequest += 1;
+    this.#fillFromReturned();
   }
 
-  /** 閉じる（打った名前も消す） */
+  /** 閉じる（作れたとき・Esc・空のまま外を押したとき。打った名前も消す） */
   close(): void {
     this.open = false;
-    this.name = "";
+    this.setName("");
   }
 
   setName(name: string): void {
     this.name = name;
+    this.#drafts.saveProjectNameDraft(name);
+  }
+
+  /** 欄が空なら、控えの列の先頭を入れる（ほかのタブと合わせた最新の列から取る） */
+  #fillFromReturned(): void {
+    if (this.name.trim() !== "") return;
+    const { taken, rest } = this.#drafts.takeProjectName();
+    this.returnedCount = rest.length;
+    if (taken !== undefined) this.setName(taken);
+  }
+
+  /** 捨てられた作成の名前を、すべて控えの列へ。開いていて空の欄には、すぐに先頭を入れる */
+  #onNotice(notice: Notice): void {
+    if (notice.type === "offline-blocked") return;
+    const names = notice.discarded.flatMap((operation) =>
+      operation.mutations.flatMap((mutation) =>
+        mutation.type === "project.create" ? [mutation.project.name] : [],
+      ),
+    );
+    if (names.length === 0) return;
+    runInAction(() => {
+      this.returnedCount = this.#drafts.appendProjectNames(names).length;
+      if (this.open) this.#fillFromReturned();
+    });
   }
 }
 
@@ -70,7 +112,7 @@ const creators = new WeakMap<ListUi, ProjectCreator>();
 export function projectCreatorOf(ui: ListUi): ProjectCreator {
   let creator = creators.get(ui);
   if (!creator) {
-    creator = new ProjectCreator();
+    creator = new ProjectCreator(ui.store, ui.drafts);
     creators.set(ui, creator);
   }
   return creator;
@@ -92,15 +134,12 @@ export function submitProjectName(context: KeyContext): boolean {
     if (!result.ok) return false;
     id = result.ids[0];
     if (id === undefined) return false;
-    // 送ったあとに保存できなかったら（プロジェクトは消え、画面は今日へ移る）、打った名前を欄に戻す
-    ui.onSaveFailed(result.operationId, () => {
-      if (creator.open && creator.name.trim() !== "") return null;
-      creator.setName(name);
-      return {
-        title: "保存できませんでした",
-        description: `「${name}」は、＋ で開く名前の欄に戻しました`,
-      };
-    });
+    // 送ったあとに保存できなかったら、プロジェクトは消え（画面は今日へ移る）、名前は控えの列へ戻る（ProjectCreator）。
+    // ここで決めるのは、そのときのトーストの文言だけ
+    ui.onSaveFailed(result.operationId, () => ({
+      title: "保存できませんでした",
+      description: "作れなかったプロジェクトの名前は、＋ で開く欄に戻しました",
+    }));
   }
   creator.close();
   openProject(context, id);
@@ -217,7 +256,9 @@ const NameField = observer(function NameField({ creator }: { creator: ProjectCre
         />
       </div>
       <p id={hintId} className="mx-2.5 mt-1.5 mb-1 text-[11px] text-faint-foreground">
-        {offline ? "オフラインのため、今は作れません" : "Enter で作って開く ・ Esc でやめる"}
+        {offline
+          ? "オフラインのため、今は作れません"
+          : `${creator.returnedCount > 0 ? `ほかに ${creator.returnedCount}件 ・ ` : ""}Enter で作って開く ・ Esc でやめる`}
       </p>
     </>
   );

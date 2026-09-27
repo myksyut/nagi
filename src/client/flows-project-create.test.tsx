@@ -540,7 +540,8 @@ describe("保存できなかったとき", () => {
     expect(store.lists.projects).toHaveLength(0);
     expect(location.history?.at(-1)).toBe("/inbox");
     expect(
-      (await screen.findAllByText("「断られる名前」は、＋ で開く名前の欄に戻しました")).length,
+      (await screen.findAllByText("作れなかったプロジェクトの名前は、＋ で開く欄に戻しました"))
+        .length,
     ).toBeGreaterThan(0);
     await user.click(createButton());
     expect(nameField()).toHaveValue("断られる名前");

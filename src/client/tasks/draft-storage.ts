@@ -3,6 +3,8 @@
  * - 追加欄の下書き（オフラインで追加できなかった文字も、閉じても残る）
  * - 保存できずに戻ってきた追加の文字の残り（「ほかに下書き N件」）
  * - 保存できなかったタイトルとメモの文字（次にそのタスクを開くと欄に戻る）
+ * - サイドバーのプロジェクトの名前の欄に打っている名前と、保存できなかったプロジェクトの作成の名前
+ *   （次に名前の欄を開くと、先頭から入る。features/projects/create-field.tsx）
  *
  * タブが2つあっても、互いの分を消さないようにする：
  * - タイトルとメモは、項目ごとに別のキーにする
@@ -17,6 +19,8 @@ const PREFIX = "nagi:draft:";
 const ADD_DRAFT_KEY = `${PREFIX}add`;
 const ADD_QUEUE_KEY = `${PREFIX}add-queue`;
 const UNSAVED_PREFIX = `${PREFIX}unsaved:`;
+const PROJECT_NAME_KEY = `${PREFIX}project-name`;
+const PROJECT_NAMES_KEY = `${PREFIX}project-names`;
 
 function defaultStorage(): Storage | null {
   try {
@@ -106,6 +110,37 @@ export class DraftStorage {
   takeFromAddQueue(): { taken: string | undefined; rest: string[] } {
     const [taken, ...rest] = this.loadAddQueue();
     if (taken !== undefined) this.saveAddQueue(rest);
+    return { taken, rest };
+  }
+
+  // --- プロジェクトの名前の欄 -----------------------------------------------------------------
+
+  loadProjectNameDraft(): string {
+    return this.#read(PROJECT_NAME_KEY) ?? "";
+  }
+
+  saveProjectNameDraft(name: string): boolean {
+    return this.#write(PROJECT_NAME_KEY, name === "" ? null : name);
+  }
+
+  /** 保存できなかったプロジェクトの作成の名前（まだ欄に入れていない分。古い順） */
+  loadProjectNames(): string[] {
+    return parseQueue(this.#read(PROJECT_NAMES_KEY));
+  }
+
+  /** 最新の残りの後ろに足す（ほかのタブが足した分を消さない）。足したあとの残りを返す */
+  appendProjectNames(names: readonly string[]): string[] {
+    const next = [...this.loadProjectNames(), ...names];
+    if (names.length > 0) this.#write(PROJECT_NAMES_KEY, JSON.stringify(next));
+    return next;
+  }
+
+  /** 最新の残りから先頭を1つ取る。取ったもの（なければ undefined）と、取ったあとの残りを返す */
+  takeProjectName(): { taken: string | undefined; rest: string[] } {
+    const [taken, ...rest] = this.loadProjectNames();
+    if (taken !== undefined) {
+      this.#write(PROJECT_NAMES_KEY, rest.length === 0 ? null : JSON.stringify(rest));
+    }
     return { taken, rest };
   }
 

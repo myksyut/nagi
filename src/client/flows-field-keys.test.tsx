@@ -1,7 +1,8 @@
-import { act, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppStore } from "./data";
+import { DAY_WIDTH } from "./features/timeline/timeline-screen";
 import { fieldKeyScenes } from "./keyboard/field-keys";
 import { parseKey } from "./keyboard/keys";
 import { FakeServer } from "./test/fake-server";
@@ -20,15 +21,24 @@ import { optionTitles, pickerListbox, setupApp } from "./test/render-app";
 const stores: AppStore[] = [];
 afterEach(() => {
   for (const store of stores.splice(0)) store.dispose();
+  vi.useRealTimers();
 });
 
 /** このファイルで動きを確かめた、場面の id と操作の名前 */
 const VERIFIED: Record<string, readonly string[]> = {
   "project-picker": ["候補を選ぶ", "決める（「◯◯」を作成も）", "やめる"],
   "date-entry": ["決める", "締切を外す（欄を空にして）", "やめる"],
+  "date-calendar": [
+    "前の日・次の日へ",
+    "前の週・次の週へ",
+    "前の月・次の月へ",
+    "前の年・次の年へ",
+    "週の始め・終わりへ",
+    "その日に決める",
+  ],
   "add-row": ["追加して続けて打つ", "閉じる（最後に追加したタスクを選ぶ）"],
   "quick-add": ["追加して続けて打つ", "閉じる", "行き先（受信箱｜今日）を切り替える"],
-  "task-detail": ["タイトルを保存して閉じる", "メモを書く（メモの上で）", "メモを保存して閉じる"],
+  "task-detail": ["タイトルを保存して閉じる", "改行（メモの中）", "メモを保存して閉じる"],
   checklist: [
     "次の項目へ",
     "前の項目へ",
@@ -40,6 +50,19 @@ const VERIFIED: Record<string, readonly string[]> = {
   ],
   palette: ["候補を選ぶ", "実行する・開く", "閉じる"],
   "project-name": ["作って開く（同じ名前があれば開く）", "やめる"],
+  "task-detail-popover": ["閉じる（押したタスクへ戻る）", "完了にする・戻す（丸の上で）"],
+  "project-rename": ["保存する", "やめる"],
+  "project-color": ["色を選ぶ", "決める", "閉じる"],
+  "calendar-task": [
+    "小さな詳細を開く（タスクか◆にフォーカスがあるとき）",
+    "「ほか N 件」の一覧を閉じる",
+  ],
+  "calendar-filter": ["候補を選ぶ", "決める", "閉じる"],
+  "timeline-bar": [
+    "小さな詳細を開く（棒か◆にフォーカスがあるとき）",
+    "ドラッグをやめる（押しているあいだ）",
+  ],
+  "timeline-filter": ["候補を選ぶ", "決める", "閉じる"],
 };
 
 /** 場面の操作に登録されたキー（keys.ts の書き方）。登録がなければ落とす */
@@ -221,6 +244,74 @@ describe("日付の入力（d・⇧D）", () => {
   });
 });
 
+describe("日付の入力のカレンダー（日にフォーカスがあるとき）", () => {
+  /** YYYY-MM-DD を days 日・months 月・years 年ずらす（その端末の暦で） */
+  function shift(date: string, { days = 0, months = 0, years = 0 }): string {
+    const [y, m, d] = date.split("-").map(Number) as [number, number, number];
+    const next = new Date(y + years, m - 1 + months, d + days);
+    const pad = (n: number) => String(n).padStart(2, "0");
+    return `${next.getFullYear()}-${pad(next.getMonth() + 1)}-${pad(next.getDate())}`;
+  }
+
+  /** フォーカスのある日（DayPicker の日のマスの data-day） */
+  function focusedDay(): string | null | undefined {
+    return document.activeElement?.closest("[data-day]")?.getAttribute("data-day");
+  }
+
+  async function openCalendarOn(date: string) {
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "予定の日", bucket: "scheduled", scheduledOn: date }));
+    const setup = await open("/upcoming", server);
+    await screen.findByRole("listbox", { name: "予定" });
+    const user = userEvent.setup();
+    await user.keyboard("jd");
+    await screen.findByRole("textbox", { name: "予定の日付" });
+    const day = document.querySelector<HTMLElement>(`[data-day="${date}"] button`);
+    expect(day).not.toBeNull();
+    act(() => day?.focus());
+    expect(focusedDay()).toBe(date);
+    return { ...setup, user };
+  }
+
+  it("←→ で日、↑↓ で週、⇧←→ と PageUp・PageDown で月、⇧↑↓ と ⇧PageUp・⇧PageDown で年、Home・End で週の端へ", async () => {
+    const start = "2099-06-17"; // 水曜
+    const { user } = await openCalendarOn(start);
+    const moves: [label: string, index: number, expected: string][] = [
+      ["前の日・次の日へ", 1, shift(start, { days: 1 })],
+      ["前の日・次の日へ", 0, start],
+      ["前の週・次の週へ", 1, shift(start, { days: 7 })],
+      ["前の週・次の週へ", 0, start],
+      ["前の月・次の月へ", 1, shift(start, { months: 1 })],
+      ["前の月・次の月へ", 0, start],
+      ["前の月・次の月へ", 3, shift(start, { months: 1 })],
+      ["前の月・次の月へ", 2, start],
+      ["前の年・次の年へ", 1, shift(start, { years: 1 })],
+      ["前の年・次の年へ", 0, start],
+      ["前の年・次の年へ", 3, shift(start, { years: 1 })],
+      ["前の年・次の年へ", 2, start],
+      // 週は日曜始まり（6/14 が日曜、6/20 が土曜）
+      ["週の始め・終わりへ", 0, "2099-06-14"],
+      ["週の始め・終わりへ", 1, "2099-06-20"],
+    ];
+    for (const [label, index, expected] of moves) {
+      await press(user, "date-calendar", label, index);
+      await waitFor(() => expect(focusedDay(), `${label}（${index}）`).toBe(expected));
+    }
+  });
+
+  it.each([
+    [0, "Enter"],
+    [1, "Space"],
+  ])("日の上の %s 番目のキー（%s）で、その日に決める", async (index) => {
+    const { user, store } = await openCalendarOn("2099-06-17");
+    await press(user, "date-calendar", "前の日・次の日へ", 1);
+    await waitFor(() => expect(focusedDay()).toBe("2099-06-18"));
+    await press(user, "date-calendar", "その日に決める", index);
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "予定の日付" })).toBeNull());
+    expect(store.lists.scheduled[0]?.scheduledOn).toBe("2099-06-18");
+  });
+});
+
 describe("追加欄", () => {
   it("Enter で追加して続けて打て、Esc で閉じると最後に追加したタスクが選ばれる", async () => {
     const user = userEvent.setup();
@@ -259,16 +350,22 @@ describe("小さな追加欄", () => {
     expect(input).toHaveFocus();
 
     // Tab で行き先の切り替えへ移り、→ で今日へ、← で受信箱へ戻る（行き先は欄の名前「◯◯に追加」に出る）。
-    // ラジオの checked そのものは見ない：ラベルの onClick が既定の動きを止めて自分で切り替えるので、
-    // 矢印で動いたときの DOM の checked は、テストの DOM（happy-dom）では行き先と一致しない
+    // ラジオの checked（読み上げに出る行き先）も、行き先とそろう（17-修正1 の 8）
+    const radio = (name: string) => screen.getByRole("radio", { name });
     await user.tab();
-    expect(screen.getByRole("radio", { name: "受信箱" })).toHaveFocus();
+    expect(radio("受信箱")).toHaveFocus();
+    expect(radio("受信箱")).toBeChecked();
     await press(user, "quick-add", "行き先（受信箱｜今日）を切り替える", 1);
     expect(screen.getByRole("textbox", { name: "今日に追加" })).toBeInTheDocument();
-    expect(screen.getByRole("radio", { name: "今日" })).toHaveFocus();
+    expect(radio("今日")).toHaveFocus();
+    expect(radio("今日")).toBeChecked();
+    expect(radio("受信箱")).not.toBeChecked();
     await press(user, "quick-add", "行き先（受信箱｜今日）を切り替える", 0);
     expect(screen.getByRole("textbox", { name: "受信箱に追加" })).toBeInTheDocument();
+    expect(radio("受信箱")).toBeChecked();
+    expect(radio("今日")).not.toBeChecked();
     await press(user, "quick-add", "行き先（受信箱｜今日）を切り替える", 1);
+    expect(radio("今日")).toBeChecked();
 
     const todayInput = screen.getByRole("textbox", { name: "今日に追加" });
     todayInput.focus();
@@ -304,27 +401,29 @@ describe("開いたタスク", () => {
     expect(keys).toHaveLength(2);
   });
 
-  it("メモの上の Enter で書く欄になり、メモの Esc は保存して閉じる", async () => {
+  it("メモの中の Enter は改行（閉じない）、メモの Esc は保存して閉じる", async () => {
     const user = userEvent.setup();
     const server = new FakeServer();
-    server.putTask(makeTask({ title: "メモあり", bucket: "today", memo: "https://example.com" }));
+    server.putTask(makeTask({ title: "メモあり", bucket: "today", memo: "1行目" }));
     const { store } = await open("/today", server);
     await screen.findByRole("listbox", { name: "今日" });
 
     await user.keyboard("j{Enter}");
-    // メモそのものにフォーカスが入ると、それだけで書く欄になる。Enter で書く欄になるのは、メモの中（リンク）にいるとき
-    const memo = screen.getByRole("button", { name: "メモを直す" });
-    within(memo).getByRole("link").focus();
-    await press(user, "task-detail", "メモを書く（メモの上で）");
-    const textarea = screen.getByRole("textbox", { name: "メモ" });
-    expect(textarea).toHaveFocus();
+    // メモにフォーカスが入ると、それだけで書く欄になる（Tab で入ったときも同じ）
+    act(() => screen.getByRole("button", { name: "メモを直す" }).focus());
+    const textarea = await screen.findByRole("textbox", { name: "メモ" });
+    await waitFor(() => expect(textarea).toHaveFocus());
 
-    await user.keyboard(" を見る");
+    await press(user, "task-detail", "改行（メモの中）");
+    await user.keyboard("2行目");
+    expect(textarea).toHaveFocus();
+    expect(textarea).toHaveValue("1行目\n2行目");
+
     await press(user, "task-detail", "メモを保存して閉じる");
     expect(screen.queryByRole("textbox", { name: "メモ" })).toBeNull();
     expect(screen.queryByRole("textbox", { name: "タイトル" })).toBeNull();
     await settle(store);
-    expect(store.lists.today[0]?.memo).toBe("https://example.com を見る");
+    expect(store.lists.today[0]?.memo).toBe("1行目\n2行目");
   });
 });
 
@@ -512,5 +611,276 @@ describe("プロジェクトの名前の欄", () => {
     expect(location.history?.at(-1)).toBe(`/projects/${created?.id}`);
     await screen.findByRole("listbox", { name: "新規" });
     expect(optionTitles("新規")).toEqual([]);
+  });
+});
+
+describe("プロジェクトの名前の変更（見出し）", () => {
+  it("Enter で保存する。Esc でやめる", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ name: "元の名前" }));
+    const { store } = await open(`/projects/${project.id}`, server);
+    await screen.findByRole("heading", { name: "元の名前" });
+
+    await user.click(screen.getByRole("button", { name: "元の名前" }));
+    const input = screen.getByRole("textbox", { name: "プロジェクト名" });
+    await user.clear(input);
+    await user.keyboard("直した名前");
+    await press(user, "project-rename", "保存する");
+    expect(screen.queryByRole("textbox", { name: "プロジェクト名" })).toBeNull();
+    expect(store.project(project.id)?.name).toBe("直した名前");
+
+    await user.click(screen.getByRole("button", { name: "直した名前" }));
+    await user.clear(screen.getByRole("textbox", { name: "プロジェクト名" }));
+    await user.keyboard("やめた名前");
+    await press(user, "project-rename", "やめる");
+    expect(screen.queryByRole("textbox", { name: "プロジェクト名" })).toBeNull();
+    expect(store.project(project.id)?.name).toBe("直した名前");
+  });
+});
+
+describe("プロジェクトの色の候補", () => {
+  it("←→↑↓ で色を移り、Enter と Space で決める。Esc で閉じる", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ name: "P" }));
+    const { store } = await open(`/projects/${project.id}`, server);
+    await screen.findByRole("heading", { name: "P" });
+
+    await user.click(screen.getByRole("button", { name: "プロジェクトの色：紫" }));
+    let palette = await screen.findByRole("radiogroup", { name: "プロジェクトの色" });
+    const radio = (name: string) => within(palette).getByRole("radio", { name });
+    expect(radio("紫")).toHaveFocus();
+    const moves: [index: number, name: string][] = [
+      [1, "水色"], // →
+      [3, "ピンク"], // ↓
+      [2, "水色"], // ↑
+      [0, "紫"], // ←
+      [1, "水色"],
+    ];
+    for (const [index, name] of moves) {
+      await press(user, "project-color", "色を選ぶ", index);
+      expect(radio(name)).toHaveFocus();
+    }
+    await press(user, "project-color", "決める", 0);
+    await waitFor(() => expect(screen.queryByRole("radiogroup")).toBeNull());
+    expect(store.project(project.id)?.color).toBe("sky");
+
+    await user.click(screen.getByRole("button", { name: "プロジェクトの色：水色" }));
+    palette = await screen.findByRole("radiogroup", { name: "プロジェクトの色" });
+    await press(user, "project-color", "色を選ぶ", 1);
+    expect(radio("ピンク")).toHaveFocus();
+    await press(user, "project-color", "決める", 1);
+    await waitFor(() => expect(screen.queryByRole("radiogroup")).toBeNull());
+    expect(store.project(project.id)?.color).toBe("pink");
+
+    const button = screen.getByRole("button", { name: "プロジェクトの色：ピンク" });
+    await user.click(button);
+    await screen.findByRole("radiogroup", { name: "プロジェクトの色" });
+    await press(user, "project-color", "閉じる");
+    await waitFor(() => expect(screen.queryByRole("radiogroup")).toBeNull());
+    expect(button).toHaveFocus();
+    expect(store.project(project.id)?.color).toBe("pink");
+  });
+});
+
+/** カレンダーとタイムラインは、9/27（日）の朝にしておく */
+async function openView(path: "/calendar" | "/timeline", server: FakeServer) {
+  vi.useFakeTimers({ toFake: ["Date"] });
+  vi.setSystemTime(new Date("2026-09-27T10:00:00+09:00"));
+  const setup = await open(path, server);
+  if (path === "/calendar") await screen.findByText("2026年9月");
+  else await screen.findByRole("region", { name: "タイムライン" });
+  return setup;
+}
+
+function calendarCell(date: string): HTMLElement {
+  const found = document.querySelector<HTMLElement>(`td[data-date="${date}"]`);
+  if (!found) throw new Error(`マス（${date}）が見つかりません`);
+  return found;
+}
+
+describe("カレンダーのタスクと、小さな詳細", () => {
+  it("タスクの上の Enter と Space で小さな詳細が開き、Esc で閉じて押したタスクへ戻る", async () => {
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "詳細A", bucket: "scheduled", scheduledOn: "2026-09-30" }));
+    await openView("/calendar", server);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const chip = within(calendarCell("2026-09-30")).getByRole("button", { name: "詳細A" });
+
+    for (const index of [0, 1]) {
+      act(() => chip.focus());
+      await press(
+        user,
+        "calendar-task",
+        "小さな詳細を開く（タスクか◆にフォーカスがあるとき）",
+        index,
+      );
+      const dialog = await screen.findByRole("dialog", { name: "「詳細A」の詳細" });
+      act(() => dialog.focus());
+      await press(user, "task-detail-popover", "閉じる（押したタスクへ戻る）");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+      expect(chip).toHaveFocus();
+    }
+  });
+
+  it("小さな詳細の完了の丸の上の Enter と Space で、完了にする", async () => {
+    const server = new FakeServer();
+    for (const title of ["丸A", "丸B"]) {
+      server.putTask(makeTask({ title, bucket: "scheduled", scheduledOn: "2026-09-30" }));
+    }
+    const { store } = await openView("/calendar", server);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+
+    for (const [index, title] of ["丸A", "丸B"].entries()) {
+      await user.click(within(calendarCell("2026-09-30")).getByRole("button", { name: title }));
+      const dialog = await screen.findByRole("dialog", { name: `「${title}」の詳細` });
+      act(() =>
+        within(dialog)
+          .getByRole("button", { name: `「${title}」を完了にする` })
+          .focus(),
+      );
+      await press(user, "task-detail-popover", "完了にする・戻す（丸の上で）", index);
+      await waitFor(() =>
+        expect(store.lists.completedToday.map((row) => row.title)).toContain(title),
+      );
+    }
+  });
+
+  it("「ほか N 件」の一覧は Esc で閉じる", async () => {
+    const server = new FakeServer();
+    for (const [i, title] of ["T1", "T2", "T3", "T4", "T5"].entries()) {
+      server.putTask(
+        makeTask({ title, bucket: "scheduled", scheduledOn: "2026-09-30", rank: `a${i}` }),
+      );
+    }
+    await openView("/calendar", server);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    await user.click(within(calendarCell("2026-09-30")).getByRole("button", { name: "ほか 3 件" }));
+    await screen.findByRole("dialog", { name: /のタスク$/ });
+    await press(user, "calendar-task", "「ほか N 件」の一覧を閉じる");
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  });
+});
+
+describe("カレンダーのプロジェクトの絞り込み", () => {
+  it("↑↓ で候補を選び、Enter と Space で決める。Esc で閉じる", async () => {
+    const server = new FakeServer();
+    server.putProject(makeProject({ name: "P1" }));
+    await openView("/calendar", server);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const trigger = () => screen.getByRole("button", { name: /^プロジェクトで絞り込む：/ });
+    const highlighted = () =>
+      screen.getAllByRole("menuitemradio").find((item) => item.hasAttribute("data-highlighted"));
+
+    await user.click(trigger());
+    await screen.findByRole("menu");
+    // 何も選んでいないときの ↓ は一番上（すべて）から
+    await press(user, "calendar-filter", "候補を選ぶ", 1);
+    await waitFor(() => expect(highlighted()).toHaveTextContent("すべてのプロジェクト"));
+    await press(user, "calendar-filter", "候補を選ぶ", 1);
+    await waitFor(() => expect(highlighted()).toHaveTextContent("P1"));
+    await press(user, "calendar-filter", "候補を選ぶ", 1);
+    await press(user, "calendar-filter", "候補を選ぶ", 0);
+    await waitFor(() => expect(highlighted()).toHaveTextContent("P1"));
+    await press(user, "calendar-filter", "決める", 0);
+    await waitFor(() => expect(trigger()).toHaveAccessibleName("プロジェクトで絞り込む：P1"));
+
+    await user.click(trigger());
+    await screen.findByRole("menu");
+    await press(user, "calendar-filter", "候補を選ぶ", 1);
+    await press(user, "calendar-filter", "候補を選ぶ", 1);
+    await press(user, "calendar-filter", "候補を選ぶ", 1);
+    await waitFor(() => expect(highlighted()).toHaveTextContent("プロジェクトなし"));
+    await press(user, "calendar-filter", "決める", 1);
+    await waitFor(() =>
+      expect(trigger()).toHaveAccessibleName("プロジェクトで絞り込む：プロジェクトなし"),
+    );
+
+    await user.click(trigger());
+    await screen.findByRole("menu");
+    await press(user, "calendar-filter", "閉じる");
+    await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+    expect(trigger()).toHaveAccessibleName("プロジェクトで絞り込む：プロジェクトなし");
+  });
+});
+
+describe("タイムラインの棒と◆", () => {
+  it("棒の上の Enter と Space で小さな詳細が開く。押しているあいだの Esc でドラッグをやめる", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "棒", bucket: "scheduled", scheduledOn: "2026-10-05" }),
+    );
+    const { store } = await openView("/timeline", server);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const bar = () => screen.getByRole("button", { name: /^「棒」/ });
+
+    for (const index of [0, 1]) {
+      act(() => bar().focus());
+      await press(user, "timeline-bar", "小さな詳細を開く（棒か◆にフォーカスがあるとき）", index);
+      const dialog = await screen.findByRole("dialog", { name: "「棒」の詳細" });
+      act(() => dialog.focus());
+      await press(user, "task-detail-popover", "閉じる（押したタスクへ戻る）");
+      await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    }
+
+    const element = bar();
+    fireEvent.pointerDown(element, { button: 0, pointerId: 7, clientX: 0 });
+    fireEvent.pointerMove(element, { pointerId: 7, clientX: 3 * DAY_WIDTH });
+    await press(user, "timeline-bar", "ドラッグをやめる（押しているあいだ）");
+    fireEvent.pointerUp(element, { pointerId: 7, clientX: 3 * DAY_WIDTH });
+    expect(store.task(task.id)?.scheduledOn).toBe("2026-10-05");
+    expect(store.canUndo).toBe(false);
+  });
+});
+
+describe("タイムラインのプロジェクトの絞り込み", () => {
+  it("↑↓ で候補を選び、Enter と Space で決める。Esc で閉じてボタンへ戻る", async () => {
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ name: "AIPR" }));
+    server.putTask(
+      makeTask({
+        title: "Pのタスク",
+        bucket: "scheduled",
+        scheduledOn: "2026-10-01",
+        projectId: project.id,
+      }),
+    );
+    server.putTask(
+      makeTask({ title: "なしのタスク", bucket: "scheduled", scheduledOn: "2026-10-01" }),
+    );
+    await openView("/timeline", server);
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const trigger = () => screen.getByRole("button", { name: /^プロジェクトで絞り込む：/ });
+    const radio = (name: string) => screen.getByRole("radio", { name });
+
+    await user.click(trigger());
+    await waitFor(() => expect(radio("すべてのプロジェクト")).toHaveFocus());
+    await press(user, "timeline-filter", "候補を選ぶ", 1);
+    expect(radio("AIPR")).toHaveFocus();
+    await press(user, "timeline-filter", "候補を選ぶ", 0);
+    expect(radio("すべてのプロジェクト")).toHaveFocus();
+    await press(user, "timeline-filter", "候補を選ぶ", 1);
+    await press(user, "timeline-filter", "決める", 0);
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /^「なしのタスク」/ })).toBeNull(),
+    );
+    expect(screen.getByRole("button", { name: /^「Pのタスク」/ })).toBeInTheDocument();
+
+    await user.click(trigger());
+    await waitFor(() => expect(radio("AIPR")).toHaveFocus());
+    await press(user, "timeline-filter", "候補を選ぶ", 1);
+    expect(radio("プロジェクトなし")).toHaveFocus();
+    await press(user, "timeline-filter", "決める", 1);
+    await waitFor(() =>
+      expect(screen.queryByRole("button", { name: /^「Pのタスク」/ })).toBeNull(),
+    );
+    expect(screen.getByRole("button", { name: /^「なしのタスク」/ })).toBeInTheDocument();
+
+    await user.click(trigger());
+    await waitFor(() => expect(radio("プロジェクトなし")).toHaveFocus());
+    await press(user, "timeline-filter", "閉じる");
+    await waitFor(() => expect(screen.queryByRole("radio", { name: "AIPR" })).toBeNull());
+    expect(trigger()).toHaveFocus();
   });
 });

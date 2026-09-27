@@ -7,7 +7,7 @@ import { SHORTCUTS } from "@/navigation";
 import { ScreenHeading } from "@/screens/list-screen";
 import { SHORTCUTS_ICON } from "@/shell/list-icons";
 import { useUi } from "@/tasks/ui-context";
-import { SHORTCUTS_CLOSE_BINDING_ID } from "./register";
+import { SHORTCUTS_CLOSE_BINDING_ID, SHORTCUTS_ESCAPE_BINDING_ID } from "./register";
 import { shortcutsPageOf } from "./state";
 
 /**
@@ -55,7 +55,9 @@ export function LazyShortcutsScreen() {
 export function ShortcutsHeading({ actions }: { actions?: ReactNode }) {
   const { Icon, color } = SHORTCUTS_ICON;
   // 戻るキーはキーマップから（「Esc か ? で前の画面に戻る」）
-  const keys = keymap.get(SHORTCUTS_CLOSE_BINDING_ID)?.keys ?? [];
+  const keys = [SHORTCUTS_ESCAPE_BINDING_ID, SHORTCUTS_CLOSE_BINDING_ID].flatMap(
+    (id) => keymap.get(id)?.keys ?? [],
+  );
   return (
     <ScreenHeading
       leading={

@@ -3,6 +3,7 @@ import { observer } from "mobx-react-lite";
 import { useEffect, useId, useMemo, useRef } from "react";
 import { Popover, PopoverPopup } from "@/components/ui/popover";
 import type { TaskRow } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { toggleComplete } from "./commands";
 import { CompleteButton } from "./complete-button";
 import { type DetailSurface, DetailSurfaceProvider } from "./detail-surface";
@@ -10,6 +11,18 @@ import { detachedHostsList } from "./extensions";
 import type { ListUi, ListView } from "./list-ui";
 import { TaskDetailFields, TitleInput } from "./task-detail";
 import { useUi } from "./ui-context";
+
+// 小さな詳細の中のキー（ショートカットのページの「候補や欄の中」）。Esc は Base UI の Popover（下の onOpenChange の
+// escape-key）、完了の丸はボタンなので Enter と Space で押せる。タイトルとメモの欄のキーは「開いたタスク」と同じ
+registerFieldKeys({
+  id: "task-detail-popover",
+  label: "小さな詳細（カレンダー・タイムライン）",
+  order: FIELD_SCENE_ORDER.taskDetailPopover,
+  keys: [
+    { label: "閉じる（押したタスクへ戻る）", keys: ["Escape"] },
+    { label: "完了にする・戻す（丸の上で）", keys: ["Enter", " "] },
+  ],
+});
 
 /**
  * 小さな詳細：カレンダーとタイムラインでタスクを押したときに、その場に開くポップオーバーの中の詳細（13・14 がつなぐ）。

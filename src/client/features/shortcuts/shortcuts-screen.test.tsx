@@ -72,6 +72,59 @@ describe("開き方と戻り方", () => {
     expect(location.history).toEqual(["/inbox", "/inbox"]);
   });
 
+  it("欄の外にフォーカスがあっても、文字があれば Esc は先に文字を消し、もう一度の Esc で戻る（見出しのクリックと Tab）", async () => {
+    const user = userEvent.setup();
+    const { location } = await open("/inbox");
+    await screen.findByRole("listbox", { name: "受信箱" });
+
+    for (const leave of ["click", "tab"] as const) {
+      await user.keyboard("?");
+      await screen.findByRole("heading", { name: "ショートカット" });
+      await user.type(filterInput(), "締切");
+      if (leave === "click")
+        await user.click(screen.getByRole("heading", { name: "ショートカット" }));
+      else await user.tab();
+      expect(filterInput()).not.toHaveFocus();
+
+      await user.keyboard("{Escape}");
+      expect(location.history?.at(-1)).toBe("/shortcuts");
+      expect(filterInput()).toHaveValue("");
+      expect(screen.getByText("完了（もう一度で戻す）")).toBeInTheDocument();
+
+      await user.keyboard("{Escape}");
+      expect(location.history?.at(-1)).toBe("/inbox");
+      await screen.findByRole("listbox", { name: "受信箱" });
+    }
+  });
+
+  it("絞り込みの文字は、ページを開き直すと空から", async () => {
+    const user = userEvent.setup();
+    await open("/today");
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.keyboard("?");
+    await screen.findByRole("heading", { name: "ショートカット" });
+    await user.type(filterInput(), "締切");
+    await user.click(screen.getByRole("heading", { name: "ショートカット" }));
+    await user.keyboard("?");
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.keyboard("?");
+    await screen.findByRole("heading", { name: "ショートカット" });
+    expect(filterInput()).toHaveValue("");
+  });
+
+  it("「ショートカット」で絞ると、このページで効く追加（n）と戻るキーが出る", async () => {
+    const user = userEvent.setup();
+    await open("/shortcuts");
+    await screen.findByRole("heading", { name: "ショートカット" });
+    await user.type(filterInput(), "ショートカット");
+    const tasks = screen.getByRole("region", { name: "タスク" });
+    const add = within(tasks).getByText("追加", { exact: true }).closest("li") as HTMLElement;
+    expect(within(add).getByText("カレンダー・タイムライン・ショートカット")).toBeInTheDocument();
+    expect(within(add).getByText("N")).toBeInTheDocument();
+    expect(screen.getByText("絞り込みを消す・前の画面に戻る")).toBeInTheDocument();
+    expect(screen.getByText("前の画面に戻る", { exact: true })).toBeInTheDocument();
+  });
+
   it("直接開いたときは、Esc で今日へ", async () => {
     const user = userEvent.setup();
     const { location } = await open("/shortcuts");
@@ -113,9 +166,15 @@ describe("並ぶもの", () => {
       const bindings = keymap.list().filter((binding) => binding.group === group);
       if (bindings.length === 0) continue;
       const section = screen.getByRole("region", { name: group });
+      const rows = within(section).getAllByRole("listitem");
       for (const binding of bindings) {
-        const row = within(section).getByText(binding.label, { exact: true }).closest("li");
-        expect(row, binding.label).not.toBeNull();
+        // 同じ名前の操作（一覧の「追加」と小さな追加欄の「追加」）は、効く画面で見分ける
+        const row = rows.find(
+          (item) =>
+            item.firstElementChild?.textContent === binding.label &&
+            (binding.where === undefined || item.textContent?.includes(binding.where)),
+        );
+        expect(row, binding.label).toBeDefined();
         const inRow = within(row as HTMLElement);
         if (binding.keys.length === 0) expect(inRow.getByText("キーなし")).toBeInTheDocument();
         for (const key of binding.keys) {

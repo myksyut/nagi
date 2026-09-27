@@ -36,12 +36,20 @@ export type FieldKeyScene = {
 export const FIELD_SCENE_ORDER = {
   projectPicker: 10,
   dateEntry: 20,
+  dateCalendar: 25,
   addRow: 30,
   quickAdd: 35,
   taskDetail: 40,
+  taskDetailPopover: 45,
   checklist: 50,
   palette: 60,
   projectName: 70,
+  projectRename: 72,
+  projectColor: 74,
+  calendarTask: 80,
+  calendarFilter: 82,
+  timelineBar: 85,
+  timelineFilter: 87,
 } as const;
 
 const scenes = new Map<string, FieldKeyScene>();

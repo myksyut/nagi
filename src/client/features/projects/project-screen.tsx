@@ -4,6 +4,7 @@ import { useLocation } from "wouter";
 import { type ProjectRow, type ProjectTaskGroups, useStore } from "@/data";
 import { LazyBoard } from "@/features/board/lazy-board";
 import { useScreenLayout, ViewToggle } from "@/features/board/view-toggle";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { HOME_PATH } from "@/navigation";
 import { ScreenHeading } from "@/screens/list-screen";
@@ -153,6 +154,17 @@ const ProjectHeading = observer(function ProjectHeading({ project }: { project: 
 
 /** 見出しの名前の文字（リストの画面の見出しと同じ） */
 const headingTextClassName = "min-w-0 font-[650] text-[26px] leading-tight tracking-[-0.01em]";
+
+// 見出しの名前の欄の中のキー（ショートカットのページの「候補や欄の中」）。下の RenameInput の onKeyDown と同じ
+registerFieldKeys({
+  id: "project-rename",
+  label: "プロジェクトの名前の変更（見出し）",
+  order: FIELD_SCENE_ORDER.projectRename,
+  keys: [
+    { label: "保存する", keys: ["Enter"] },
+    { label: "やめる", keys: ["Escape"] },
+  ],
+});
 
 /**
  * 名前の入力欄。Enter かフォーカスが外れたら保存、Esc でやめる。空の名前は保存しない（元の名前に戻る）。

@@ -11,14 +11,15 @@ import type { ListView } from "./list-ui";
 import { useAutosave } from "./use-autosave";
 
 // 開いたタスクの欄の中のキー（ショートカットのページの「候補や欄の中」）。下の TitleInput・MemoEditor の onKeyDown と同じ
-// （開くとタイトルへ入るのは、キーマップの Enter。小さな詳細でも同じ）
+// （開くとタイトルへ入るのは、キーマップの Enter。小さな詳細でも同じ）。メモは、フォーカスが入ると書く欄になり、
+// Enter は改行（閉じるのは Esc だけ）
 registerFieldKeys({
   id: "task-detail",
   label: "開いたタスク",
   order: FIELD_SCENE_ORDER.taskDetail,
   keys: [
     { label: "タイトルを保存して閉じる", keys: ["Enter", "Escape"] },
-    { label: "メモを書く（メモの上で）", keys: ["Enter"] },
+    { label: "改行（メモの中）", keys: ["Enter"] },
     { label: "メモを保存して閉じる", keys: ["Escape"] },
   ],
 });

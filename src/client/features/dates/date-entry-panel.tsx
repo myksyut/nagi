@@ -43,6 +43,28 @@ registerFieldKeys({
   ],
 });
 
+// 日付の入力のカレンダーの中のキー（日にフォーカスがあるとき）。移動は DayPicker（react-day-picker 10）の
+// handleDayKeyDown の決まりどおり。日はボタンなので、Enter と Space で押すと、その日で決める（下の onSelect）
+registerFieldKeys({
+  id: "date-calendar",
+  label: "日付の入力のカレンダー（日にフォーカスがあるとき）",
+  order: FIELD_SCENE_ORDER.dateCalendar,
+  keys: [
+    { label: "前の日・次の日へ", keys: ["ArrowLeft", "ArrowRight"] },
+    { label: "前の週・次の週へ", keys: ["ArrowUp", "ArrowDown"] },
+    {
+      label: "前の月・次の月へ",
+      keys: ["Shift+ArrowLeft", "Shift+ArrowRight", "PageUp", "PageDown"],
+    },
+    {
+      label: "前の年・次の年へ",
+      keys: ["Shift+ArrowUp", "Shift+ArrowDown", "Shift+PageUp", "Shift+PageDown"],
+    },
+    { label: "週の始め・終わりへ", keys: ["Home", "End"] },
+    { label: "その日に決める", keys: ["Enter", " "] },
+  ],
+});
+
 // --- 日付と Date（カレンダーはその端末の時間帯の Date で扱う） --------------------------------
 
 function toLocalDate(date: string): Date {
