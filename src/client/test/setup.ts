@@ -10,8 +10,13 @@ MotionGlobalConfig.skipAnimations = true;
 
 // 後から読み込む部品（⌘K・完了ログ・カレンダー・p の候補など）は、本番では起動のあとの空いた時間に先読みする。
 // テストでも各ファイルの最初に読んでおく（最初のテストの時間に、読み込みの重さが入らないように）。
-// テストファイルが読み込んだモジュールに登録されたものだけを読む
-beforeAll(() => preloadDeferred(), 30_000);
+// テストファイルが読み込んだモジュールに登録されたものだけを読む。
+// 読み込みの前の振る舞いを確かめるファイルは、先頭で globalThis.NAGI_NO_PRELOAD = true にして止める
+beforeAll(
+  () =>
+    (globalThis as { NAGI_NO_PRELOAD?: boolean }).NAGI_NO_PRELOAD ? undefined : preloadDeferred(),
+  30_000,
+);
 
 afterEach(() => {
   cleanup();

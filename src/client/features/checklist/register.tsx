@@ -1,4 +1,5 @@
 import { observer } from "mobx-react-lite";
+import { LoadFailedNote } from "@/components/waiting-input";
 import { defer, useDeferred } from "@/lib/deferred";
 import {
   DETAIL_ORDER,
@@ -31,9 +32,11 @@ registerRowMeta({ id: "checklist", order: ROW_META_ORDER.checklist, Component: C
 
 const editor = defer(() => import("./checklist-editor"));
 
+/** 読み込めなかったときは、読み直せる一行を出す（開き直したときも読み直す） */
 function LazyChecklistEditor({ task }: TaskSlotProps) {
-  const module = useDeferred(editor);
-  return module ? <module.ChecklistEditor task={task} /> : null;
+  const { module, failed, retry } = useDeferred(editor);
+  if (module) return <module.ChecklistEditor task={task} />;
+  return failed ? <LoadFailedNote what="チェックリスト" onRetry={retry} /> : null;
 }
 
 registerDetailField({

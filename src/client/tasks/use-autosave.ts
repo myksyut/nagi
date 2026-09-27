@@ -16,6 +16,7 @@ export const AUTOSAVE_DELAY_MS = 500;
  *   開いているあいだに失敗したら欄に戻し、閉じていたら次に開いたときに欄に戻す。
  *   ただし失敗した版のあとに打った、まだ送っていない文字があれば、そちらを残す
  * - オフラインなどで保存できないまま閉じたときも、打った文字を残す
+ * - 読み込み直す直前やページを離れるときも、まだ送っていない文字を下書きへ書く（ListUi.trackEditing）
  * - 空のタイトルは保存しない（閉じると元のタイトルに戻る）
  * 部品は observer で包む（task[field] の変化を受け取るため）
  */
@@ -51,7 +52,11 @@ export function useAutosave(task: TaskRow, field: TextField) {
       ui.clearUnsavedText(task.id, field);
       return;
     }
-    const result = store.actions.updateTask(task.id, { [field]: value }, { undoable: false });
+    const result = store.actions.updateTask(
+      task.id,
+      { [field]: value },
+      { undoable: false, autosave: true },
+    );
     // 送れたら「保存できていない文字」から外す（送った版が失敗したら、知らせを受けて ListUi が入れ直す）。
     // オフラインなどで受け付けられなかったら、次の機会にもう一度保存する
     if (result.ok || result.reason === "noop") {
@@ -83,6 +88,17 @@ export function useAutosave(task: TaskRow, field: TextField) {
         },
       ),
     [ui, task, field, setValue],
+  );
+
+  // まだ送っていない文字を、読み込み直す直前やページを離れるときに下書きへ書けるようにする（ListUi.persistEditing）
+  useEffect(
+    () =>
+      ui.trackEditing(task.id, field, () => {
+        if (!dirty.current) return undefined;
+        const value = draftRef.current;
+        return field === "title" && value.trim() === "" ? undefined : value;
+      }),
+    [ui, task, field],
   );
 
   // 閉じるとき（部品が消えるとき）に保存する。保存できなければ、打った文字を次に開いたときのために残す

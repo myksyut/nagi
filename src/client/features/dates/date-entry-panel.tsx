@@ -1,7 +1,7 @@
 import { ja } from "@daypicker/react/locale/ja";
 import { parseDateInput } from "@shared/date-input";
 import { observer } from "mobx-react-lite";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
+import { type KeyboardEvent, useRef, useState } from "react";
 import { Calendar } from "@/components/ui/calendar";
 import { Kbd } from "@/components/ui/kbd";
 import { Popover, PopoverPopup } from "@/components/ui/popover";
@@ -13,7 +13,13 @@ import { moveTasks } from "@/tasks/commands";
 import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
 import { scheduleTasks, setDeadline } from "./commands";
-import { type DateEntryKind, type DateEntryRequest, dateEntryOf } from "./date-entry";
+import {
+  type DateEntryKind,
+  type DateEntryRequest,
+  dateEntryLabel,
+  dateEntryOf,
+  dateEntryPlaceholder,
+} from "./date-entry";
 import { formatLongDate } from "./labels";
 
 /**
@@ -49,35 +55,16 @@ function keyLabel(id: string): string | undefined {
 
 // --- ポップオーバー ---------------------------------------------------------------------------
 
-/**
- * 入力の後始末：対象の行が今の画面の一覧から消えたら閉じる。行ごと外れた（画面の切り替え、抜けていく動きの終わり）
- * ときも閉じる。どちらも一覧にフォーカスを戻す（ポップオーバーの入力欄にあったフォーカスが行き場を失うため）。
- * 外れたかどうかは、StrictMode の付け直しと区別するため、外れた直後の microtask で確かめる
- */
-function useDismissWhenGone(request: DateEntryRequest, inList: boolean) {
-  const ui = useUi();
-  const mounted = useRef(false);
-  useEffect(() => {
-    if (!inList && dateEntryOf(ui).dismiss(request.id)) ui.focusList();
-  }, [ui, request.id, inList]);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      queueMicrotask(() => {
-        if (!mounted.current && dateEntryOf(ui).dismiss(request.id)) ui.focusList();
-      });
-    };
-  }, [ui, request.id]);
-}
-
 /** 開いている入力（request）か、閉じる途中の入力（消えるときのフェードのあいだ）を描く */
 export const DateEntryPanel = observer(function DateEntryPanel({
   request,
   task,
+  initialText = "",
 }: {
   request: DateEntryRequest;
   task: TaskRow;
+  /** 開いたときの入力欄の文字（読み込みを待つあいだに打った文字） */
+  initialText?: string;
 }) {
   const ui = useUi();
   const store = useStore();
@@ -92,12 +79,10 @@ export const DateEntryPanel = observer(function DateEntryPanel({
   const dateOf = (row: TaskRow) => (kind === "schedule" ? row.scheduledOn : row.deadlineOn);
   const current = targets.every((row) => dateOf(row) === dateOf(task)) ? dateOf(task) : null;
   const anyHasValue = targets.some((row) => dateOf(row) !== null);
-  const [text, setText] = useState("");
+  const [text, setText] = useState(initialText);
   const parsed = text.trim() === "" ? null : parseDateInput(text, today);
-  const [month, setMonth] = useState(() => monthOf(current ?? today));
+  const [month, setMonth] = useState(() => monthOf(parsed ?? current ?? today));
   const input = useRef<HTMLInputElement>(null);
-  const inList = ui.view === request.view && ui.rows.some((row) => row.id === task.id);
-  useDismissWhenGone(request, inList);
   const anchor = request.anchor ?? document.getElementById(taskRowId(task.id));
   /** 閉じる途中なら false（フェードが終わったら entry.left で描くのをやめる） */
   const open = entry.request?.id === request.id;
@@ -145,7 +130,7 @@ export const DateEntryPanel = observer(function DateEntryPanel({
             row.completedAt === null && (row.bucket === "scheduled" || row.bucket === "later"),
         );
 
-  const label = kind === "schedule" ? "予定の日付" : "締切";
+  const label = dateEntryLabel(kind);
   const selected = parsed ?? current;
   /** 何も打っていないときの一行（複数なら件数、今の値、締切の外し方） */
   const emptyHint = [
@@ -161,9 +146,7 @@ export const DateEntryPanel = observer(function DateEntryPanel({
     .filter((part) => part !== null)
     .join("・");
 
-  // 行が一覧から消えた（抜けていく動きのあいだも）ら描かない。閉じるのは useDismissWhenGone
-  if (!inList) return null;
-
+  // 行が一覧から消えたとき（抜けていく動きのあいだも）は、枠（DateEntryPopover）が描かずに閉じる
   return (
     <Popover
       open={open}
@@ -195,8 +178,13 @@ export const DateEntryPanel = observer(function DateEntryPanel({
             ref={input}
             aria-label={label}
             className="h-8 w-full border-b bg-transparent px-1 text-sm outline-none placeholder:text-muted-foreground/60 focus-visible:border-primary/70"
-            placeholder={kind === "schedule" ? "明日、金曜、10/3 など" : "締切（金曜、10/3 など）"}
+            placeholder={dateEntryPlaceholder(kind)}
             value={text}
+            // 読み込みを待つあいだに打った文字が入っているときも、続きを打てるよう末尾から
+            onFocus={(event) => {
+              const { length } = event.currentTarget.value;
+              event.currentTarget.setSelectionRange(length, length);
+            }}
             onChange={(event) => {
               const next = event.target.value;
               setText(next);

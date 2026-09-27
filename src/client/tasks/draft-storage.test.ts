@@ -76,7 +76,7 @@ describe("保存できなかったタイトルとメモ（nagi:draft:unsaved:）
 });
 
 describe("localStorage が使えないとき（プライベートブラウズなど）", () => {
-  it("例外を投げず、メモリの中だけでも動かない（既定値のまま）", () => {
+  it("例外を投げず、メモリの控えで動く。残せていないことが persisted でわかる", () => {
     const broken: Storage = {
       length: 0,
       getItem: () => {
@@ -92,14 +92,20 @@ describe("localStorage が使えないとき（プライベートブラウズな
       key: () => null,
     };
     const storage = new DraftStorage(broken);
+    expect(storage.persisted).toBe(true);
     expect(() => storage.saveAddDraft("なにか")).not.toThrow();
-    expect(storage.loadAddDraft()).toBe("");
+    expect(storage.loadAddDraft()).toBe("なにか");
+    expect(storage.persisted).toBe(false);
     expect(storage.loadUnsaved()).toEqual([]);
+    // 空にすれば、残すべきものはなくなる
+    storage.saveAddDraft("");
+    expect(storage.persisted).toBe(true);
   });
 
   it("storage が null（プライベートブラウズの容量切れなど）でも例外にしない", () => {
     const storage = new DraftStorage(null);
     expect(() => storage.saveAddDraft("なにか")).not.toThrow();
-    expect(storage.loadAddDraft()).toBe("");
+    expect(storage.loadAddDraft()).toBe("なにか");
+    expect(storage.persisted).toBe(false);
   });
 });

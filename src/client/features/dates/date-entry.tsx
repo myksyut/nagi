@@ -1,8 +1,11 @@
 import { action, makeObservable, observable, observableRef } from "mobx";
 import { observer } from "mobx-react-lite";
+import { useEffect, useRef, useState } from "react";
+import { useAnchoredStyle, WaitingInput } from "@/components/waiting-input";
 import type { TaskRow } from "@/data";
 import { defer, useDeferred } from "@/lib/deferred";
 import type { ListUi, ListView } from "@/tasks/list-ui";
+import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
 
 /**
@@ -115,11 +118,45 @@ export function dateEntryOf(ui: ListUi): DateEntry {
   return entry;
 }
 
+/** 入力欄の読み上げ名 */
+export function dateEntryLabel(kind: DateEntryKind): string {
+  return kind === "schedule" ? "予定の日付" : "締切";
+}
+
+export function dateEntryPlaceholder(kind: DateEntryKind): string {
+  return kind === "schedule" ? "明日、金曜、10/3 など" : "締切（金曜、10/3 など）";
+}
+
+/**
+ * 入力の後始末：対象の行が今の画面の一覧から消えたら閉じる。行ごと外れた（画面の切り替え、抜けていく動きの終わり）
+ * ときも閉じる。どちらも一覧にフォーカスを戻す（ポップオーバーの入力欄にあったフォーカスが行き場を失うため）。
+ * 外れたかどうかは、StrictMode の付け直しと区別するため、外れた直後の microtask で確かめる。
+ * 行の枠（DateEntryPopover）で使う（待ちの欄から本物の入力へ替わるときに閉じないように）
+ */
+function useDismissWhenGone(requestId: number | null, inList: boolean) {
+  const ui = useUi();
+  const mounted = useRef(false);
+  useEffect(() => {
+    if (requestId !== null && !inList && dateEntryOf(ui).dismiss(requestId)) ui.focusList();
+  }, [ui, requestId, inList]);
+  useEffect(() => {
+    if (requestId === null) return;
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      queueMicrotask(() => {
+        if (!mounted.current && dateEntryOf(ui).dismiss(requestId)) ui.focusList();
+      });
+    };
+  }, [ui, requestId]);
+}
+
 const panel = defer(() => import("./date-entry-panel"));
 
 /**
  * 行の右側の枠から描く。開いていないとき・開いた画面の行でないときは何も描かない。
- * 開いている入力を先に、なければ閉じる途中の入力を描く
+ * 開いている入力を先に、なければ閉じる途中の入力を描く。
+ * 入力（カレンダーを含む）が届く前は、待ちの欄がキーを受け止め、打った文字は届いたら入力欄へ移す
  */
 export const DateEntryPopover = observer(function DateEntryPopover({
   task,
@@ -128,12 +165,75 @@ export const DateEntryPopover = observer(function DateEntryPopover({
   task: TaskRow;
   view: ListView;
 }) {
-  const entry = dateEntryOf(useUi());
+  const ui = useUi();
+  const entry = dateEntryOf(ui);
   const shown =
     [entry.request, entry.leaving].find(
       (request) => request !== null && request.taskIds[0] === task.id && request.view === view,
     ) ?? null;
-  const module = useDeferred(panel, shown !== null);
-  if (shown === null || module === undefined) return null;
-  return <module.DateEntryPanel key={shown.id} request={shown} task={task} />;
+  const inList =
+    shown !== null && ui.view === shown.view && ui.rows.some((row) => row.id === task.id);
+  useDismissWhenGone(shown?.id ?? null, inList);
+  // 届く前に打った文字（入力ごと）
+  const [typed, setTyped] = useState<{ id: number; text: string } | null>(null);
+  const { module, failed, retry } = useDeferred(panel, shown !== null, shown?.id);
+  if (shown === null) return null;
+  const text = typed?.id === shown.id ? typed.text : "";
+  // 行が一覧から消えた（抜けていく動きのあいだも）ら描かない。閉じるのは useDismissWhenGone
+  if (!inList) return null;
+  if (module) {
+    return <module.DateEntryPanel key={shown.id} request={shown} task={task} initialText={text} />;
+  }
+  // 閉じる途中の入力は、届いていなければ描かない
+  if (entry.request?.id !== shown.id) return null;
+  return (
+    <DateEntryWaiting
+      key={shown.id}
+      request={shown}
+      task={task}
+      text={text}
+      onText={(next) => setTyped({ id: shown.id, text: next })}
+      failed={failed}
+      onRetry={retry}
+    />
+  );
+});
+
+/** 日付の入力が届くまでの待ちの欄。対象の行（かボタン）の下に出す */
+const DateEntryWaiting = observer(function DateEntryWaiting({
+  request,
+  task,
+  text,
+  onText,
+  failed,
+  onRetry,
+}: {
+  request: DateEntryRequest;
+  task: TaskRow;
+  text: string;
+  onText: (text: string) => void;
+  failed: boolean;
+  onRetry: () => void;
+}) {
+  const ui = useUi();
+  const style = useAnchoredStyle(
+    request.anchor ?? document.getElementById(taskRowId(task.id)),
+    "start",
+  );
+  return (
+    <WaitingInput
+      label={dateEntryLabel(request.kind)}
+      placeholder={dateEntryPlaceholder(request.kind)}
+      value={text}
+      onChange={onText}
+      onCancel={() => {
+        dateEntryOf(ui).close();
+        ui.focusList();
+      }}
+      failed={failed}
+      onRetry={onRetry}
+      className="w-[17.5rem]"
+      style={style}
+    />
+  );
 });

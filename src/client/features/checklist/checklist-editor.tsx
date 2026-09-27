@@ -432,7 +432,7 @@ function useItemTitle(task: TaskRow, item: ChecklistItem, drafts: ChecklistDraft
     const result = store.actions.updateTask(
       task.id,
       { checklist: renameItem(items, itemId, title) },
-      { undoable: false },
+      { undoable: false, autosave: true },
     );
     // オフラインなどで受け付けられなかったら、次の機会にもう一度保存する
     if (result.ok || result.reason === "noop") {

@@ -1,6 +1,6 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import { defer, useDeferred } from "./deferred";
+import { defer, loadUntilLoaded, useDeferred } from "./deferred";
 
 /**
  * チケット8：後から読み込む部品（defer・useDeferred）。
@@ -21,12 +21,12 @@ describe("useDeferred", () => {
   it("needed のあいだ、読み込み前は undefined。届くと描き直されて値になる", async () => {
     const { deferred, resolve } = deferredModule({ hello: "world" });
     const { result, rerender } = renderHook(() => useDeferred(deferred));
-    expect(result.current).toBeUndefined();
+    expect(result.current.module).toBeUndefined();
 
     resolve();
     await vi.waitFor(() => expect(deferred.current).toEqual({ hello: "world" }));
     rerender();
-    expect(result.current).toEqual({ hello: "world" });
+    expect(result.current.module).toEqual({ hello: "world" });
   });
 
   it("needed が false のあいだは読み込みを始めない", async () => {
@@ -43,20 +43,20 @@ describe("useDeferred", () => {
     await deferred.load();
 
     const { result } = renderHook(() => useDeferred(deferred));
-    expect(result.current).toEqual({ preloaded: true });
+    expect(result.current.module).toEqual({ preloaded: true });
   });
 
   it("先読みが、すでに使っている部品の描き直しにも届く（subscribe 経由）", async () => {
     const { deferred, resolve } = deferredModule({ later: true });
     const { result } = renderHook(() => useDeferred(deferred, false));
-    expect(result.current).toBeUndefined();
+    expect(result.current.module).toBeUndefined();
 
     // ほかの場所からの先読み（needed=false のこの部品は自分では load を呼ばないが、subscribe しているので描き直る）
     resolve();
     await act(async () => {
       await deferred.load();
     });
-    expect(result.current).toEqual({ later: true });
+    expect(result.current.module).toEqual({ later: true });
   });
 });
 
@@ -77,6 +77,26 @@ describe("defer", () => {
     const deferred = defer(importer);
     await expect(deferred.load()).rejects.toThrow("失敗");
     await expect(deferred.load()).resolves.toEqual({ retried: true });
+    expect(importer).toHaveBeenCalledTimes(2);
+  });
+});
+
+describe("loadUntilLoaded（Motion の機能）", () => {
+  it("読み込めなかったら、つながり直したときに読み直し、届いたら resolve する", async () => {
+    const importer = vi
+      .fn()
+      .mockRejectedValueOnce(new Error("失敗"))
+      .mockResolvedValueOnce({ features: true });
+    const deferred = defer(importer);
+    let loaded: unknown;
+    void loadUntilLoaded(deferred).then((module) => {
+      loaded = module;
+    });
+    await vi.waitFor(() => expect(deferred.state.failed).toBe(true));
+    expect(loaded).toBeUndefined();
+
+    window.dispatchEvent(new Event("online"));
+    await vi.waitFor(() => expect(loaded).toEqual({ features: true }));
     expect(importer).toHaveBeenCalledTimes(2);
   });
 });

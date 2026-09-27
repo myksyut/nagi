@@ -8,7 +8,7 @@ import {
   runInAction,
 } from "mobx";
 import type { AppStore, Notice, TaskRow } from "@/data";
-import { DraftStorage } from "./draft-storage";
+import { type DraftChange, DraftStorage } from "./draft-storage";
 import { Toaster } from "./toaster";
 
 /**
@@ -126,6 +126,11 @@ export class ListUi {
   addDraft = "";
   /** 追加欄を開いてから最後に追加したタスク（Esc で閉じるとこれを選ぶ） */
   lastAddedId: string | null = null;
+  /**
+   * 編集を受け付けない（新しいバージョンへ読み込み直すまで）。タスクを開けず、追加欄も開けない。
+   * 打った文字を、読み込み直す前に下書きへ残しきるため
+   */
+  editingLocked = false;
 
   /** 保存できずに戻ってきた追加の文字の残り（追加欄が空になったら、次を下書きに入れる） */
   readonly #draftQueue = observable.array<string>([], { deep: false });
@@ -156,6 +161,8 @@ export class ListUi {
   readonly #drafts: DraftStorage;
   /** 保存できなかったときの知らせを、操作の側で決めるもの（操作の id → 決め方） */
   readonly #failureHandlers = new Map<string, FailureHandler>();
+  /** 開いている入力欄の、まだ送っていない文字を読む（`<タスクの id>:<項目>` → 読み方） */
+  readonly #editing = new Map<string, () => string | undefined>();
 
   constructor(store: AppStore, options: ListUiOptions = {}) {
     this.store = store;
@@ -172,6 +179,7 @@ export class ListUi {
       adding: observable,
       addDraft: observable,
       lastAddedId: observable,
+      editingLocked: observable,
       sections: computed({ equals: sameSections }),
       rows: computed({ equals: compareShallow }),
       selected: computed,
@@ -196,6 +204,8 @@ export class ListUi {
       keepUnsavedText: true,
       clearUnsavedText: true,
       toggleFold: true,
+      lockEditing: true,
+      unlockEditing: true,
       applySelection: true,
       applyOpen: true,
     });
@@ -413,6 +423,7 @@ export class ListUi {
   // --- 開く -------------------------------------------------------------------------------
 
   open(id: string): void {
+    if (this.editingLocked) return;
     this.adding = false;
     this.applyOpen(id);
     this.applySelection(id);
@@ -423,6 +434,7 @@ export class ListUi {
   }
 
   toggleOpen(id: string): void {
+    if (this.editingLocked) return;
     if (this.openId === id) this.close();
     else this.open(id);
   }
@@ -430,7 +442,7 @@ export class ListUi {
   // --- 追加欄 -----------------------------------------------------------------------------
 
   startAdding(): void {
-    if (!this.view) return;
+    if (!this.view || this.editingLocked) return;
     this.applyOpen(null);
     this.adding = true;
     this.lastAddedId = null;
@@ -450,17 +462,20 @@ export class ListUi {
     this.#drafts.saveAddDraft(text);
   }
 
-  /** 追加できた。下書きを空にし、戻ってきた下書きの残りがあれば次を入れる */
+  /**
+   * 追加できた。下書きを空にし、戻ってきた下書きの残りがあれば次を入れる。
+   * そのあいだにほかのタブが別の下書きを書いていたら、それを残す（下書きはタブのあいだで1つ）
+   */
   noteAdded(id: string): void {
     this.lastAddedId = id;
-    this.setAddDraft("");
+    this.addDraft = this.#drafts.clearAddDraftIf(this.addDraft);
     this.#fillDraftFromQueue();
   }
 
   /** 保存できなかった追加の文字を、追加欄の下書きに戻す（空なら1つ目を入れ、残りは順に） */
   restoreDrafts(titles: readonly string[]): void {
-    this.#draftQueue.push(...titles.filter((title) => title.trim() !== ""));
-    this.#drafts.saveAddQueue(this.#draftQueue);
+    const added = titles.filter((title) => title.trim() !== "");
+    if (added.length > 0) this.#draftQueue.replace(this.#drafts.appendToAddQueue(added));
     this.#fillDraftFromQueue();
   }
 
@@ -481,6 +496,47 @@ export class ListUi {
     if (!this.#unsavedText.has(key)) return;
     this.#unsavedText.delete(key);
     this.#drafts.removeUnsaved(key);
+  }
+
+  /**
+   * 開いている入力欄（タイトル・メモ）の、まだ送っていない文字を読めるようにする（use-autosave）。
+   * 読み込み直す直前とページを離れるときに、persistEditing で下書きへ書く。戻り値を呼ぶとやめる
+   */
+  trackEditing(taskId: string, field: TextField, read: () => string | undefined): () => void {
+    const key = textKey(taskId, field);
+    this.#editing.set(key, read);
+    return () => {
+      if (this.#editing.get(key) === read) this.#editing.delete(key);
+    };
+  }
+
+  /**
+   * 開いている入力欄の、まだ送っていない文字を、今すぐ（同期で）下書きへ書く。
+   * 下書きがすべて localStorage に残っていれば true（書けなかったものがあれば false。読み込み直すと失う）
+   */
+  persistEditing(): boolean {
+    runInAction(() => {
+      for (const [key, read] of this.#editing) {
+        const value = read();
+        if (value === undefined) continue;
+        this.#unsavedText.set(key, value);
+        this.#drafts.saveUnsaved(key, value);
+      }
+    });
+    return this.#drafts.persisted;
+  }
+
+  // --- 新しいバージョン -------------------------------------------------------------------
+
+  /** 編集を止める（新しいバージョンへ読み込み直すまで）。開いているタスクと追加欄を閉じる（打った文字は下書きへ） */
+  lockEditing(): void {
+    this.editingLocked = true;
+    this.applyOpen(null);
+    this.adding = false;
+  }
+
+  unlockEditing(): void {
+    this.editingLocked = false;
   }
 
   // --- 保存できなかったときの知らせ -------------------------------------------------------
@@ -529,7 +585,7 @@ export class ListUi {
 
   // --- 動かす -----------------------------------------------------------------------------
 
-  /** 行が消えたときの選択の追いかけと、知らせの受け取り。戻り値を呼ぶと止める */
+  /** 行が消えたときの選択の追いかけと、知らせの受け取り、ほかのタブの下書きの追いかけ。戻り値を呼ぶと止める */
   start(): () => void {
     const disposers = [
       reaction(
@@ -538,6 +594,7 @@ export class ListUi {
       ),
       this.store.subscribe((notice) => this.#onNotice(notice)),
       this.toaster.start(this.store),
+      this.#drafts.subscribe((change) => this.#onDraftChange(change)),
     ];
     return () => {
       for (const dispose of disposers) dispose();
@@ -639,12 +696,35 @@ export class ListUi {
     return ids;
   }
 
+  /** 追加欄の下書きが空なら、戻ってきた下書きの残りの先頭を入れる（ほかのタブと合わせた最新の残りから取る） */
   #fillDraftFromQueue(): void {
     if (this.addDraft.trim() !== "") return;
-    const next = this.#draftQueue.shift();
-    if (next === undefined) return;
-    this.#drafts.saveAddQueue(this.#draftQueue);
-    this.setAddDraft(next);
+    const { taken, rest } = this.#drafts.takeFromAddQueue();
+    this.#draftQueue.replace(rest);
+    if (taken !== undefined) this.setAddDraft(taken);
+  }
+
+  /** ほかのタブが下書きを変えたら、合わせる */
+  #onDraftChange(change: DraftChange): void {
+    runInAction(() => {
+      switch (change.kind) {
+        case "add":
+          this.addDraft = change.value;
+          return;
+        case "add-queue":
+          this.#draftQueue.replace(change.value);
+          return;
+        case "unsaved":
+          if (change.value === null) this.#unsavedText.delete(change.key);
+          else this.#unsavedText.set(change.key, change.value);
+          return;
+        case "cleared":
+          this.addDraft = "";
+          this.#draftQueue.clear();
+          this.#unsavedText.clear();
+          return;
+      }
+    });
   }
 
   /**

@@ -36,7 +36,12 @@ import { locationOf } from "./search";
  * 選んだコマンドは、⌘K が外れた直後に呼ぶ（閉じる途中のダイアログやフォーカスの戻し先にフォーカスを取られないように）。
  * 8 で後から読み込めるよう、⌘K の部品はこのモジュールにまとめる（開閉の状態と ⌘K のキーは overlays・register）
  */
-export const CommandPalette = observer(function CommandPalette() {
+export const CommandPalette = observer(function CommandPalette({
+  initialQuery = "",
+}: {
+  /** 開いたときの検索欄の文字（読み込みを待つあいだに打った文字） */
+  initialQuery?: string;
+}) {
   const context = useKeyContext();
   const overlays = overlaysOf(context.ui);
   return (
@@ -73,7 +78,7 @@ export const CommandPalette = observer(function CommandPalette() {
         // ⌘K は即時に出す（本体は動かさない。背景の暗転だけが短くフェードする）
         className="transition-none"
       >
-        <PaletteContent context={context} />
+        <PaletteContent context={context} initialQuery={initialQuery} />
       </CommandDialogPopup>
     </CommandDialog>
   );
@@ -88,10 +93,16 @@ function runPending(context: KeyContext, overlays: Overlays): void {
 }
 
 /** 開くたびに作り直す（打った文字は開くたびに空から） */
-const PaletteContent = observer(function PaletteContent({ context }: { context: KeyContext }) {
+const PaletteContent = observer(function PaletteContent({
+  context,
+  initialQuery,
+}: {
+  context: KeyContext;
+  initialQuery: string;
+}) {
   const { ui, store, navigate } = context;
   const overlays = overlaysOf(ui);
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
 
   const actions: PaletteActions = {
     runBinding: (id) => keymap.run(id, context),
@@ -127,6 +138,11 @@ const PaletteContent = observer(function PaletteContent({ context }: { context: 
         <CommandInput
           aria-label="検索とコマンド"
           placeholder="タスクを検索、コマンドを実行…"
+          // 読み込みを待つあいだに打った文字が入っているときも、続きを打てるよう末尾から
+          onFocus={(event) => {
+            const { length } = event.currentTarget.value;
+            event.currentTarget.setSelectionRange(length, length);
+          }}
           onKeyDown={(event) => {
             // 変換中のキー（確定の Enter を含む）は Base UI に渡さない。Base UI が止めるのは keyCode 229 のときだけで、
             // isComposing だけが立つ確定の Enter ではコマンドを実行してしまう

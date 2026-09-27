@@ -1,4 +1,5 @@
 import { reaction } from "mobx";
+import { observer } from "mobx-react-lite";
 import { LazyMotion } from "motion/react";
 import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
@@ -8,7 +9,7 @@ import { LazyCommandPalette, LazyShortcutsDialog } from "@/features/command-pale
 import { KeyContextProvider } from "@/keyboard/key-context";
 import type { KeyContext } from "@/keyboard/keymap";
 import { useKeymap } from "@/keyboard/use-keymap";
-import { preloadDeferredWhenIdle } from "@/lib/deferred";
+import { loadUntilLoaded, startDeferredLoading } from "@/lib/deferred";
 import { motionFeatures } from "@/lib/motion";
 import { followReducedMotion } from "@/lib/reduced-motion";
 import { ListUi } from "@/tasks/list-ui";
@@ -36,20 +37,28 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => ui.start(), [ui]);
   // prefers-reduced-motion のときは動きを止める（色の変化は残る）
   useEffect(() => followReducedMotion(), []);
-  useEffect(() => preloadDeferredWhenIdle(), []);
+  useEffect(() => startDeferredLoading(), []);
   useKeymap(keyContext);
+  // ページを離れるとき（閉じる・読み込み直す）に、まだ送っていないタイトルとメモを下書きへ書く
+  useEffect(() => {
+    const persist = () => ui.persistEditing();
+    window.addEventListener("pagehide", persist);
+    return () => window.removeEventListener("pagehide", persist);
+  }, [ui]);
 
   return (
     <UiProvider ui={ui}>
       <KeyContextProvider value={keyContext}>
-        {/* Motion の機能は後から読み込む（読み込み済みならそのまま渡す） */}
-        <LazyMotion features={motionFeatures.current ?? (() => motionFeatures.load())}>
+        {/* Motion の機能は後から読み込む（読み込み済みならそのまま渡す。読み込めなければ、読み込めるまで読み直す） */}
+        <LazyMotion features={motionFeatures.current ?? (() => loadUntilLoaded(motionFeatures))}>
           <ToastHost toaster={ui.toaster}>
-            <Sidebar />
-            <main className="min-h-dvh pl-(--sidebar-width)">
-              <StatusBar />
-              <div className="mx-auto max-w-3xl px-10 pt-9 pb-24">{children}</div>
-            </main>
+            <StatusBar />
+            <EditingLock ui={ui}>
+              <Sidebar />
+              <main className="min-h-dvh pl-(--sidebar-width)">
+                <div className="mx-auto max-w-3xl px-10 pt-9 pb-24">{children}</div>
+              </main>
+            </EditingLock>
             <LazyCommandPalette />
             <LazyShortcutsDialog />
           </ToastHost>
@@ -58,6 +67,24 @@ export function AppShell({ children }: { children: ReactNode }) {
     </UiProvider>
   );
 }
+
+/**
+ * 新しいバージョンへ読み込み直すまで（ListUi.editingLocked）、サイドバーとリストを inert にする
+ * （クリックもフォーカスも受けない。見るだけ）。上部の帯は外に置く
+ */
+const EditingLock = observer(function EditingLock({
+  ui,
+  children,
+}: {
+  ui: ListUi;
+  children: ReactNode;
+}) {
+  return (
+    <div className="contents" inert={ui.editingLocked || undefined}>
+      {children}
+    </div>
+  );
+});
 
 /**
  * ログインが切れたら（同期か送信が 401 になったら）ログイン画面へ移す。

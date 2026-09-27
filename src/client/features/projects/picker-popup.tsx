@@ -13,7 +13,14 @@ import { isComposingKey } from "@/keyboard/keys";
 import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
 import { createProjectFor, setTaskProject } from "./commands";
-import { type PickerItem, type PickerSession, type ProjectPicker, pickerItems } from "./picker";
+import {
+  PICKER_LABEL,
+  type PickerItem,
+  type PickerSession,
+  type ProjectPicker,
+  pickerItems,
+  pickerPlaceholder,
+} from "./picker";
 
 /**
  * p（プロジェクト）の候補のポップアップ（coss ui の Combobox）。Base UI の Combobox を含むので、
@@ -37,14 +44,17 @@ export const ProjectPickerPopup = observer(function ProjectPickerPopup({
   task,
   picker,
   session,
+  initialQuery = "",
 }: {
   task: TaskRow;
   picker: ProjectPicker;
   session: PickerSession;
+  /** 開いたときの入力欄の文字（読み込みを待つあいだに打った文字） */
+  initialQuery?: string;
 }) {
   const ui = useUi();
   const { store } = ui;
-  const [query, setQuery] = useState("");
+  const [query, setQuery] = useState(initialQuery);
   const { anchor, taskIds } = session;
   /** 閉じる途中なら false（フェードが終わったら picker.left で描くのをやめる） */
   const open = picker.session?.id === session.id;
@@ -113,11 +123,14 @@ export const ProjectPickerPopup = observer(function ProjectPickerPopup({
       >
         <div className="border-b p-1">
           <ComboboxPrimitive.Input
-            aria-label="プロジェクト"
-            placeholder={
-              taskIds.length > 1 ? `${taskIds.length}件のプロジェクト` : "プロジェクト名"
-            }
+            aria-label={PICKER_LABEL}
+            placeholder={pickerPlaceholder(taskIds)}
             autoFocus
+            // 読み込みを待つあいだに打った文字が入っているときも、続きを打てるよう末尾から
+            onFocus={(event) => {
+              const { length } = event.currentTarget.value;
+              event.currentTarget.setSelectionRange(length, length);
+            }}
             className="h-8 w-full rounded-md bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/60"
             onKeyDown={(event) => {
               // 変換中のキー（確定の Enter を含む）は Base UI に渡さない。Base UI が止めるのは

@@ -2,14 +2,13 @@ import { observer } from "mobx-react-lite";
 import { type ComponentProps, useEffect, useRef, useState } from "react";
 import { useStore } from "@/data";
 import { cn } from "@/lib/utils";
-import type { ListUi } from "@/tasks/list-ui";
 import { useUi } from "@/tasks/ui-context";
 
 /**
  * 画面上部の細い帯（右のリストの上の余白に重ねる。リストはそのまま見られる）。
  * - オフラインのあいだ：「オフライン — つながるまで保存できません」。オフラインで操作を止めたとき
  *   （データ層の offline-blocked の知らせ）は、帯を軽く強調する（色だけを変える）。つながったら消す
- * - 画面の版が古い（409）：「新しいバージョンがあります」と出し、下書きを残してから再読み込みする
+ * - 画面の版が古い（409）：「新しいバージョンがあります」と出し、下書きを残してから読み込み直す（NewVersionBar）
  */
 
 /** 強調しておく時間 */
@@ -55,14 +54,17 @@ function Bar({ className, children, ...props }: ComponentProps<"div">) {
   );
 }
 
-/** オフラインで操作を止めたと知らされたら、しばらく true（続けて止めたら延ばす） */
+/**
+ * オフラインで操作（x・t・追加の Enter など）を止めたと知らされたら、しばらく true（続けて止めたら延ばす）。
+ * 入力の自動保存を止めたときは強調しない（帯はもう出ていて、打つたびに光るとうるさいため）
+ */
 function useOfflineEmphasis(): boolean {
   const store = useStore();
   const [emphasized, setEmphasized] = useState(false);
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined);
   useEffect(() => {
     const off = store.subscribe((notice) => {
-      if (notice.type !== "offline-blocked") return;
+      if (notice.type !== "offline-blocked" || notice.autosave) return;
       setEmphasized(true);
       clearTimeout(timer.current);
       timer.current = setTimeout(() => setEmphasized(false), EMPHASIS_MS);
@@ -75,27 +77,61 @@ function useOfflineEmphasis(): boolean {
   return emphasized;
 }
 
-function NewVersionBar() {
+type ReloadMode =
+  /** 少し待って自動で読み込み直す（そのあいだは編集を止める） */
+  | "automatic"
+  /** 続けて 409 になった・sessionStorage を使えない：ボタンで読み込み直す */
+  | "manual"
+  /** 下書きを localStorage に残せない：自動では読み込み直さない（入力は画面の中に残る） */
+  | "unsaved";
+
+/**
+ * 新しいバージョン（409）。自動で読み込み直すときは、まず編集を止めて開いているタスクと追加欄を閉じ
+ * （打った文字は下書きへ）、読み込み直す直前に、まだ送っていない文字を同期で下書きへ書く。
+ * 下書きを残せなかったとき・繰り返しを防げないときは、自動では読み込み直さず「再読み込み」のボタンにする
+ */
+const NewVersionBar = observer(function NewVersionBar() {
   const ui = useUi();
-  const [automatic] = useState(() => canReloadAutomatically());
+  const [mode, setMode] = useState<ReloadMode>(() =>
+    canReloadAutomatically() ? "automatic" : "manual",
+  );
   useEffect(() => {
-    // 開いているタスクと追加欄を閉じて、打った文字を下書き（localStorage）に残す
-    prepareReload(ui);
-    if (!automatic) return;
-    const timer = setTimeout(() => reloadForNewVersion(), RELOAD_DELAY_MS);
+    if (mode !== "automatic") return;
+    ui.lockEditing();
+    const timer = setTimeout(() => {
+      if (!ui.persistEditing()) {
+        setMode("unsaved");
+        return;
+      }
+      if (!markReload()) {
+        setMode("manual");
+        return;
+      }
+      window.location.reload();
+    }, RELOAD_DELAY_MS);
     return () => clearTimeout(timer);
-  }, [ui, automatic]);
+  }, [ui, mode]);
+  // 自動で読み込み直さないときは、編集を戻す（開き直して、残っている文字を確かめられるように）
+  useEffect(() => {
+    if (mode !== "automatic") ui.unlockEditing();
+  }, [ui, mode]);
   return (
     <Bar className="bg-primary/15 text-foreground">
-      {automatic ? (
+      {mode === "automatic" ? (
         "新しいバージョンがあります — 読み込み直しています"
       ) : (
         <>
-          新しいバージョンがあります
+          {mode === "unsaved"
+            ? "新しいバージョンがあります — 下書きを残せないため、自動では読み込み直しません"
+            : "新しいバージョンがあります"}
           <button
             type="button"
             className="rounded-sm text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
-            onClick={() => reloadForNewVersion()}
+            onClick={() => {
+              ui.persistEditing();
+              markReload();
+              window.location.reload();
+            }}
           >
             再読み込み
           </button>
@@ -103,27 +139,25 @@ function NewVersionBar() {
       )}
     </Bar>
   );
-}
+});
 
-function prepareReload(ui: ListUi): void {
-  ui.close();
-  ui.stopAdding();
-}
-
+/** 自動で読み込み直してよいか（直前に読み込み直していない。sessionStorage を読めないときは、繰り返しを防げないので false） */
 function canReloadAutomatically(): boolean {
   try {
     const last = Number(sessionStorage.getItem(RELOAD_GUARD_KEY) ?? 0);
     return Date.now() - last > RELOAD_GUARD_MS;
   } catch {
-    return true;
+    return false;
   }
 }
 
-function reloadForNewVersion(): void {
+/** 読み込み直した時刻を残す。残せなければ false（自動で繰り返すのを防げない） */
+function markReload(): boolean {
   try {
-    sessionStorage.setItem(RELOAD_GUARD_KEY, String(Date.now()));
+    const now = String(Date.now());
+    sessionStorage.setItem(RELOAD_GUARD_KEY, now);
+    return sessionStorage.getItem(RELOAD_GUARD_KEY) === now;
   } catch {
-    // 残せなくても再読み込みはする
+    return false;
   }
-  window.location.reload();
 }

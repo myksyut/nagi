@@ -1,8 +1,11 @@
 import { action, makeObservable, observable, observableRef, reaction } from "mobx";
 import { observer } from "mobx-react-lite";
+import { useState } from "react";
+import { useAnchoredStyle, WaitingInput } from "@/components/waiting-input";
 import type { ProjectRow, TaskRow } from "@/data";
 import { defer, useDeferred } from "@/lib/deferred";
 import type { ListUi } from "@/tasks/list-ui";
+import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
 import { normalizeName } from "./commands";
 
@@ -158,18 +161,91 @@ export function projectPickerOf(ui: ListUi): ProjectPicker {
 
 const popup = defer(() => import("./picker-popup"));
 
+/** 候補の入力欄の読み上げ名と、何も打っていないときの案内（待ちの欄と同じにする） */
+export const PICKER_LABEL = "プロジェクト";
+
+export function pickerPlaceholder(taskIds: readonly string[]): string {
+  return taskIds.length > 1 ? `${taskIds.length}件のプロジェクト` : "プロジェクト名";
+}
+
 /**
  * 行の右側の枠に置く。そのタスクの候補を開いているとき（と、閉じる途中）だけ描く。
- * ほかの行は自分の「描くか」だけを観測するので、候補を開いても描き直さない
+ * ほかの行は自分の「描くか」だけを観測するので、候補を開いても描き直さない。
+ * 候補が届く前は、待ちの欄がキーを受け止め、打った文字は届いたら候補の入力欄へ移す
  */
 export const ProjectPickerHost = observer(function ProjectPickerHost({ task }: { task: TaskRow }) {
-  const picker = projectPickerOf(useUi());
+  const ui = useUi();
+  const picker = projectPickerOf(ui);
   const session = picker.isHost(task.id)
     ? ([picker.session, picker.leaving].find((candidate) => candidate?.taskId === task.id) ?? null)
     : null;
-  const module = useDeferred(popup, session !== null);
-  if (session === null || module === undefined) return null;
+  // 届く前に打った文字（候補を開くたびに）
+  const [typed, setTyped] = useState<{ id: number; text: string } | null>(null);
+  const { module, failed, retry } = useDeferred(popup, session !== null, session?.id);
+  if (session === null) return null;
+  const text = typed?.id === session.id ? typed.text : "";
+  if (module) {
+    return (
+      <module.ProjectPickerPopup
+        key={session.id}
+        task={task}
+        picker={picker}
+        session={session}
+        initialQuery={text}
+      />
+    );
+  }
+  // 閉じる途中の候補は、届いていなければ描かない
+  if (picker.session?.id !== session.id) return null;
   return (
-    <module.ProjectPickerPopup key={session.id} task={task} picker={picker} session={session} />
+    <PickerWaiting
+      key={session.id}
+      session={session}
+      text={text}
+      onText={(next) => setTyped({ id: session.id, text: next })}
+      failed={failed}
+      onRetry={retry}
+      onCancel={() => {
+        picker.close();
+        const { anchor } = session;
+        if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus();
+        else ui.focusList();
+      }}
+    />
   );
 });
+
+/** 候補が届くまでの待ちの欄。行（右の端をそろえる）か、押したボタン（左の端をそろえる）の下に出す */
+function PickerWaiting({
+  session,
+  text,
+  onText,
+  failed,
+  onRetry,
+  onCancel,
+}: {
+  session: PickerSession;
+  text: string;
+  onText: (text: string) => void;
+  failed: boolean;
+  onRetry: () => void;
+  onCancel: () => void;
+}) {
+  const style = useAnchoredStyle(
+    session.anchor ?? document.getElementById(taskRowId(session.taskId)),
+    session.anchor ? "start" : "end",
+  );
+  return (
+    <WaitingInput
+      label={PICKER_LABEL}
+      placeholder={pickerPlaceholder(session.taskIds)}
+      value={text}
+      onChange={onText}
+      onCancel={onCancel}
+      failed={failed}
+      onRetry={onRetry}
+      className="w-64"
+      style={style}
+    />
+  );
+}

@@ -30,8 +30,11 @@ export type Discarded = {
 };
 
 export type Notice =
-  /** オフラインなので、操作を受け付けずに止めた（画面は帯を軽く強調する：8） */
-  | { type: "offline-blocked"; operation: OperationKind }
+  /**
+   * オフラインなので、操作を受け付けずに止めた（画面は帯を軽く強調する：8）。
+   * autosave：止めたのが入力の自動保存（画面は強調しない。帯はもう出ていて、打つたびに光るとうるさいため）
+   */
+  | { type: "offline-blocked"; operation: OperationKind; autosave: boolean }
   /**
    * 保存できなかった。送信中の操作はすべて捨てて、表示は元に戻っている。
    * network：再送しても通信できなかった・5xx。rejected：400 など（ほぼ不具合。記録はコンソールに残す）。
