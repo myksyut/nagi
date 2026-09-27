@@ -2,7 +2,7 @@ import { act, fireEvent, screen, waitFor, within } from "@testing-library/react"
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppStore } from "@/data";
-import { keymap } from "@/keyboard/keymap";
+import { type KeyBinding, keymap } from "@/keyboard/keymap";
 import { formatKey } from "@/keyboard/keys";
 import { FakeServer } from "@/test/fake-server";
 import { makeProject, makeTask } from "@/test/fixtures";
@@ -45,8 +45,35 @@ function findItemByExactLabel(label: string): HTMLElement {
   return found;
 }
 
+/** 各割り当てが ⌘K に正しいキー表示で並び、選ぶと run が呼ばれる */
+async function expectRunnableFromPalette(
+  user: ReturnType<typeof userEvent.setup>,
+  bindings: readonly KeyBinding[],
+) {
+  for (const binding of bindings) {
+    const spy = vi.spyOn(binding, "run").mockImplementation(() => {});
+    try {
+      await openPalette(user);
+      const item = findItemByExactLabel(binding.label);
+      const expectedKey = formatKey(binding.keys[0] ?? "");
+      expect(within(item).getByText(expectedKey)).toBeInTheDocument();
+
+      await user.click(item);
+      await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
+      await waitFor(() =>
+        expect(screen.queryByRole("combobox", { name: "検索とコマンド" })).toBeNull(),
+      );
+    } finally {
+      spy.mockRestore();
+    }
+  }
+}
+
+/** ボードでだけ効く割り当ての場面（features/board/register.tsx） */
+const BOARD_SCOPE = "board";
+
 describe("完了の条件3：キーマップのすべての割り当てを ⌘K から実行できる", () => {
-  it("keymap.list() の各割り当てが、正しいキー表示で並び、選ぶと run が呼ばれる", async () => {
+  it("keymap.list() の各割り当て（場面を分けたものを除く）が、今日のリストで正しいキー表示で並び、選ぶと run が呼ばれる", async () => {
     const user = userEvent.setup();
     const server = new FakeServer();
     server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));
@@ -62,30 +89,26 @@ describe("完了の条件3：キーマップのすべての割り当てを ⌘K 
     await user.keyboard("j"); // A を選ぶ（並べ替え・完了・today/later などの対象にする）
     expect(store.canUndo).toBe(true);
 
-    // 場面（scope）を分けた割り当て（カレンダーの [ ] など）は、その画面が出ているときだけ使えるので、
-    // その画面のテストで確かめる
+    // 場面（scope）を分けた割り当て（カレンダーの [ ]、ボードの ←→ など）は、その画面が出ているときだけ使えるので、
+    // その画面で確かめる（ボードは下のテスト、カレンダーはカレンダーのテスト）
     const bindings = keymap
       .list()
       .filter((binding) => binding.id !== PALETTE_BINDING_ID && binding.scope === undefined);
     expect(bindings.length).toBeGreaterThan(5);
+    await expectRunnableFromPalette(user, bindings);
+  });
 
-    for (const binding of bindings) {
-      const spy = vi.spyOn(binding, "run").mockImplementation(() => {});
-      try {
-        await openPalette(user);
-        const item = findItemByExactLabel(binding.label);
-        const expectedKey = formatKey(binding.keys[0] ?? "");
-        expect(within(item).getByText(expectedKey)).toBeInTheDocument();
+  it("ボードの場面の割り当て（←→）が、今日のボードで正しいキー表示で並び、選ぶと run が呼ばれる", async () => {
+    localStorage.setItem("nagi:board-screens", JSON.stringify(["today"]));
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));
+    await open("/today", server, "今日のボード");
+    await user.keyboard("j");
 
-        await user.click(item);
-        await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
-        await waitFor(() =>
-          expect(screen.queryByRole("combobox", { name: "検索とコマンド" })).toBeNull(),
-        );
-      } finally {
-        spy.mockRestore();
-      }
-    }
+    const bindings = keymap.list().filter((binding) => binding.scope === BOARD_SCOPE);
+    expect(bindings.length).toBeGreaterThan(0);
+    await expectRunnableFromPalette(user, bindings);
   });
 });
 

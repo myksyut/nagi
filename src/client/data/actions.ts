@@ -287,16 +287,22 @@ export class TaskActions {
   /**
    * あとから完了を外す（「完了 N件」や完了ログから）。今日の一番下に、未着手で戻る
    * （進行中のまま完了していても startedAt を消す）。
+   * start を付けると、同じ操作で進行中にする（今日の一番下に、進行中で戻る。ボードで完了のカードを進行中の列へ
+   * 落としたとき。完了を外すのと進行中にするのが1つの操作なので、⌘Z 1回で完了に戻る）。
    * 完了の直後の取り消しは、この操作ではなく元に戻す（completedAt を消すだけなので、進行中に戻る）
    */
-  uncompleteTasks(ids: readonly string[]): OperationResult {
+  uncompleteTasks(
+    ids: readonly string[],
+    { start = false }: { start?: boolean } = {},
+  ): OperationResult {
     const targets = this.#rows(ids).filter(
       (task) => task.completedAt !== null && task.deletedAt === null,
     );
     const ranks = this.bottomRanks("today", targets.length);
+    const startedAt = start ? this.#now().toISOString() : null;
     const updates = targets.map((task, i) => ({
       id: task.id,
-      changes: { completedAt: null, startedAt: null, bucket: "today" as const, rank: ranks[i] },
+      changes: { completedAt: null, startedAt, bucket: "today" as const, rank: ranks[i] },
     }));
     return this.#updateMany("task.uncomplete", updates);
   }
