@@ -3,8 +3,8 @@
  * - ストア：AppStore（createAppStore で作り、start() で動かす）。部品へは StoreProvider / useStore で渡す
  * - 読む：store.lists（各リスト・ボードの列・プロジェクトの色）、store.task(id) / store.project(id)、
  *   store.today、store.isOnline など
- * - 操作：store.actions（追加・更新・完了・完了を外す・進行中にする・未着手に戻す・移動・並べ替え・削除・
- *   元に戻す・並び順キー）
+ * - 操作：store.actions（追加・更新・完了・完了を外す（進行中で戻すことも）・進行中にする・未着手に戻す・移動・
+ *   並べ替え・削除・元に戻す・並び順キー）
  * - 知らせ：store.subscribe(listener)
  */
 export type {

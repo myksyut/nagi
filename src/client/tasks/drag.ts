@@ -82,8 +82,8 @@ export function taskDragOf(ui: ListUi): TaskDrag {
   return drag;
 }
 
-/** 複数を運ぶときに、つかんだ位置に「3件」と出す */
-function setCountImage(event: DragEvent, count: number): void {
+/** 複数を運ぶときに、つかんだ位置に「3件」と出す（ボードのカードでも使う） */
+export function setCountImage(event: DragEvent, count: number): void {
   const transfer = event.dataTransfer;
   if (count < 2 || typeof transfer?.setDragImage !== "function") return;
   const ghost = document.createElement("div");
@@ -167,10 +167,23 @@ export function dropOnRow(ui: ListUi, event: DragEvent): void {
  */
 export function useTaskDropTarget(
   onDrop: ((ids: readonly string[], element: HTMLElement) => void) | null,
+  {
+    openOnly = false,
+  }: {
+    /**
+     * 未完了のタスクを運んでいるときだけ受け付ける（サイドバーの今日・あとで・予定。完了済みは移せないので、
+     * ボードの完了のカードを運んでいるときは光らせず、落とせない表示にする）
+     */
+    openOnly?: boolean;
+  } = {},
 ) {
   const ui = useUi();
   const [over, setOver] = useState(false);
-  const accepts = () => onDrop !== null && taskDragOf(ui).ids !== null;
+  const accepts = () => {
+    const ids = taskDragOf(ui).ids;
+    if (onDrop === null || ids === null) return false;
+    return !openOnly || ids.some((id) => ui.store.task(id)?.peek().completedAt === null);
+  };
   const hover = (event: DragEvent<HTMLElement>) => {
     if (!accepts()) return;
     event.preventDefault();
@@ -190,7 +203,7 @@ export function useTaskDropTarget(
         const drag = taskDragOf(ui);
         const ids = drag.ids;
         setOver(false);
-        if (!ids || onDrop === null) return;
+        if (!ids || onDrop === null || !accepts()) return;
         event.preventDefault();
         drag.end();
         onDrop(ids, event.currentTarget);
