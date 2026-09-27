@@ -254,6 +254,33 @@ describe("ListUi：列（column）のある一覧（12：ボード）", () => {
     expect([...ui.selectedIds].sort()).toEqual([a?.id, b?.id].sort());
   });
 
+  it("選んだカードが列だけを移ると（上から並べた行の順は同じ）、そのあと消えても、移った先の列の同じ位置を選ぶ（12-修正1）", async () => {
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));
+    server.putTask(
+      makeTask({
+        title: "B",
+        bucket: "today",
+        rank: "a1",
+        startedAt: "2026-01-01T00:00:00.000Z",
+      }),
+    );
+    const store = await makeStore(server);
+    const ui = makeUi(store);
+    ui.setView(boardView(store));
+
+    const [a, b] = store.lists.today;
+    ui.select(a?.id ?? null);
+    // s と同じ：A を進行中にする。行の順は [A, B] のままで、A だけが未着手から進行中の列へ移る
+    store.actions.startTasks([a?.id ?? ""]);
+    expect(ui.rows.map((row) => row.id)).toEqual([a?.id, b?.id]);
+    expect(ui.columnOf(a?.id ?? "")).toBe("inProgress");
+
+    // ほかの画面の変更などで A が消えると、A がいた進行中の列の同じ位置（B）を選ぶ
+    store.actions.deleteTasks([a?.id ?? ""]);
+    expect(ui.selectedId).toBe(b?.id);
+  });
+
   it("neighborAfter は列をまたがない", async () => {
     const server = new FakeServer();
     server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));

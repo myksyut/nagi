@@ -58,14 +58,15 @@ export const ProjectScreen = observer(function ProjectScreen({ id }: { id: strin
     );
   }
   return (
-    <>
+    // ボードのときは幅の上限を外す（右の枠。shell/app-shell.tsx）。リストの幅は変えない
+    <div data-wide-view={layout === "board" ? "" : undefined}>
       <ProjectHeading project={project} />
       {layout === "board" ? (
         <LazyBoard target={{ kind: "project", projectId: id }} />
       ) : (
         <ProjectList id={id} label={project.name} />
       )}
-    </>
+    </div>
   );
 });
 

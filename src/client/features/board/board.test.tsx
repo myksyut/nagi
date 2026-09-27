@@ -1,7 +1,8 @@
 import { act, cleanup, fireEvent, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AppStore } from "@/data";
+import { AppStore } from "@/data";
+import { createMemoryLocalDb } from "@/data/local-db";
 import { FakeServer } from "@/test/fake-server";
 import { makeProject, makeTask } from "@/test/fixtures";
 import { setupApp } from "@/test/render-app";
@@ -29,6 +30,17 @@ async function openBoard(path: string, server: FakeServer, listName: string, boa
   await user.keyboard("v");
   await screen.findByRole("listbox", { name: boardLabel });
   return { store, location, user };
+}
+
+/** 画面を描かない、もう1つのタブのストア（同じサーバーにつなぐ） */
+async function otherTab(server: FakeServer): Promise<AppStore> {
+  const store = new AppStore({
+    fetch: server.fetch,
+    openLocalDb: async () => createMemoryLocalDb(),
+  });
+  stores.push(store);
+  await store.start();
+  return store;
 }
 
 function board(label: string): HTMLElement {
@@ -522,6 +534,143 @@ describe("キーだけでの操作", () => {
     const existing = card("Pのボード", "あとでの分");
     const after = existing.compareDocumentPosition(addRow) & Node.DOCUMENT_POSITION_FOLLOWING;
     expect(after).toBeTruthy();
+  });
+});
+
+describe("12-修正1：s で列だけが移ったカードの選択", () => {
+  const selectedTitle = () => screen.queryByRole("option", { selected: true })?.textContent;
+
+  it("s で進行中の列へ移ったカードから、続けて ↑↓ で進行中の列の中を動ける", async () => {
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));
+    server.putTask(
+      makeTask({ title: "B", bucket: "today", rank: "a1", startedAt: "2026-01-01T00:00:00.000Z" }),
+    );
+    const { user } = await openBoard("/today", server, "今日", "今日のボード");
+
+    await user.keyboard("j"); // A（未着手）
+    await user.keyboard("s"); // A は進行中の列へ。上から並べた行の順は [A, B] のまま
+    expect(within(column("今日のボード", "進行中")).getAllByRole("option")).toHaveLength(2);
+    expect(selectedTitle()).toContain("A");
+    await user.keyboard("j");
+    expect(selectedTitle()).toContain("B");
+    await user.keyboard("k");
+    expect(selectedTitle()).toContain("A");
+  });
+
+  it("s のあと、ほかのタブの変更でそのカードが消えると、同じ進行中の列のカードを選ぶ", async () => {
+    const server = new FakeServer();
+    const a = server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));
+    server.putTask(
+      makeTask({ title: "B", bucket: "today", rank: "a1", startedAt: "2026-01-01T00:00:00.000Z" }),
+    );
+    const { store, user } = await openBoard("/today", server, "今日", "今日のボード");
+
+    await user.keyboard("j"); // A（未着手）
+    await user.keyboard("s"); // A は進行中の列へ（行の順は同じ）
+    await act(async () => {
+      await store.idle();
+    });
+
+    // ほかのタブが A を削除し、この画面が取り込む
+    const other = await otherTab(server);
+    other.actions.deleteTasks([a.id]);
+    await other.idle();
+    await act(async () => {
+      await store.sync();
+    });
+
+    expect(within(board("今日のボード")).queryByRole("option", { name: /^A/ })).toBeNull();
+    // A がいた進行中の列の同じ位置（B）を選ぶ（未着手の列は空なので、古い列のままだと選択が消える）
+    expect(selectedTitle()).toContain("B");
+  });
+});
+
+describe("12-修正1：完了のカードをサイドバーへ運ぶ", () => {
+  async function openWithCompleted() {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-09-28T10:00:00+09:00"));
+    const server = new FakeServer();
+    const project = makeProject({ name: "P" });
+    server.putProject(project);
+    server.putTask(makeTask({ title: "残り", bucket: "today", rank: "a0" }));
+    const done = server.putTask(
+      makeTask({
+        title: "済み",
+        bucket: "today",
+        rank: "a1",
+        completedAt: "2026-09-28T01:00:00.000Z",
+      }),
+    );
+    const opened = await openBoard("/today", server, "今日", "今日のボード");
+    return { ...opened, project, done };
+  }
+
+  it("今日・あとで・予定には落とせない（光らず、落としても何も起きず、日付の入力も開かない）", async () => {
+    const { store, done } = await openWithCompleted();
+    const doneCard = card("今日のボード", "済み");
+
+    for (const name of [/^今日/, /^あとで/, /^予定/]) {
+      const link = screen.getByRole("link", { name });
+      const className = link.className;
+      fireEvent.dragStart(doneCard);
+      fireEvent.dragEnter(link);
+      // 落とし先にしないので、dragover の既定の動き（落とせない）を止めない
+      expect(fireEvent.dragOver(link)).toBe(true);
+      expect(link.className).toBe(className);
+      fireEvent.drop(link);
+      fireEvent.dragEnd(doneCard);
+    }
+
+    const task = store.task(done.id);
+    expect(task?.completedAt).not.toBeNull();
+    expect(task?.bucket).toBe("today");
+    expect(screen.queryByPlaceholderText(/明日、金曜/)).toBeNull();
+  });
+
+  it("未完了のカードは、これまでどおり今日・あとでへ落とせる", async () => {
+    const { store } = await openWithCompleted();
+    const open = card("今日のボード", "残り");
+    const later = screen.getByRole("link", { name: /^あとで/ });
+    fireEvent.dragStart(open);
+    expect(fireEvent.dragOver(later)).toBe(false);
+    fireEvent.drop(later);
+    fireEvent.dragEnd(open);
+    expect(store.lists.later.map((t) => t.title)).toEqual(["残り"]);
+  });
+
+  it("プロジェクトには、p と同じく完了のカードも落とせる", async () => {
+    const { store, project, done } = await openWithCompleted();
+    const doneCard = card("今日のボード", "済み");
+    const projectLink = screen.getByRole("link", { name: /^P/ });
+    fireEvent.dragStart(doneCard);
+    expect(fireEvent.dragOver(projectLink)).toBe(false);
+    fireEvent.drop(projectLink);
+    fireEvent.dragEnd(doneCard);
+    expect(store.task(done.id)?.projectId).toBe(project.id);
+    expect(store.task(done.id)?.completedAt).not.toBeNull();
+  });
+});
+
+describe("12-修正1：ボードのときだけ幅の上限を外す", () => {
+  it("今日とプロジェクトの画面は、ボードのときだけ一番外に data-wide-view が付く", async () => {
+    const server = new FakeServer();
+    const project = makeProject({ name: "P" });
+    server.putProject(project);
+    server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));
+    const { location, user } = await openBoard("/today", server, "今日", "今日のボード");
+    expect(board("今日のボード").closest("[data-wide-view]")).not.toBeNull();
+
+    await user.keyboard("v");
+    const list = await screen.findByRole("listbox", { name: "今日" });
+    expect(list.closest("[data-wide-view]")).toBeNull();
+
+    act(() => location.navigate(`/projects/${project.id}`));
+    const projectList = await screen.findByRole("listbox", { name: "P" });
+    expect(projectList.closest("[data-wide-view]")).toBeNull();
+    await user.keyboard("v");
+    const projectBoard = await screen.findByRole("listbox", { name: "Pのボード" });
+    expect(projectBoard.closest("[data-wide-view]")).not.toBeNull();
   });
 });
 

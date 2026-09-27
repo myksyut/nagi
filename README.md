@@ -136,10 +136,11 @@ quickAddOf(ui).open({ kind: "date", on: "2026-10-05" }, anchor, returnFocus);
 ボード（12。`features/board`）：
 
 - 今日と各プロジェクトの見出しの右に「リスト｜ボード」（`view-toggle.tsx`）。v でも切り替わる。どちらで見ていたかは画面ごとに localStorage（`nagi:board-screens`）に残す（`layout.ts`。画面の名前は一覧の名前 `today`・`project:<id>`）
+- ボードで見ているときだけ、画面の一番外の要素に `data-wide-view` を付けて幅の上限を外す（リストの幅は変えない）
 - ボードの画面（`board.tsx`）は後から読み込む（`lazy-board.tsx`）。プロジェクトの画面と共通の決まり（一覧の名前・追加の行き先）は `features/projects/project-view.ts` に置き、ボードから画面の部品（`project-screen.tsx`）を import しない（import すると、起動の JS の分け方が変わって大きくなる）
 - 一覧の状態はリストと同じ `ListUi`。まとまり（`TaskSection`）に列の名前 `column` を付けると、↑↓・⇧↑↓ は同じ列の中だけを動き、←→（`ui.moveColumn`。場面 `board` で登録）で隣の列へ移る（行のない列は飛ばす）。完了などで次に選ぶ行も同じ列の中から選ぶ。x・s・t・d・l・p・⇧D・⌘⌫・⌥↑↓・Enter は、リストと同じ割り当てが、選んでいるカードに働く
 - カードの下の情報は、行の右側に登録された項目（`registerRowMeta`）をそのまま並べる。日付の入力と p の候補も、カード（`taskRowId` の要素）から開く。丸は `CompleteButton` なので、完了の光の輪もそのまま出る
-- ドラッグ（`commands.ts`）：列をまたぐと状態が変わる（→進行中は `startTasks`、→完了は `completeTasks`、進行中→未着手は `stopTasks`、完了→未着手は `uncompleteTasks`）。完了→進行中は `store.actions.uncompleteTasks(ids, { start: true })` で、完了を外して今日の一番下に進行中で戻すのを1つの操作にする（⌘Z 1回で戻る）。運ぶのは、つかんだカードと同じ列の選んでいるカード（完了のカードも運べる）。列の中は、リストで並べ替えられるまとまりの中だけで並べ替える
+- ドラッグ（`commands.ts`）：列をまたぐと状態が変わる（→進行中は `startTasks`、→完了は `completeTasks`、進行中→未着手は `stopTasks`、完了→未着手は `uncompleteTasks`）。完了→進行中は `store.actions.uncompleteTasks(ids, { start: true })` で、完了を外して今日の一番下に進行中で戻すのを1つの操作にする（⌘Z 1回で戻る）。運ぶのは、つかんだカードと同じ列の選んでいるカード（完了のカードも運べる）。列の中は、リストで並べ替えられるまとまりの中だけで並べ替える。完了のカードは、サイドバーの今日・あとで・予定には落とせない（`useTaskDropTarget(onDrop, { openOnly: true })`。プロジェクトへは p と同じく落とせる）
 - 追加欄は、今日は未着手の列の一番下、プロジェクトは未着手の列の「あとで」の一番下（アーカイブ済みなら未着手の列の一番上）に開く
 
 オフラインと失敗のとき（8）：

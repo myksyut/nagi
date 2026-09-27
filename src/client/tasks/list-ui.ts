@@ -676,8 +676,14 @@ export class ListUi {
   start(): () => void {
     const disposers = [
       reaction(
-        () => this.rows,
-        (rows) => this.#followRows(rows),
+        () => ({
+          rows: this.rows,
+          // ボードでは、選んでいるカードの列も見る（s で列だけが移り、上から並べた行の順が変わらないときも、
+          // 最後にいた列と列の中の位置を追いかける）
+          column: this.selectedId === null ? undefined : this.columnOf(this.selectedId),
+        }),
+        ({ rows }) => this.#followRows(rows),
+        { equals: (a, b) => a.rows === b.rows && a.column === b.column },
       ),
       this.store.subscribe((notice) => this.#onNotice(notice)),
       this.toaster.start(this.store),

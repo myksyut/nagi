@@ -90,7 +90,7 @@ function countOf({ lists }: AppStore, key: ListKey): number {
 
 /**
  * 行を落としたときの動き：今日・あとでへは移し、予定では日付の入力を開く（その行から広がる）。
- * 受信箱と完了ログには落とせない
+ * 受信箱と完了ログには落とせない。完了済みのタスク（ボードの完了のカード）は、今日・あとで・予定にも落とせない
  */
 function useListDrop(key: ListKey) {
   const ui = useUi();
@@ -104,7 +104,8 @@ function useListDrop(key: ListKey) {
         ? (ids: readonly string[], element: HTMLElement) =>
             dateEntryOf(ui).open("schedule", ids, ui.view, element)
         : null;
-  return useTaskDropTarget(onDrop);
+  // 置き場へ移せるのは未完了のタスクだけ（プロジェクトへは、p と同じく完了済みも落とせる）
+  return useTaskDropTarget(onDrop, { openOnly: true });
 }
 
 const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {

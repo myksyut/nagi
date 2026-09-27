@@ -21,15 +21,18 @@ export const TodayScreen = observer(function TodayScreen() {
   const layout = useScreenLayout(TODAY);
 
   return (
-    <ListScreen
-      title="今日"
-      list="today"
-      date={formatDayHeading(store.today)}
-      count={() => store.lists.todayCount}
-      actions={<ViewToggle screen={TODAY} />}
-    >
-      {layout === "board" ? <LazyBoard target={{ kind: "today" }} /> : <TodayList />}
-    </ListScreen>
+    // ボードのときは幅の上限を外す（右の枠。shell/app-shell.tsx）。リストの幅は変えない
+    <div data-wide-view={layout === "board" ? "" : undefined}>
+      <ListScreen
+        title="今日"
+        list="today"
+        date={formatDayHeading(store.today)}
+        count={() => store.lists.todayCount}
+        actions={<ViewToggle screen={TODAY} />}
+      >
+        {layout === "board" ? <LazyBoard target={{ kind: "today" }} /> : <TodayList />}
+      </ListScreen>
+    </div>
   );
 });
 
