@@ -54,6 +54,7 @@ import { timelineNav } from "./timeline-nav";
  *   動かしているあいだは、送る先の日付の形で描く。離すと送り、⌘Z 1回で戻る。Esc でやめる
  * - 「今日」で今日の位置へ、[ ] で1週ずつ前後へスクロールする
  * - 上の絞り込みで、プロジェクトを選べる
+ * - 縦は、見えている行（と上下の少し）だけを描く（2万件でも開くのとドラッグの確定が重くならないように）
  * - 右下の「＋」と n は、小さな追加欄（features/quick-add）。絞り込み中なら、そのプロジェクトを付けて追加する
  */
 
@@ -67,6 +68,14 @@ const BAR_INSET = 3;
 const DRAG_THRESHOLD = 4;
 /** 今日へスクロールしたとき、今日より前に見せる日数 */
 const LEAD_DAYS = 3;
+/** 1行（まとまりの見出しも同じ）の高さ（px）。縦は見えている行だけを描くので、高さは一定にする */
+const LINE_HEIGHT = 32;
+/** 上の日付の行の高さ（px） */
+const AXIS_HEIGHT = 40;
+/** 見えている行の上下に、余分に描く行の数（速くスクロールしても白く抜けないように） */
+const OVERSCAN = 10;
+/** 表の高さがまだ分からない（測る前・テストの環境）ときに使う高さ（px） */
+const FALLBACK_HEIGHT = 1000;
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"] as const;
 
@@ -126,6 +135,15 @@ const TimelineGrid = observer(function TimelineGrid({ model }: { model: Timeline
   const groups = model.groups;
   const scrollRef = useRef<HTMLElement>(null);
   const [anchors] = useState(() => new Map<string, HTMLElement>());
+  const viewport = useViewport(scrollRef);
+  const total = useMemo(
+    () => groups.reduce((count, group) => count + 1 + group.items.length, 0),
+    [groups],
+  );
+  const height = viewport.height > 0 ? viewport.height : FALLBACK_HEIGHT;
+  const first = Math.max(0, Math.floor((viewport.top - AXIS_HEIGHT) / LINE_HEIGHT) - OVERSCAN);
+  const last = Math.min(total, Math.ceil((viewport.top + height) / LINE_HEIGHT) + OVERSCAN);
+  const segments = useMemo(() => segmentsOf(groups, first, last), [groups, first, last]);
 
   // 今日の位置へ（最初は動きなしで）。[ ] と「今日」のボタンは、画面が開いているあいだだけ効く
   useLayoutEffect(() => {
@@ -179,15 +197,24 @@ const TimelineGrid = observer(function TimelineGrid({ model }: { model: Timeline
                 : "タイムラインに出すタスクはありません"}
             </p>
           ) : (
-            groups.map((group) => (
-              <TimelineGroupView
-                key={group.key}
-                group={group}
-                range={range}
-                today={today}
-                anchors={anchors}
-              />
-            ))
+            <>
+              {/* 見えている行より上と下は、同じ高さの空きだけを置く */}
+              {first > 0 && <div aria-hidden="true" style={{ height: first * LINE_HEIGHT }} />}
+              {segments.map((segment) => (
+                <TimelineGroupView
+                  key={segment.group.key}
+                  group={segment.group}
+                  header={segment.header}
+                  items={segment.items}
+                  range={range}
+                  today={today}
+                  anchors={anchors}
+                />
+              ))}
+              {last < total && (
+                <div aria-hidden="true" style={{ height: (total - last) * LINE_HEIGHT }} />
+              )}
+            </>
           )}
           {/* 下の余白。左の名前の列は、ここも地の色で塞ぐ（横にスクロールした日の列の地が、名前の列の下からのぞかないように） */}
           <div aria-hidden="true" className="flex h-3">
@@ -198,6 +225,57 @@ const TimelineGrid = observer(function TimelineGrid({ model }: { model: Timeline
     </section>
   );
 });
+
+/** 表の縦のスクロールの位置と、見えている高さ（スクロールと大きさの変化で、1フレームに1回だけ読み直す） */
+function useViewport(scrollRef: { current: HTMLElement | null }): { top: number; height: number } {
+  const [viewport, setViewport] = useState({ top: 0, height: 0 });
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    let frame = 0;
+    const read = () => {
+      frame = 0;
+      const top = element.scrollTop;
+      const height = element.clientHeight;
+      setViewport((current) =>
+        current.top === top && current.height === height ? current : { top, height },
+      );
+    };
+    const schedule = () => {
+      if (frame === 0) frame = requestAnimationFrame(read);
+    };
+    read();
+    element.addEventListener("scroll", schedule, { passive: true });
+    const resize = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+    resize?.observe(element);
+    return () => {
+      element.removeEventListener("scroll", schedule);
+      resize?.disconnect();
+      if (frame !== 0) cancelAnimationFrame(frame);
+    };
+  }, [scrollRef]);
+  return viewport;
+}
+
+/** 描く範囲（first 行目から last 行目の手前まで）にかかる、まとまりごとの部分（見出しを描くかと、描く行） */
+type Segment = { group: TimelineGroup; header: boolean; items: readonly TimelineItem[] };
+
+function segmentsOf(groups: readonly TimelineGroup[], first: number, last: number): Segment[] {
+  const segments: Segment[] = [];
+  let line = 0;
+  for (const group of groups) {
+    const start = line;
+    line += 1 + group.items.length;
+    if (line <= first) continue;
+    if (start >= last) break;
+    segments.push({
+      group,
+      header: start >= first,
+      items: group.items.slice(Math.max(0, first - start - 1), Math.max(0, last - start - 1)),
+    });
+  }
+  return segments;
+}
 
 /** 上の日付の行（縦のスクロールでも残る）。月の初めと範囲の最初の日は「10/1」、ほかは日だけ。今日は明るく */
 const TimelineAxis = memo(function TimelineAxis({
@@ -281,14 +359,18 @@ const DayBackdrop = memo(function DayBackdrop({
   );
 });
 
-/** プロジェクトごとのまとまり：色の見出しと、その下の行 */
+/** プロジェクトごとのまとまり：色の見出しと、その下の行（見えている部分だけ。header は見出しを描くか） */
 const TimelineGroupView = observer(function TimelineGroupView({
   group,
+  header,
+  items,
   range,
   today,
   anchors,
 }: {
   group: TimelineGroup;
+  header: boolean;
+  items: readonly TimelineItem[];
   range: TimelineRange;
   today: string;
   anchors: Map<string, HTMLElement>;
@@ -301,20 +383,22 @@ const TimelineGroupView = observer(function TimelineGroupView({
   return (
     // biome-ignore lint/a11y/useSemanticElements: プロジェクトのまとまり（見出しとその下の行）を名前で読み上げる
     <div role="group" aria-label={name}>
-      <div className="flex h-8">
-        <div className="sticky left-0 z-20 flex h-full w-(--name-w) flex-none items-center gap-2 bg-background px-3 pt-2 font-semibold text-[12.5px] text-foreground">
-          {color === null ? (
-            <span
-              aria-hidden="true"
-              className="size-2 flex-none rounded-full border border-faint-foreground"
-            />
-          ) : (
-            <ProjectDot color={color} className="size-2" />
-          )}
-          <span className="truncate">{name}</span>
+      {header && (
+        <div className="flex h-8">
+          <div className="sticky left-0 z-20 flex h-full w-(--name-w) flex-none items-center gap-2 bg-background px-3 pt-2 font-semibold text-[12.5px] text-foreground">
+            {color === null ? (
+              <span
+                aria-hidden="true"
+                className="size-2 flex-none rounded-full border border-faint-foreground"
+              />
+            ) : (
+              <ProjectDot color={color} className="size-2" />
+            )}
+            <span className="truncate">{name}</span>
+          </div>
         </div>
-      </div>
-      {group.items.map((item) => (
+      )}
+      {items.map((item) => (
         <TimelineRowView
           key={item.task.id}
           item={item}
@@ -368,6 +452,8 @@ type DragState = {
   originX: number;
   days: number;
   moved: boolean;
+  /** Esc を受けるのをやめる */
+  stopKeys: () => void;
 };
 
 function within(date: string, range: TimelineRange): boolean {
@@ -433,25 +519,13 @@ const TimelineMarks = observer(function TimelineMarks({
   const previewShape = previewDates ? shapeOf(previewDates.doOn, previewDates.deadlineOn) : null;
 
   const cancel = () => {
+    drag.current?.stopKeys();
     drag.current = null;
     setPreview(null);
   };
 
-  // 動かしているあいだの Esc でやめる（アプリのキーより先に受ける）
-  useEffect(() => {
-    if (!dragging) return;
-    const onKeyDown = (event: KeyboardEvent) => {
-      if (event.key !== "Escape") return;
-      event.preventDefault();
-      event.stopPropagation();
-      drag.current = null;
-      setPreview(null);
-      // 離したときのクリックで、小さな詳細を開かない
-      suppressClick.current = true;
-    };
-    window.addEventListener("keydown", onKeyDown, true);
-    return () => window.removeEventListener("keydown", onKeyDown, true);
-  }, [dragging]);
+  // 画面から消えるときは、押している途中でも Esc を受けるのをやめる
+  useEffect(() => () => drag.current?.stopKeys(), []);
 
   /** 離した：日付の操作を送る（決まりはデータ層。変えるものがなければ何も送らない） */
   const commit = (edge: DragEdge, days: number) => {
@@ -485,12 +559,23 @@ const TimelineMarks = observer(function TimelineMarks({
       } catch {
         // 押したままのポインタでなければ（合成したイベントなど）、捕まえずに続ける
       }
+      // 押しているあいだの Esc でやめる（アプリのキーより先に受ける）。見た目を描き直す前の Esc も取りこぼさないよう、
+      // 押したときから受ける。離したときのクリックでは、小さな詳細を開かない
+      const onKeyDown = (keyEvent: KeyboardEvent) => {
+        if (keyEvent.key !== "Escape") return;
+        keyEvent.preventDefault();
+        keyEvent.stopPropagation();
+        cancel();
+        suppressClick.current = true;
+      };
+      window.addEventListener("keydown", onKeyDown, true);
       drag.current = {
         edge,
         pointerId: event.pointerId,
         originX: event.clientX,
         days: 0,
         moved: false,
+        stopKeys: () => window.removeEventListener("keydown", onKeyDown, true),
       };
     },
     onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {

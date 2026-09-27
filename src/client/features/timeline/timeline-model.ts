@@ -85,6 +85,8 @@ export type TimelineItem = {
   doOn: string | null;
   deadlineOn: string | null;
   shape: TimelineShape;
+  /** 並べ替えの鍵（やる日・締切を数にしたもの。ないものは後ろ）。作るときに1回だけ計算する */
+  order: readonly [number, number];
 };
 
 /** プロジェクトごとのまとまり。projectId が null なら「プロジェクトなし」。行が前と同じなら、同じオブジェクトのまま使う */
@@ -101,11 +103,9 @@ export const ALL_PROJECTS: ProjectFilter = { kind: "all" };
 
 const NO_PROJECT_KEY = "none";
 
-function compareNullable(a: string | null, b: string | null): number {
-  if (a === b) return 0;
-  if (a === null) return 1;
-  if (b === null) return -1;
-  return a < b ? -1 : 1;
+/** 並べ替えの鍵にする日付の数（YYYYMMDD）。ない日付は、どの日付よりも後ろ */
+function dateKey(date: string | null): number {
+  return date === null ? Number.MAX_SAFE_INTEGER : Number(date.replaceAll("-", ""));
 }
 
 /** 並び（行もまとまりも、同じオブジェクトを使い回すので、参照で比べる） */
@@ -113,22 +113,27 @@ function sameList<T>(a: readonly T[], b: readonly T[]): boolean {
   return a.length === b.length && a.every((value, i) => value === b[i]);
 }
 
+/** 前に計算した並びを使い回すための控え（行はタスクごと、まとまりはキーごと） */
+export type TimelineCache = {
+  items: WeakMap<TaskRow, TimelineItem>;
+  groups: Map<string, TimelineGroup>;
+};
+
+export function createTimelineCache(): TimelineCache {
+  return { items: new WeakMap(), groups: new Map() };
+}
+
 /**
  * タイムラインの並びを計算する。未完了のタスクを、プロジェクトごとのまとまりに分けて返す
  * （行が1つもないまとまりは入れない）。範囲の外のタスクは入れない。
- * previous（前に計算した並び）を渡すと、置き場・やる日・締切が同じ行と、行が同じまとまりは、前のオブジェクトを使う
+ * cache（前の計算の控え）を渡すと、置き場・やる日・締切が同じ行と、行が同じまとまりは、前のオブジェクトを使う
+ * （2万件でも、1件の変更で全部の行を作り直さないように）
  */
 export function computeTimelineGroups(
   store: AppStore,
   filter: ProjectFilter,
-  previous: readonly TimelineGroup[] = [],
+  cache: TimelineCache = createTimelineCache(),
 ): readonly TimelineGroup[] {
-  const previousItems = new Map<TaskRow, TimelineItem>();
-  const previousGroups = new Map<string, TimelineGroup>();
-  for (const group of previous) {
-    previousGroups.set(group.key, group);
-    for (const item of group.items) previousItems.set(item.task, item);
-  }
   const today = store.today;
   const range = timelineRange(today);
   const { lists } = store;
@@ -139,28 +144,46 @@ export function computeTimelineGroups(
     ...lists.later.map((row) => [row, "later"] as [TaskRow, OpenBucket]),
     ...lists.inbox.map((row) => [row, "inbox"] as [TaskRow, OpenBucket]),
   ];
-  const byProject = new Map<string | null, { item: TimelineItem; index: number }[]>();
-  sources.forEach(([task, bucket], index) => {
-    const doOn = doOnOf(bucket, task.field("scheduledOn"), today);
+  const byProject = new Map<string | null, TimelineItem[]>();
+  // プロジェクトが生きているか（削除済みでないか）は、プロジェクトごとに1回だけ読む
+  const alive = new Map<string, boolean>();
+  const liveProjectId = (projectId: string | null): string | null => {
+    if (projectId === null) return null;
+    let live = alive.get(projectId);
+    if (live === undefined) {
+      const project = store.project(projectId);
+      live = project !== undefined && project.field("deletedAt") === null;
+      alive.set(projectId, live);
+    }
+    return live ? projectId : null;
+  };
+  for (const [task, bucket] of sources) {
+    // 予定の日付を読むのは予定のタスクだけ（ほかの置き場では使わない）
+    const doOn = doOnOf(bucket, bucket === "scheduled" ? task.field("scheduledOn") : null, today);
     const deadlineOn = task.field("deadlineOn");
-    const kept = previousItems.get(task);
-    const same =
-      kept !== undefined &&
-      kept.bucket === bucket &&
-      kept.doOn === doOn &&
-      kept.deadlineOn === deadlineOn;
-    const shape = same ? kept.shape : shapeOf(doOn, deadlineOn);
-    if (!shape || !isInRange(shape, range)) return;
-    const projectId = liveProjectId(store, task.field("projectId"));
-    if (filter.kind === "none" && projectId !== null) return;
-    if (filter.kind === "project" && projectId !== filter.id) return;
+    let item = cache.items.get(task);
+    if (
+      item === undefined ||
+      item.bucket !== bucket ||
+      item.doOn !== doOn ||
+      item.deadlineOn !== deadlineOn
+    ) {
+      const shape = shapeOf(doOn, deadlineOn);
+      if (!shape) continue;
+      item = { task, bucket, doOn, deadlineOn, shape, order: [dateKey(doOn), dateKey(deadlineOn)] };
+      cache.items.set(task, item);
+    }
+    if (!isInRange(item.shape, range)) continue;
+    const projectId = liveProjectId(task.field("projectId"));
+    if (filter.kind === "none" && projectId !== null) continue;
+    if (filter.kind === "project" && projectId !== filter.id) continue;
     let items = byProject.get(projectId);
     if (!items) {
       items = [];
       byProject.set(projectId, items);
     }
-    items.push({ item: same ? kept : { task, bucket, doOn, deadlineOn, shape }, index });
-  });
+    items.push(item);
+  }
   // プロジェクトの作成順（アーカイブ済みのプロジェクトに未完了が残っていても出す）。プロジェクトなしは最後
   const projectIds = [...byProject.keys()]
     .filter((id): id is string => id !== null)
@@ -170,27 +193,18 @@ export function computeTimelineGroups(
       return createdA < createdB ? -1 : createdA > createdB ? 1 : a < b ? -1 : a > b ? 1 : 0;
     });
   const order: (string | null)[] = byProject.has(null) ? [...projectIds, null] : projectIds;
-  return order.map((projectId) => {
+  const groups = order.map((projectId) => {
     const key = projectId ?? NO_PROJECT_KEY;
     // やる日の順（やる日のない◆だけの行は後ろ）。同じなら締切の順、さらに同じなら置き場の並び
-    const items = (byProject.get(projectId) ?? [])
-      .sort(
-        (a, b) =>
-          compareNullable(a.item.doOn, b.item.doOn) ||
-          compareNullable(a.item.deadlineOn, b.item.deadlineOn) ||
-          a.index - b.index,
-      )
-      .map(({ item }) => item);
-    const kept = previousGroups.get(key);
+    // （並べ替えは安定なので、置き場の並びは元の順のまま残る）
+    const items = (byProject.get(projectId) ?? []).sort(
+      (a, b) => a.order[0] - b.order[0] || a.order[1] - b.order[1],
+    );
+    const kept = cache.groups.get(key);
     return kept && sameList(kept.items, items) ? kept : { key, projectId, items };
   });
-}
-
-/** プロジェクトの id（削除済みか、ないプロジェクトなら null＝プロジェクトなし） */
-function liveProjectId(store: AppStore, projectId: string | null): string | null {
-  if (projectId === null) return null;
-  const project = store.project(projectId);
-  return project && project.field("deletedAt") === null ? projectId : null;
+  cache.groups = new Map(groups.map((group) => [group.key, group]));
+  return groups;
 }
 
 /**
@@ -202,18 +216,14 @@ export class TimelineModel {
   filter: ProjectFilter = ALL_PROJECTS;
   readonly #store: AppStore;
   readonly #groups: IComputedValue<readonly TimelineGroup[]>;
-  /** 前に計算した並び（変わっていない行とまとまりを、同じオブジェクトのまま使う） */
-  #previous: readonly TimelineGroup[] = [];
+  /** 前の計算の控え（変わっていない行とまとまりを、同じオブジェクトのまま使う） */
+  readonly #cache = createTimelineCache();
 
   constructor(store: AppStore) {
     this.#store = store;
-    this.#groups = computed(
-      () => {
-        this.#previous = computeTimelineGroups(this.#store, this.filter, this.#previous);
-        return this.#previous;
-      },
-      { equals: sameList },
-    );
+    this.#groups = computed(() => computeTimelineGroups(this.#store, this.filter, this.#cache), {
+      equals: sameList,
+    });
     makeObservable(this, { filter: observableRef, setFilter: true });
     // 手元の控えを読み終える前は、プロジェクトの一覧が空なので見ない
     reaction(

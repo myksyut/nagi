@@ -712,3 +712,35 @@ describe("14-修正1：範囲の外の離れた◆", () => {
     expect(screen.queryByRole("button", { name: /^「外へ引く」 締切/ })).toBeNull();
   });
 });
+
+describe("14-修正1：縦は見えている行だけを描く", () => {
+  it("300件でも描く行は見えている分と上下の少しだけ。下へスクロールすると先の行を描く", async () => {
+    const server = new FakeServer();
+    for (let i = 0; i < 300; i++) {
+      server.putTask(
+        makeTask({
+          title: `多い${String(i).padStart(3, "0")}`,
+          bucket: "scheduled",
+          scheduledOn: "2026-10-05",
+          rank: `a${String(i).padStart(3, "0")}`,
+        }),
+      );
+    }
+    await setupTimeline(server, () => new Date("2026-09-27T05:00:00+09:00"));
+    await screen.findByRole("button", { name: /^「多い000」/ });
+
+    const rendered = () => document.querySelectorAll("[data-timeline-row]").length;
+    expect(rendered()).toBeGreaterThan(20);
+    expect(rendered()).toBeLessThan(80);
+    expect(screen.queryByRole("button", { name: /^「多い299」/ })).toBeNull();
+
+    // 一番下までスクロールすると、最後の行が描かれ、最初の行は外れる
+    const scroller = section();
+    act(() => {
+      scroller.scrollTop = 301 * 32;
+      scroller.dispatchEvent(new Event("scroll"));
+    });
+    expect(await screen.findByRole("button", { name: /^「多い299」/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /^「多い000」/ })).toBeNull();
+  });
+});
