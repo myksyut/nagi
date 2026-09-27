@@ -67,16 +67,16 @@ components.json  # shadcn / coss ui の設定
 ## 事前準備（本番に出すまでに1回だけ）
 
 1. GitHub に `myksyut/nagi`（private）を作る（済み）
-2. Cloudflare のアカウントを Workers Paid（月 $5）に切り替え、workers.dev のサブドメインを確かめる。Worker の URL は `https://nagi.<サブドメイン>.workers.dev` になる
-3. M7 の wrangler を Cloudflare に接続する。M7 には画面がないので、デバイスコードでログインする
+2. Cloudflare の workers.dev のサブドメインを確かめる（済み）。サブドメインは `wizard1026miya` で、Worker の URL は `https://nagi.wizard1026miya.workers.dev` になる。プランは、まず無料のまま出す。1回の処理の CPU 時間（10ms）などの制限に当たったら（ダッシュボードやログに「exceeded CPU」のエラーが出る、同期が失敗するなど）、Workers Paid（月 $5）に切り替える
+3. M7 の wrangler を Cloudflare に接続する（済み）。M7 には画面がないので、デバイスコードでログインする。権限は nagi のデプロイに要るものだけに絞る
 
    ```sh
-   pnpm exec wrangler login --device
+   pnpm exec wrangler login --device --scopes account:read user:read workers:write workers_scripts:write workers_tail:read d1:write
    ```
 
    表示された URL とコードを Mac のブラウザで入力して承認する。予備の方法として、SSH のポート転送で 8976 番をつないで（`ssh -L 8976:localhost:8976 <M7>`）`pnpm exec wrangler login --browser=false` を実行し、表示された URL を Mac のブラウザで開いてもよい
 
-4. D1 を作り、`wrangler.jsonc` の `database_id`（今は仮の `00000000-...`）を、出力された ID に差し替える
+4. D1 を作り、`wrangler.jsonc` の `database_id` を、出力された ID に差し替える（済み）
 
    ```sh
    pnpm exec wrangler d1 create nagi --location apac
@@ -84,11 +84,11 @@ components.json  # shadcn / coss ui の設定
 
    差し替えたあとは、手元の D1 も別のものになるので、`pnpm db:migrate:local` をもう一度実行する
 
-5. GitHub の OAuth App を登録する（GitHub の Settings → Developer settings → OAuth Apps）
-   - Homepage URL：`https://nagi.<サブドメイン>.workers.dev`
-   - Authorization callback URL：`https://nagi.<サブドメイン>.workers.dev/auth/callback`
+5. GitHub の OAuth App を登録する（済み。GitHub の Settings → Developer settings → OAuth Apps の「nagi」）
+   - Homepage URL：`https://nagi.wizard1026miya.workers.dev`
+   - Authorization callback URL：`https://nagi.wizard1026miya.workers.dev/auth/callback`
 6. Worker の設定値を入れる
-   - `GITHUB_CLIENT_ID`：OAuth App の Client ID を、`wrangler.jsonc` の `vars` に書く（今は空）。秘密ではないので Git に入れてよい。ダッシュボードで入れた普通の変数は `wrangler deploy` のたびに上書きされるので、ここに書く
+   - `GITHUB_CLIENT_ID`：OAuth App の Client ID を、`wrangler.jsonc` の `vars` に書く（済み）。秘密ではないので Git に入れてよい。ダッシュボードで入れた普通の変数は `wrangler deploy` のたびに上書きされるので、ここに書く
    - `ALLOWED_GITHUB_USER_ID`：ログインを許可する GitHub ユーザー ID。`wrangler.jsonc` に `51072711`（myksyut）を書いてある
    - `GITHUB_CLIENT_SECRET`：OAuth App の Client secret。これだけはシークレットにする。初回のデプロイ（`pnpm release`）で Worker ができたあと、Mac のブラウザで Cloudflare のダッシュボードを開き、Worker `nagi` の Settings → Variables and Secrets に Secret として入れる。M7 には置かない
 
