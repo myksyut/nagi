@@ -4,26 +4,38 @@ import { completeButtonId } from "./completion-ring";
 /**
  * 行の左の丸（完了ボタン）。完了すると丸が埋まり、チェックが描かれる（約 150ms）。
  * 同時に丸から光の輪が広がる（completion-ring.ts。丸の位置を、タスクの id から作った要素の id で引く）。
+ * 進行中のタスクは、丸の半分を紫で塗る（styles.css の status-in-progress）。
  * キーボードでは x を使うので、Tab では止まらない
  */
 export function CompleteButton({
   taskId,
   done,
+  inProgress = false,
   title,
   onToggle,
 }: {
   taskId: string;
   done: boolean;
+  /** 進行中（未完了で startedAt がある） */
+  inProgress?: boolean;
   title: string;
   onToggle: () => void;
 }) {
+  const started = inProgress && !done;
   return (
     <button
       type="button"
       tabIndex={-1}
-      aria-label={done ? `「${title}」の完了を外す` : `「${title}」を完了にする`}
+      aria-label={
+        done
+          ? `「${title}」の完了を外す`
+          : started
+            ? `「${title}」を完了にする（進行中）`
+            : `「${title}」を完了にする`
+      }
       aria-pressed={done}
       id={completeButtonId(taskId)}
+      data-status={done ? "completed" : started ? "in-progress" : "not-started"}
       onClick={(event) => {
         event.stopPropagation();
         onToggle();
@@ -32,7 +44,9 @@ export function CompleteButton({
         "relative grid size-[17px] flex-none place-items-center rounded-full border-[1.6px] transition-colors",
         done
           ? "border-primary bg-primary text-primary-foreground"
-          : "border-(--circle) hover:border-primary-text",
+          : started
+            ? "status-in-progress hover:border-primary-text"
+            : "border-(--circle) hover:border-primary-text",
       )}
     >
       <svg viewBox="0 0 16 16" className="size-3" aria-hidden="true">

@@ -1,25 +1,24 @@
 import { observer } from "mobx-react-lite";
-import { type CSSProperties, useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { type AppStore, type ProjectRow, type ProjectTaskGroups, useStore } from "@/data";
 import { isComposingKey } from "@/keyboard/keys";
-import { projectColorOf, projectColorVar } from "@/lib/project-color";
 import { HOME_PATH } from "@/navigation";
 import { ScreenHeading } from "@/screens/list-screen";
 import { AddHint } from "@/tasks/add-hint";
 import type { AddTarget, TaskSection } from "@/tasks/list-ui";
 import { TaskList } from "@/tasks/task-list";
 import { useListView, useUi } from "@/tasks/ui-context";
+import { ProjectColorButton } from "./color-palette";
 import { archiveProject, renameProject, unarchiveProject } from "./commands";
 import { projectNameDraftsOf } from "./name-drafts";
-import { ProjectDot } from "./project-dot";
 
 /**
  * プロジェクトの画面：そのプロジェクトのタスクを「今日／予定／あとで／受信箱」のまとまりで並べ、
  * 一番下に、そのプロジェクトで完了したもの（全期間）の「完了 N件」（最初は閉じている）。
  * n で追加すると、そのプロジェクトの「あとで」に入る。
  * 見出しの名前を押すと名前を直せる。見出しの右の小さなボタンから、名前の変更とアーカイブ。
- * 見出しの左にはプロジェクトの色の点（色の選び直しはチケット 11）
+ * 見出しの左にはプロジェクトの色の点。押すとパレット（8 色）が開き、色を選び直せる（color-palette.tsx。⌘Z で戻る）
  */
 
 function liveProject(store: AppStore, id: string): ProjectRow | undefined {
@@ -99,28 +98,18 @@ const ProjectEmpty = observer(function ProjectEmpty({ id }: { id: string }) {
 });
 
 /**
- * 見出し：色の点、名前（押すと直せる）、その下に未完了の件数（アーカイブ済みなら「アーカイブ済み」）、
+ * 見出し：色の点（押すと色を選び直せる）、名前（押すと直せる）、その下に未完了の件数（アーカイブ済みなら「アーカイブ済み」）、
  * 右に小さな「名前を変更」「アーカイブ」（名前を直しているあいだは出さない）
  */
 const ProjectHeading = observer(function ProjectHeading({ project }: { project: ProjectRow }) {
   const store = useStore();
   const [editing, setEditing] = useState(false);
   const count = store.lists.openTaskCountOfProject(project.id);
-  const color = projectColorOf(store, project.id);
   const subtitle =
     project.archivedAt !== null ? "アーカイブ済み" : count > 0 ? `${count} 件` : undefined;
   return (
     <ScreenHeading
-      leading={
-        // リストの見出しのアイコンの台と同じ形で、プロジェクトの色を淡く敷く
-        <span
-          aria-hidden="true"
-          className="list-tile grid size-7.5 flex-none place-items-center rounded-[9px]"
-          style={{ "--tile": projectColorVar(color) } as CSSProperties}
-        >
-          <ProjectDot color={color} className="size-2.5" />
-        </span>
-      }
+      leading={<ProjectColorButton project={project} />}
       subtitle={subtitle}
       actions={
         editing ? undefined : <ProjectActions project={project} onRename={() => setEditing(true)} />

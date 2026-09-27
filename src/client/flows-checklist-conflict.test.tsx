@@ -20,6 +20,8 @@ afterEach(() => {
 });
 
 const CONFLICT_TOAST = "ほかの画面で先に変更されていたため、保存できませんでした";
+/** ⌘Z（元に戻す）がぶつかって断られたとき（11 から「元に戻せませんでした」と出し分ける） */
+const UNDO_CONFLICT_TOAST = "ほかの画面で先に変更されていたため、元に戻せませんでした";
 
 function checklistGroup() {
   return screen.getByRole("group", { name: "チェックリスト" });
@@ -137,7 +139,7 @@ describe("ほかの画面が先にチェックリストを変えていたら、�
       await store.sync();
     });
 
-    expect((await screen.findAllByText(CONFLICT_TOAST)).length).toBeGreaterThan(0);
+    expect((await screen.findAllByText(UNDO_CONFLICT_TOAST)).length).toBeGreaterThan(0);
     expect(server.tasks.get(task.id)?.checklist).toEqual([
       { ...a, done: true },
       { ...b, done: true },

@@ -175,6 +175,8 @@
   --row-hover: rgb(255 255 255 / 3.5%);
   /* 完了の丸の線（未完了） */
   --circle: #5b5f75;
+  /* 進行中の印：完了の丸の線と、丸の半分の塗り（status-in-progress） */
+  --in-progress: #a78bfa;
   --selection: rgb(139 92 246 / 10%);
   --selection-ring: rgb(167 139 250 / 55%);
   --selection-glow: rgb(139 92 246 / 25%);
@@ -193,7 +195,7 @@
   --list-calendar: #a78bfa;
   --list-timeline: #34d399;
   --list-logbook: #94a3b8;
-  /* プロジェクトの 8 色（名前で持つ。lib/project-color.ts の PROJECT_COLORS と同じ順） */
+  /* プロジェクトの 8 色（名前で持つ。src/shared/palette.ts の PROJECT_COLORS と同じ名前と順） */
   --project-violet: #a78bfa;
   --project-sky: #38bdf8;
   --project-pink: #f472b6;
@@ -285,6 +287,15 @@
   color: var(--tile);
   background-color: color-mix(in srgb, var(--tile) 14%, transparent);
   box-shadow: 0 0 20px color-mix(in srgb, var(--tile) 25%, transparent);
+}
+
+/*
+ * 進行中の印：丸（完了の丸・開いたタスクの状態のボタンの小さな丸）の半分を紫で塗る。
+ * 右半分（上から時計回りに半周）を塗り、線も同じ紫にする。色だけの指定なので動かさない
+ */
+@utility status-in-progress {
+  border-color: var(--in-progress);
+  background-image: conic-gradient(var(--in-progress) 0 50%, transparent 0);
 }
 
 /* プロジェクトの色の点。色は --dot（例：var(--project-violet)）で渡し、ほのかな光を付ける */

@@ -3,6 +3,7 @@ import { LoadFailedNote } from "@/components/waiting-input";
 import { defer, useDeferred } from "@/lib/deferred";
 import {
   DETAIL_ORDER,
+  type DetailFieldProps,
   ROW_META_ORDER,
   registerDetailField,
   registerRowMeta,
@@ -33,7 +34,7 @@ registerRowMeta({ id: "checklist", order: ROW_META_ORDER.checklist, Component: C
 const editor = defer(() => import("./checklist-editor"));
 
 /** 読み込めなかったときは、読み直せる一行を出す（開き直したときも読み直す） */
-function LazyChecklistEditor({ task }: TaskSlotProps) {
+function LazyChecklistEditor({ task }: DetailFieldProps) {
   const { module, failed, retry } = useDeferred(editor);
   if (module) return <module.ChecklistEditor task={task} />;
   return failed ? <LoadFailedNote what="チェックリスト" onRetry={retry} /> : null;

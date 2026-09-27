@@ -95,6 +95,18 @@ export type ListUiOptions = {
   drafts?: DraftStorage;
 };
 
+/**
+ * ⌘Z（元に戻す）が、ほかの画面の変更とぶつかって戻せなかった知らせか。データ層は送らずに止め、
+ * 種類が "undo" で中身が空の操作だけを discarded に入れて知らせる（data/notices.ts）
+ */
+function isUndoConflict(notice: Extract<Notice, { type: "save-failed" }>): boolean {
+  return (
+    notice.reason === "conflict" &&
+    notice.discarded.length > 0 &&
+    notice.discarded.every((operation) => operation.kind === "undo")
+  );
+}
+
 function sameSections(a: readonly TaskSection[], b: readonly TaskSection[]): boolean {
   return (
     a.length === b.length &&
@@ -755,8 +767,9 @@ export class ListUi {
     });
     if (notice.type !== "save-failed") return;
     const generic: FailureMessage = {
-      title:
-        notice.reason === "conflict"
+      title: isUndoConflict(notice)
+        ? "ほかの画面で先に変更されていたため、元に戻せませんでした"
+        : notice.reason === "conflict"
           ? "ほかの画面で先に変更されていたため、保存できませんでした"
           : "保存できませんでした",
       description:

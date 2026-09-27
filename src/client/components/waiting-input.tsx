@@ -51,6 +51,8 @@ export function WaitingInput({
         if (isComposingKey(event.nativeEvent)) return;
         if (event.key === "Escape") {
           event.preventDefault();
+          // 小さな詳細（ポップオーバー）の中から開いたときに、小さな詳細まで一緒に閉じないように
+          event.stopPropagation();
           onCancel();
         } else if (event.key === "Enter" && event.target instanceof HTMLInputElement) {
           // 届くまでは決められない（届いたら、打った文字のまま本物の入力欄で決める）

@@ -19,6 +19,7 @@ import {
   dateEntryLabel,
   dateEntryOf,
   dateEntryPlaceholder,
+  returnFocusAfterDateEntry,
 } from "./date-entry";
 import { formatLongDate } from "./labels";
 
@@ -87,10 +88,10 @@ export const DateEntryPanel = observer(function DateEntryPanel({
   /** 閉じる途中なら false（フェードが終わったら entry.left で描くのをやめる） */
   const open = entry.request?.id === request.id;
 
-  /** 閉じて一覧にフォーカスを戻す（キーの操作を続けられるように） */
+  /** 閉じて一覧にフォーカスを戻す（キーの操作を続けられるように。小さな詳細から開いたときは押したボタンへ） */
   const finish = () => {
     entry.close();
-    ui.focusList();
+    returnFocusAfterDateEntry(ui, request);
   };
 
   const commit = (date: string | null) => {

@@ -17,6 +17,7 @@ import { isComposingKey } from "@/keyboard/keys";
 import { LAYOUT_TRANSITION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { runTaskOperation } from "@/tasks/commands";
+import { useDetailSurface } from "@/tasks/detail-surface";
 import type { ListUi } from "@/tasks/list-ui";
 import { fieldFocusClassName } from "@/tasks/task-detail";
 import { useUi } from "@/tasks/ui-context";
@@ -38,6 +39,7 @@ import {
  * - 並べ替えは、左のつまみのドラッグか、項目の中で ⌥↑／⌥↓
  * - 全部チェックしても、タスクは完了にしない
  * 項目の欄のキー：Enter で次の項目へ、↑↓ で上下の項目へ、空の欄で ⌫ を押すと項目を消す、Esc でタスクを閉じる
+ * （小さな詳細では、ポップオーバーを閉じる）
  */
 
 /**
@@ -206,7 +208,7 @@ const ChecklistItemRow = observer(function ChecklistItemRow({
   onFocusSibling: (delta: -1 | 1) => void;
   onDragEnd: () => void;
 }) {
-  const ui = useUi();
+  const surface = useDetailSurface();
   const controls = useDragControls();
   // 運んでいるあいだだけ不透明の面にする（開いたタスクの欄は半透明なので、下の項目が透けないように）
   const [dragging, setDragging] = useState(false);
@@ -251,8 +253,7 @@ const ChecklistItemRow = observer(function ChecklistItemRow({
       case "Escape":
         event.preventDefault();
         field.flush();
-        ui.close();
-        ui.focusList();
+        surface.close();
         return;
       case "Backspace":
         if (field.value === "") {
@@ -352,6 +353,7 @@ const AddItemInput = observer(function AddItemInput({
   onFocusLast: () => void;
 }) {
   const ui = useUi();
+  const surface = useDetailSurface();
   const value = drafts.addDraft(task.id);
 
   const add = () => {
@@ -392,8 +394,7 @@ const AddItemInput = observer(function AddItemInput({
             onFocusLast();
           } else if (event.key === "Escape") {
             event.preventDefault();
-            ui.close();
-            ui.focusList();
+            surface.close();
           }
         }}
       />

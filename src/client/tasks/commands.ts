@@ -49,7 +49,8 @@ export type TaskOperation = {
    */
   advance?: boolean;
   /**
-   * 「元に戻す」付きのトーストの文言。left は一覧から抜けた行の id、changed は実際に変えたタスクの id
+   * 「元に戻す」付きのトーストの文言。left は一覧から抜けた行の id（操作の前は一覧にあって、あとにはない行。
+   * 小さな詳細など、一覧の外のタスクへの操作では入らない）、changed は実際に変えたタスクの id
    * （変えるものがなかった行や、同じ操作で作ったプロジェクトは入らない）。返さなければ出さない
    */
   toast?: (left: readonly string[], changed: readonly string[]) => string | undefined;
@@ -84,13 +85,15 @@ export function runTaskOperation(ui: ListUi, operation: TaskOperation): Operatio
   if (!withinBulkLimit(ui, ids.length)) return { ok: false, reason: "too-many" };
   const selectedBefore = ui.selectedId;
   const next = ui.neighborAfter(ids);
+  const visibleBefore = new Set(ui.rows.map((row) => row.id));
   const result = perform();
   if (!result.ok) {
     notifyFailure(ui, result.reason);
     return result;
   }
   const visible = new Set(ui.rows.map((row) => row.id));
-  const left = ids.filter((id) => !visible.has(id));
+  // 一覧から抜けた行：前は一覧にあって、今はない行（小さな詳細など、一覧の外のタスクへの操作は数えない）
+  const left = ids.filter((id) => visibleBefore.has(id) && !visible.has(id));
   const targets = new Set(ids);
   const changed = result.ids.filter((id) => targets.has(id));
   runInAction(() => {
