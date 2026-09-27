@@ -2,9 +2,10 @@
  * nagi の Service Worker。オフラインで開いたときに offline.html（「オフラインです」）を出すためだけに使う。
  * キャッシュに置くのは offline.html だけ。画面のファイル（HTML・JS・CSS）はキャッシュしない
  * （新しい版がすぐ届くように。技術計画「最初の表示を速くする」）。
- * offline.html を変えたら CACHE の番号を上げる（古い控えは activate で消える）
+ * offline.html を変えたら CACHE の番号を上げる（古い控えは activate で消える）。
+ * 控えだけが消されたとき（ブラウザの容量の都合など）は、次にページを開けたときに入れ直す
  */
-const CACHE = "nagi-offline-v1";
+const CACHE = "nagi-offline-v2";
 const OFFLINE_URL = "/offline.html";
 
 self.addEventListener("install", (event) => {
@@ -33,16 +34,24 @@ self.addEventListener("fetch", (event) => {
   if (event.request.mode !== "navigate") return;
   event.respondWith(
     (async () => {
+      let response;
       try {
-        const preloaded = await event.preloadResponse;
-        if (preloaded) return preloaded;
-        return await fetch(event.request);
+        response = (await event.preloadResponse) ?? (await fetch(event.request));
       } catch {
         return offlineResponse();
       }
+      // つながっているあいだに、offline.html の控えがなければ入れ直す（キャッシュだけが消されたとき）
+      event.waitUntil?.(ensureOfflineCached().catch(() => {}));
+      return response;
     })(),
   );
 });
+
+async function ensureOfflineCached() {
+  if (await caches.match(OFFLINE_URL, { cacheName: CACHE })) return;
+  const cache = await caches.open(CACHE);
+  await cache.add(new Request(OFFLINE_URL, { cache: "reload" }));
+}
 
 async function offlineResponse() {
   const cached = await caches.match(OFFLINE_URL, { cacheName: CACHE });
