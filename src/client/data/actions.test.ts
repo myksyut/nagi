@@ -1,3 +1,4 @@
+import type { Task } from "@shared/model";
 import { MAX_MUTATIONS_PER_BATCH, type Mutation } from "@shared/mutations";
 import { rankAfter } from "@shared/rank";
 import { describe, expect, it } from "vitest";
@@ -1133,6 +1134,65 @@ describe("shiftTaskDates（14：タイムラインの棒の真ん中のドラッ
       expect(withoutId(shifted.replica.task(shiftedTask.id)?.peek())).toEqual(
         withoutId(sequential.replica.task(sequentialTask.id)?.peek()),
       );
+    });
+
+    /**
+     * 同じ内容の行に、shiftTaskDates 1回と、ずらした日で d → ⇧D を続けてかけたものを比べる
+     * （やる日は、予定は予定の日付、今日のタスクは今日。ない方はかけない）
+     */
+    function expectSameAsSequential(initial: Partial<Task>, days: number) {
+      const shifted = setupLive();
+      const shiftedTask = makeTask(initial);
+      shifted.replica.replaceConfirmed([{ kind: "task", row: shiftedTask }]);
+      expect(shifted.actions.shiftTaskDates([shiftedTask.id], days).ok).toBe(true);
+
+      const sequential = setupLive();
+      const sequentialTask = makeTask(initial);
+      sequential.replica.replaceConfirmed([{ kind: "task", row: sequentialTask }]);
+      const doOn =
+        sequentialTask.bucket === "today"
+          ? sequential.day.today
+          : sequentialTask.bucket === "scheduled"
+            ? sequentialTask.scheduledOn
+            : null;
+      if (doOn !== null) {
+        sequential.actions.moveTasks([sequentialTask.id], {
+          bucket: "scheduled",
+          on: addDays(doOn, days),
+        });
+      }
+      if (sequentialTask.deadlineOn !== null) {
+        sequential.actions.setDeadline(
+          [sequentialTask.id],
+          addDays(sequentialTask.deadlineOn, days),
+        );
+      }
+
+      expect(withoutId(shifted.replica.task(shiftedTask.id)?.peek())).toEqual(
+        withoutId(sequential.replica.task(sequentialTask.id)?.peek()),
+      );
+    }
+
+    it("予定＋締切を今日以前へ（今日の一番下へ入り、締切も過去へ）", () => {
+      expectSameAsSequential(
+        { bucket: "scheduled", scheduledOn: "2026-01-18", deadlineOn: "2026-01-20" },
+        -10,
+      );
+    });
+
+    it("進行中の今日のタスク＋締切を未来へ（予定へ出て、未着手に戻る）", () => {
+      expectSameAsSequential(
+        {
+          bucket: "today",
+          startedAt: "2026-01-15T01:00:00.000Z",
+          deadlineOn: "2026-01-17",
+        },
+        4,
+      );
+    });
+
+    it("今日のタスク＋締切を過去へ（今日のまま、締切だけ動く）", () => {
+      expectSameAsSequential({ bucket: "today", deadlineOn: "2026-01-17" }, -5);
     });
   });
 });

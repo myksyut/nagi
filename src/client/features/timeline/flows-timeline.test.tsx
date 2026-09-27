@@ -438,7 +438,9 @@ describe("小さな詳細の開き直し：完了の条件7", () => {
       store.actions.setProject([task.id], p2.id);
     });
 
-    await waitFor(() => expect(screen.getByRole("dialog")).toBeInTheDocument());
+    // 押した棒は別のまとまりへ移って作り直されるので、新しい棒から開き直している（同じタスクの詳細のまま）
+    await waitFor(() => expect(screen.getByRole("group", { name: "P2" })).toBeInTheDocument());
+    expect(screen.getByRole("dialog", { name: "「移るタスク」の詳細" })).toBeInTheDocument();
     expect(dialog.isConnected).toBe(false);
   });
 
@@ -489,7 +491,7 @@ describe("そのほか：完了の条件6", () => {
     const scroller = section();
     const before = scroller.scrollLeft;
     keymap.run("timeline.nextWeek", { store, ui, navigate });
-    await waitFor(() => expect(scroller.scrollLeft).not.toBe(before));
+    await waitFor(() => expect(scroller.scrollLeft).toBe(before + 7 * DAY_WIDTH));
 
     keymap.run("timeline.previousWeek", { store, ui, navigate });
     await waitFor(() => expect(scroller.scrollLeft).toBeCloseTo(before, 0));
