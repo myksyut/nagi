@@ -1,4 +1,4 @@
-import { motion } from "motion/react";
+import { m } from "motion/react";
 import { DURATION, EASE_OUT } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 
@@ -33,7 +33,7 @@ export function CompleteButton({
       )}
     >
       <svg viewBox="0 0 16 16" className="size-3" aria-hidden="true">
-        <motion.path
+        <m.path
           d="M4 8.5 7 11.2 12 5.2"
           fill="none"
           stroke="currentColor"

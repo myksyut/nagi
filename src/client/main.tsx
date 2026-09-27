@@ -2,6 +2,7 @@ import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
 import { App } from "./app";
 import { createAppStore, StoreProvider } from "./data";
+import { registerServiceWorker } from "./service-worker";
 import "./styles.css";
 
 const root = document.getElementById("root");
@@ -18,3 +19,6 @@ createRoot(root).render(
     </StoreProvider>
   </StrictMode>,
 );
+
+// オフラインで開いたときに「オフラインです」を出すためだけの Service Worker
+registerServiceWorker();

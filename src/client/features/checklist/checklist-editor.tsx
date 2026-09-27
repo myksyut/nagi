@@ -14,6 +14,7 @@ import {
 import { Checkbox } from "@/components/ui/checkbox";
 import type { OperationResult, TaskRow } from "@/data";
 import { isComposingKey } from "@/keyboard/keys";
+import { LAYOUT_TRANSITION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { runTaskOperation } from "@/tasks/commands";
 import type { ListUi } from "@/tasks/list-ui";
@@ -38,6 +39,12 @@ import {
  * - 全部チェックしても、タスクは完了にしない
  * 項目の欄のキー：Enter で次の項目へ、↑↓ で上下の項目へ、空の欄で ⌫ を押すと項目を消す、Esc でタスクを閉じる
  */
+
+/**
+ * ドラッグを離したときに、項目が収まる場所へ戻るばね。減衰を臨界（2√剛性）より少し強くして跳ねさせない
+ * （約 150ms で収まる）
+ */
+const SETTLE_TRANSITION = { bounceStiffness: 1000, bounceDamping: 64 } as const;
 
 /** 打つのが止まってから保存するまでの時間（タイトルとメモと同じ） */
 const AUTOSAVE_DELAY_MS = 500;
@@ -261,6 +268,10 @@ const ChecklistItemRow = observer(function ChecklistItemRow({
       value={item.id}
       dragListener={false}
       dragControls={controls}
+      // 動きのルールにそろえる：ほかの項目が詰まる動きは 200ms の減速、離したときは勢いを付けずに行き過ぎずに収まる
+      transition={LAYOUT_TRANSITION}
+      dragMomentum={false}
+      dragTransition={SETTLE_TRANSITION}
       onDragEnd={onDragEnd}
       className="group/item relative flex min-h-7 items-center gap-2.5 bg-card"
       onKeyDown={onKeyDown}

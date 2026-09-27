@@ -47,7 +47,8 @@ export function PopoverPopup({
         align={align}
         alignOffset={alignOffset}
         anchor={anchor}
-        className="z-50 h-(--positioner-height) w-(--positioner-width) max-w-(--available-width) transition-[top,left,right,bottom,transform] data-instant:transition-none"
+        // 位置（top・left）は動かさない（nagi の動きのルール。coss の既定から外した）
+        className="z-50 h-(--positioner-height) w-(--positioner-width) max-w-(--available-width)"
         data-slot="popover-positioner"
         side={side}
         sideOffset={sideOffset}

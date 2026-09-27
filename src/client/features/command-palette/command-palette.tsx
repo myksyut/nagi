@@ -1,5 +1,6 @@
 import { observer } from "mobx-react-lite";
 import { useState } from "react";
+import { BeamLine } from "@/components/beam-line";
 import {
   Command,
   CommandCollection,
@@ -69,7 +70,7 @@ export const CommandPalette = observer(function CommandPalette() {
           queueMicrotask(() => context.ui.focusList());
           return false;
         }}
-        // ⌘K は即時に出す（動きの仕上げは 8）
+        // ⌘K は即時に出す（本体は動かさない。背景の暗転だけが短くフェードする）
         className="transition-none"
       >
         <PaletteContent context={context} />
@@ -121,23 +122,26 @@ const PaletteContent = observer(function PaletteContent({ context }: { context: 
         if (details.reason !== "item-press") setQuery(value);
       }}
     >
-      <CommandInput
-        aria-label="検索とコマンド"
-        placeholder="タスクを検索、コマンドを実行…"
-        onKeyDown={(event) => {
-          // 変換中のキー（確定の Enter を含む）は Base UI に渡さない。Base UI が止めるのは keyCode 229 のときだけで、
-          // isComposing だけが立つ確定の Enter ではコマンドを実行してしまう
-          if (isComposingKey(event.nativeEvent)) {
-            event.preventBaseUIHandler();
-            return;
-          }
-          // ⌘K をもう一度押すと閉じる
-          if (event.key.toLowerCase() === "k" && event.metaKey && !event.ctrlKey) {
-            event.preventDefault();
-            overlays.closePalette();
-          }
-        }}
-      />
+      {/* 入力欄の下の辺に border-beam（⌘K を開いているあいだ流す） */}
+      <BeamLine active radius={0}>
+        <CommandInput
+          aria-label="検索とコマンド"
+          placeholder="タスクを検索、コマンドを実行…"
+          onKeyDown={(event) => {
+            // 変換中のキー（確定の Enter を含む）は Base UI に渡さない。Base UI が止めるのは keyCode 229 のときだけで、
+            // isComposing だけが立つ確定の Enter ではコマンドを実行してしまう
+            if (isComposingKey(event.nativeEvent)) {
+              event.preventBaseUIHandler();
+              return;
+            }
+            // ⌘K をもう一度押すと閉じる
+            if (event.key.toLowerCase() === "k" && event.metaKey && !event.ctrlKey) {
+              event.preventDefault();
+              overlays.closePalette();
+            }
+          }}
+        />
+      </BeamLine>
       <CommandPanel>
         <CommandEmpty>見つかりません</CommandEmpty>
         <CommandList>

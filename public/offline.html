@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="ja" class="dark">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <meta name="color-scheme" content="dark" />
+    <meta name="theme-color" content="#141416" />
+    <title>オフライン — nagi</title>
+    <!--
+      オフラインで開いたときに Service Worker（sw.js）が出すページ。「オフラインです」とだけ出し、
+      つながったら自動で読み込み直す。ほかのファイルに頼らないよう、すべてここに書く
+      （色は src/client/styles.css の .dark の --background・--muted-foreground とそろえる）
+    -->
+    <style>
+      :root {
+        color-scheme: dark;
+        background: #141416;
+        color: #8b8b93;
+        font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
+        -webkit-font-smoothing: antialiased;
+      }
+      body {
+        margin: 0;
+        min-height: 100dvh;
+        display: grid;
+        place-items: center;
+        font-size: 14px;
+      }
+    </style>
+  </head>
+  <body>
+    <p role="status">オフラインです</p>
+    <script>
+      // つながったら読み込み直す。navigator.onLine が変わらないまま（サーバーに届かないだけ）のときもあるので、
+      // 少しずつ間を空けて確かめる
+      const reload = () => window.location.reload();
+      window.addEventListener("online", reload);
+      let delay = 3000;
+      const check = async () => {
+        try {
+          const response = await fetch("/", { method: "HEAD", cache: "no-store" });
+          if (response.ok) return reload();
+        } catch {
+          // まだつながらない
+        }
+        delay = Math.min(delay * 2, 30000);
+        setTimeout(check, delay);
+      };
+      setTimeout(check, delay);
+    </script>
+  </body>
+</html>

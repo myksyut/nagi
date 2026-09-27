@@ -14,7 +14,7 @@ src/
 ├── worker/      # Hono の API（/api/*）とログイン（/auth/*）。同期の API は worker/sync
 └── shared/      # 画面と Worker で共有する型・検証スキーマ・論理日付・並び順キー・API の版
 migrations/      # D1 のマイグレーション（Drizzle で生成し、wrangler で適用）
-public/          # そのまま配信するファイル
+public/          # そのまま配信するファイル（Service Worker・オフライン画面・_headers）
 index.html       # アプリの外枠（最初の表示用の最小限の CSS を直接書く）
 wrangler.jsonc   # Worker・D1・静的配信の設定
 components.json  # shadcn / coss ui の設定
@@ -41,6 +41,25 @@ components.json  # shadcn / coss ui の設定
 - キーの操作は、選んでいるすべての行（`ui.selectedRows`。上から見えている順）に1つの操作としてかける。`ui.selected` は選択の中のカーソル（↑↓ の起点で、ポップオーバーはこの行から広がる）
 - 選択を操作に使うときは `selectionForOperation(ui)`（`tasks/commands.ts`）を通す。500 件（1回の操作の上限）を超えていたら、実行せずに「一度に扱えるのは 500 件まで」と出す。`runTaskOperation` も同じ上限で止める
 - ⌥↑↓ とドラッグで並べ替えられるのは、画面が `TaskSection` に `reorderable: true` を付けたまとまりの中だけ（今日、あとでのプロジェクトごと、プロジェクトの画面の「今日」と「あとで」）。書き換えるのは動かした行の rank だけ（`store.actions.reorderTasks`）
+
+最初の表示と、後から読み込む部品（8）：
+
+- 起動に要らない部品は `defer(() => import("…"))`（`lib/deferred.ts`）で最初の JS から外し、部品の中では `useDeferred` で受け取る。今は ⌘K、`?` の一覧、完了ログの一覧、日付の入力（カレンダー）、p の候補、チェックリストの編集、border-beam、Motion の機能一式（`LazyMotion` に渡す。行などは `motion.*` ではなく `m.*` で書く）
+- 登録したものは、アプリの外枠が起動のあとの空いた時間にまとめて先読みする（最初のキー操作で読み込みを待たせない）。テストでは各ファイルの最初に読み込んでおく（`test/setup.ts`）
+- 後から読み込むモジュールを、起動の道筋（`main.tsx` から静的に import される側）から import しない。import すると最初の JS に戻ってしまう。`pnpm build` の出力で `index-*.js` と一緒に読まれる分を確かめる
+
+動きの決まり（8）：
+
+- 動かしてよいのは transform と opacity だけ。速さは `lib/motion.ts` の `DURATION`（CSS では `--duration-*`）。ポップオーバーは、出るときは 100ms、消えるときだけ 150ms でフェードする
+- `prefers-reduced-motion` のときは、Motion の動き（`lib/reduced-motion.ts`）と CSS の動き（`styles.css` の最後）をすべて止め、色の変化だけを残す。動く飾りを足すときも、この2つで止まることを確かめる
+
+オフラインと失敗のとき（8）：
+
+- オフラインのあいだは上部に細い帯を出し、オフラインで操作を止めたら帯の色を少し強める（`shell/status-bar.tsx`）。画面の版が古い（409）ときも同じ帯で「新しいバージョンがあります」と出して読み込み直す
+- 追加欄の下書き、戻ってきた追加、保存できなかったタイトルとメモは、localStorage にも残す（`tasks/draft-storage.ts`）。再読み込みやログインのし直しでも消えない
+- 操作の側で「保存できませんでした」の文言を決めたいときは `ui.onSaveFailed(operationId, handler)` を使う（汎用の知らせと重ねずに1つだけ出す）
+- Service Worker（`public/sw.js`）は、オフラインで開いたときに `offline.html` を出すためだけに使う。キャッシュに置くのは `offline.html` だけで、画面のファイルは置かない。本番のビルドでだけ登録する
+- `public/_headers` で `/assets/*`（名前にハッシュが付いたファイル）に `Cache-Control: public, max-age=31536000, immutable` を付ける。`index.html` などは Workers の既定（`max-age=0`）のまま
 
 - Worker が受けるのは `/api/*` と `/auth/*` だけ。それ以外の URL は静的配信が画面を返す（知らない URL も `index.html`）
 - `/api/*` はログインが必要（セッションがなければ 401）。画面ファイル自体はログインなしで配信する

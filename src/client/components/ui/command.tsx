@@ -37,7 +37,8 @@ export function CommandDialogBackdrop({
   return (
     <CommandDialogPrimitive.Backdrop
       className={cn(
-        "fixed inset-0 z-50 bg-black/32 backdrop-blur-sm transition-all duration-200 data-ending-style:opacity-0 data-starting-style:opacity-0",
+        // 背景の暗転は opacity だけを、出るときは 100ms、消えるときは 150ms で（nagi の動きのルール。coss の既定から変えた）
+        "fixed inset-0 z-50 bg-black/32 backdrop-blur-sm transition-opacity duration-(--duration-short) data-ending-style:opacity-0 data-ending-style:duration-(--duration-exit) data-starting-style:opacity-0",
         className,
       )}
       data-slot="command-dialog-backdrop"

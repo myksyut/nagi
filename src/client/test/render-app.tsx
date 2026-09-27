@@ -4,13 +4,17 @@ import { memoryLocation } from "wouter/memory-location";
 import { App } from "../app";
 import { AppStore, StoreProvider } from "../data";
 import { createMemoryLocalDb } from "../data/local-db";
+import { preloadDeferred } from "../lib/deferred";
 import { FakeServer } from "./fake-server";
 
 /**
  * 画面をまるごと描くテスト用の土台。チケット4のキーの流れのテストはこれに乗せる
- * （個々の画面や部品を分けて描くと、キーマップや ListUi の配線が実際と変わってしまうため）
+ * （個々の画面や部品を分けて描くと、キーマップや ListUi の配線が実際と変わってしまうため）。
+ * 後から読み込む部品（⌘K・完了ログ・カレンダー・p の候補など）は、本番では起動のあとの空いた時間に先読みするので、
+ * ここでも描く前に読み込んでおく（読み込みの前に使ったときの振る舞いは、それを確かめるテストで別に見る）
  */
-export async function setupApp(path: string, server = new FakeServer()) {
+export async function setupApp(path: string, server = new FakeServer(), { preload = true } = {}) {
+  if (preload) await preloadDeferred();
   const store = new AppStore({
     fetch: server.fetch,
     openLocalDb: async () => createMemoryLocalDb(),

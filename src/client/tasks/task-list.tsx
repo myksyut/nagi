@@ -1,7 +1,7 @@
 import { ChevronRightIcon } from "lucide-react";
 import { autorun } from "mobx";
 import { observer } from "mobx-react-lite";
-import { AnimatePresence, motion } from "motion/react";
+import { AnimatePresence, m } from "motion/react";
 import { type ReactNode, useCallback } from "react";
 import type { TaskRow } from "@/data";
 import { DURATION, EASE_OUT, LAYOUT_TRANSITION } from "@/lib/motion";
@@ -111,7 +111,7 @@ export const TaskList = observer(function TaskList({
       {/* 描く範囲が飛んだら（完了ログの窓）作り直して、行の動きを出さない */}
       <AnimatePresence key={view.layoutKey?.() ?? "list"} initial={false} mode="popLayout">
         {items.map((item) => (
-          <motion.div
+          <m.div
             key={item.key}
             layout="position"
             initial={{ opacity: 0 }}
@@ -124,7 +124,7 @@ export const TaskList = observer(function TaskList({
             transition={{ ...LAYOUT_TRANSITION, opacity: { duration: DURATION.short } }}
           >
             <ItemView item={item} view={view} empty={empty} />
-          </motion.div>
+          </m.div>
         ))}
       </AnimatePresence>
     </div>
@@ -170,7 +170,7 @@ const FoldHeader = observer(function FoldHeader({
       <button
         type="button"
         aria-expanded={open}
-        className="flex items-center gap-1 rounded-md px-2.5 py-1 text-muted-foreground text-sm hover:text-foreground"
+        className="flex items-center gap-1 rounded-md px-2.5 py-1 text-muted-foreground text-sm outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/70"
         onClick={() => ui.toggleFold(section.key)}
       >
         <ChevronRightIcon

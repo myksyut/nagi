@@ -1,5 +1,4 @@
-import { reaction } from "mobx";
-import type { AppStore, Notice, OperationResult, ProjectRow } from "@/data";
+import type { OperationResult, ProjectRow } from "@/data";
 import { runTaskOperation, toastSubject, undo } from "@/tasks/commands";
 import type { ListUi } from "@/tasks/list-ui";
 import { projectNameDraftsOf } from "./name-drafts";
@@ -63,38 +62,11 @@ export function renameProject(ui: ListUi, project: ProjectRow, name: string): Op
 }
 
 /**
- * その操作が保存できなかったとき（送ったあとに捨てられたとき）に、知らせの理由を渡して呼ぶ。
- * 保存できたら何もしない（送信の列から外れたら、見張るのをやめる）
- */
-function whenDiscarded(
-  store: AppStore,
-  operationId: string,
-  callback: (reason: Extract<Notice, { type: "save-failed" }>["reason"]) => void,
-): void {
-  const off = store.subscribe((notice) => {
-    if (notice.type !== "save-failed") return;
-    if (!notice.discarded.some((operation) => operation.operationId === operationId)) return;
-    stop();
-    callback(notice.reason);
-  });
-  const stop = () => {
-    off();
-    stopWatching();
-  };
-  const stopWatching = reaction(
-    () => store.replica.pending.some((batch) => batch.operationId === operationId),
-    (pending) => {
-      // 捨てられたときの知らせは、送信の列から外れた直後に届くので、それを待ってからやめる
-      if (!pending) queueMicrotask(stop);
-    },
-  );
-}
-
-/**
  * アーカイブする（サイドバーから隠す）。未完了のタスクが残っていたら、アーカイブせずに件数を知らせる。
  * アーカイブしたら「元に戻す」付きのトーストを出す。画面はすぐ今日へ移る（呼ぶ側）。
  * ほかの画面が直前にタスクを付けていてサーバーが断ったときは、最新を取り直してから、
- * アーカイブできなかったことと残りの件数を知らせる（プロジェクトはサイドバーに戻る）
+ * アーカイブできなかったことと残りの件数を知らせる（プロジェクトはサイドバーに戻る）。
+ * この知らせは、汎用の「ほかの画面で先に変更されていたため、保存できませんでした」の代わりに1つだけ出す
  */
 export function archiveProject(ui: ListUi, project: ProjectRow): OperationResult {
   const { store } = ui;
@@ -110,14 +82,13 @@ export function archiveProject(ui: ListUi, project: ProjectRow): OperationResult
     return result;
   }
   ui.toaster.undoable(`「${name}」をアーカイブしました`, result.operationId, () => undo(ui));
-  whenDiscarded(store, result.operationId, (reason) => {
-    if (reason !== "conflict") return;
-    void store.sync().then(() => {
-      ui.toaster.error(
-        `「${name}」をアーカイブできませんでした`,
-        `未完了のタスクが ${store.lists.openTaskCountOfProject(id)} 件残っています`,
-      );
-    });
+  ui.onSaveFailed(result.operationId, async (reason) => {
+    if (reason !== "conflict") return null;
+    await store.sync();
+    return {
+      title: `「${name}」をアーカイブできませんでした`,
+      description: `未完了のタスクが ${store.lists.openTaskCountOfProject(id)} 件残っています`,
+    };
   });
   return result;
 }
