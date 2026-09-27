@@ -6,14 +6,21 @@ import { ProjectNavItems } from "@/features/projects/project-nav";
 import { moveTasks } from "@/tasks/commands";
 import { useTaskDropTarget } from "@/tasks/drag";
 import { useUi } from "@/tasks/ui-context";
-import { BUCKET_LISTS, type ListEntry, type ListKey, LOGBOOK } from "../navigation";
-import { LIST_ICONS } from "./list-icons";
+import {
+  BUCKET_LISTS,
+  type ListEntry,
+  type ListKey,
+  LOGBOOK,
+  VIEWS,
+  type ViewEntry,
+} from "../navigation";
+import { LIST_ICONS, VIEW_ICONS } from "./list-icons";
 import { NavCountOf, navLinkClassName } from "./nav-parts";
 
 /**
  * 左のサイドバー（すりガラス）。上から、名前、受信箱・今日・予定・あとで（色の付いたアイコンと未完了の件数）、
- * 「プロジェクト」の見出しの下に各プロジェクト（色の点と件数）、一番下に完了ログ。
- * 「ビュー」の見出し（カレンダー・タイムライン）はビューを作るチケットで足す
+ * 「ビュー」の見出しの下にカレンダー・タイムライン（navigation.ts の VIEWS）、
+ * 「プロジェクト」の見出しの下に各プロジェクト（色の点と件数）、一番下に完了ログ
  */
 export function Sidebar() {
   return (
@@ -30,6 +37,19 @@ export function Sidebar() {
           {BUCKET_LISTS.map((list) => (
             <li key={list.key}>
               <NavItem list={list} />
+            </li>
+          ))}
+        </ul>
+        <h2
+          id="sidebar-views"
+          className="mx-2.5 mt-4 mb-1.5 font-normal text-[11px] text-faint-foreground"
+        >
+          ビュー
+        </h2>
+        <ul aria-labelledby="sidebar-views" className="flex flex-col gap-px">
+          {VIEWS.map((view) => (
+            <li key={view.key}>
+              <ViewNavItem view={view} />
             </li>
           ))}
         </ul>
@@ -105,3 +125,19 @@ const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
     </Link>
   );
 });
+
+/** 「ビュー」の1行（件数は出さない。行を落とす先にもしない） */
+function ViewNavItem({ view }: { view: ViewEntry }) {
+  const [active] = useRoute(view.path);
+  const { Icon, color } = VIEW_ICONS[view.key];
+  return (
+    <Link
+      href={view.path}
+      aria-current={active ? "page" : undefined}
+      className={navLinkClassName(active)}
+    >
+      <Icon aria-hidden="true" className="size-4 flex-none" style={{ color }} strokeWidth={1.75} />
+      <span className="min-w-0 flex-1 truncate">{view.label}</span>
+    </Link>
+  );
+}

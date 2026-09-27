@@ -8,17 +8,20 @@ import { createMemoryLocalDb } from "@/data/local-db";
 import type { KeyContext } from "@/keyboard/keymap";
 import { keymap } from "@/keyboard/keymap";
 import { useKeymap } from "@/keyboard/use-keymap";
+import { TIMELINE } from "@/navigation";
 import { ListUi } from "@/tasks/list-ui";
 import { ToastHost } from "@/tasks/toast-host";
 import { UiProvider } from "@/tasks/ui-context";
 import { FakeServer } from "@/test/fake-server";
 import { makeProject, makeTask } from "@/test/fixtures";
-import { TIMELINE_PATH, timelineNav } from "./timeline-nav";
+import { setupApp } from "@/test/render-app";
+import { TimelineHeading } from "./lazy";
+import { timelineNav } from "./timeline-nav";
 import { DAY_WIDTH, TimelineScreen } from "./timeline-screen";
 
 /**
- * チケット14：タイムライン（timeline-screen.tsx）。この時点ではルート（/timeline）にまだつながっていない
- * （13 のマージのあとで app.tsx がつなぐ）ので、setupApp は使わず、ここで TimelineScreen を自分で描いて確かめる
+ * チケット14：タイムライン（timeline-screen.tsx）。画面の中の振る舞いは TimelineScreen を自分で描いて確かめ
+ * （時刻を固定するため）、サイドバー・7・右下の「＋」と n のつなぎ込みは、最後に setupApp で確かめる
  */
 
 type Harness = { store: AppStore; ui: ListUi; navigate: (path: string) => void; stop?: () => void };
@@ -58,7 +61,7 @@ async function setupTimeline(server: FakeServer, now?: () => Date) {
         <LazyMotion features={domMax}>
           <ToastHost toaster={ui.toaster}>
             <Keys />
-            <TimelineScreen />
+            <TimelineScreen Heading={TimelineHeading} />
           </ToastHost>
         </LazyMotion>
       </UiProvider>
@@ -475,7 +478,7 @@ describe("そのほか：完了の条件6", () => {
 
     keymap.run("go.timeline", { store, ui, navigate });
 
-    expect(navigate).toHaveBeenCalledWith(TIMELINE_PATH);
+    expect(navigate).toHaveBeenCalledWith(TIMELINE.path);
   });
 
   it("画面が開いているあいだだけ [ ] が効き、横のスクロールが7×36pxずつ動く", async () => {
@@ -511,5 +514,67 @@ describe("そのほか：完了の条件6", () => {
 
     expect(timelineNav.active).toBe(false);
     expect(keymap.run("timeline.nextWeek", { store, ui, navigate })).toBe(false);
+  });
+});
+
+describe("つなぎ込み：サイドバー・7・右下の「＋」と n", () => {
+  const stores: AppStore[] = [];
+  afterEach(() => {
+    for (const store of stores.splice(0)) store.dispose();
+  });
+
+  it("7 でタイムラインが開き、サイドバーの「ビュー」の「タイムライン」が選ばれている", async () => {
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "今日のタスク", bucket: "today" }));
+    const { store, location } = await setupApp("/today", server);
+    stores.push(store);
+    await act(async () => {
+      await store.sync();
+    });
+    await screen.findByRole("listbox", { name: "今日" });
+    const user = userEvent.setup();
+
+    await user.keyboard("7");
+
+    await screen.findByRole("region", { name: "タイムライン" });
+    expect(location.history.at(-1)).toBe(TIMELINE.path);
+    expect(screen.getByRole("heading", { level: 1, name: "タイムライン" })).toBeInTheDocument();
+    expect(screen.getByRole("link", { name: "タイムライン" })).toHaveAttribute(
+      "aria-current",
+      "page",
+    );
+    expect(await screen.findByRole("button", { name: /^「今日のタスク」/ })).toBeInTheDocument();
+  });
+
+  it("n と右下の「＋」で小さな追加欄が開き、受信箱に追加される。絞り込み中なら、そのプロジェクトが付く", async () => {
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ name: "AIPR" }));
+    const { store } = await setupApp(TIMELINE.path, server);
+    stores.push(store);
+    await act(async () => {
+      await store.sync();
+    });
+    await screen.findByRole("region", { name: "タイムライン" });
+    const user = userEvent.setup();
+
+    // 絞り込みなし：n で開いて受信箱へ（プロジェクトなし）
+    await user.keyboard("n");
+    await user.type(
+      await screen.findByRole("textbox", { name: "受信箱に追加" }),
+      "なしの追加{Enter}",
+    );
+    await waitFor(() => expect(store.lists.inbox.map((row) => row.title)).toContain("なしの追加"));
+    expect(store.lists.inbox.find((row) => row.title === "なしの追加")?.projectId).toBeNull();
+    await user.keyboard("{Escape}");
+    await waitFor(() => expect(screen.queryByRole("textbox", { name: "受信箱に追加" })).toBeNull());
+
+    // AIPR で絞り込む → 右下の「＋」で開いて追加すると、AIPR が付く
+    await user.click(screen.getByRole("button", { name: /^プロジェクトで絞り込む：/ }));
+    await user.click(await screen.findByRole("radio", { name: "AIPR" }));
+    await user.click(screen.getByRole("button", { name: "タスクを追加" }));
+    await user.type(await screen.findByRole("textbox", { name: "受信箱に追加" }), "Pの追加{Enter}");
+    await waitFor(() =>
+      expect(store.lists.inbox.find((row) => row.title === "Pの追加")?.projectId).toBe(project.id),
+    );
   });
 });

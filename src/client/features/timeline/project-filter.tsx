@@ -11,7 +11,8 @@ import { ALL_PROJECTS, type ProjectFilter, type TimelineModel } from "./timeline
 /**
  * 上の絞り込み（「すべてのプロジェクト ▾」）。押すと、すべて・各プロジェクト・プロジェクトなしが小さく開き、
  * 選ぶとタイムラインに出すタスクが変わる。↑↓ で移り、Enter か Space で決める。Esc で閉じてボタンへ戻る。
- * 並べるプロジェクトはサイドバーと同じ（アーカイブ済みは出さない。アーカイブ済みで絞り込んでいたら、それも並べる）
+ * 並べるプロジェクトはサイドバーと同じ（アーカイブ済みは出さない。絞り込んでいたプロジェクトがアーカイブされたら、
+ * 絞り込みは「すべて」に戻る。timeline-model.ts）
  */
 
 type Option = { filter: ProjectFilter; label: string; projectId: string | null };
@@ -32,18 +33,12 @@ function filterLabel(store: AppStore, filter: ProjectFilter): string {
   }
 }
 
-function optionsOf(store: AppStore, current: ProjectFilter): Option[] {
+function optionsOf(store: AppStore): Option[] {
   const projects: Option[] = store.lists.projects.map((project) => ({
     filter: { kind: "project", id: project.id },
     label: project.name,
     projectId: project.id,
   }));
-  if (
-    current.kind === "project" &&
-    !projects.some((option) => sameFilter(option.filter, current))
-  ) {
-    projects.push({ filter: current, label: filterLabel(store, current), projectId: current.id });
-  }
   return [
     { filter: ALL_PROJECTS, label: filterLabel(store, ALL_PROJECTS), projectId: null },
     ...projects,
@@ -61,7 +56,7 @@ export const ProjectFilterButton = observer(function ProjectFilterButton({
   const current = model.filter;
   const buttons = useRef<(HTMLButtonElement | null)[]>([]);
   const initialFocus = useRef<HTMLButtonElement | null>(null);
-  const options = open ? optionsOf(store, current) : [];
+  const options = open ? optionsOf(store) : [];
 
   const onKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
     const delta = event.key === "ArrowDown" ? 1 : event.key === "ArrowUp" ? -1 : 0;

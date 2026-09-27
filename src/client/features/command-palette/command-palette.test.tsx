@@ -62,7 +62,7 @@ describe("完了の条件3：キーマップのすべての割り当てを ⌘K 
     await user.keyboard("j"); // A を選ぶ（並べ替え・完了・today/later などの対象にする）
     expect(store.canUndo).toBe(true);
 
-    // 場面（scope）を分けた割り当て（タイムラインの [ ] など）は、その画面が開いているときだけ使えるので、
+    // 場面（scope）を分けた割り当て（カレンダー・タイムラインの [ ] など）は、その画面が出ているときだけ使えるので、
     // その画面のテストで確かめる
     const bindings = keymap
       .list()

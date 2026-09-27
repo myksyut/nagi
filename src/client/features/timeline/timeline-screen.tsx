@@ -1,9 +1,11 @@
 import { observer } from "mobx-react-lite";
 import {
   type ButtonHTMLAttributes,
+  type ComponentType,
   type CSSProperties,
   memo,
   type MouseEvent as ReactMouseEvent,
+  type ReactNode,
   type PointerEvent as ReactPointerEvent,
   type Ref,
   useEffect,
@@ -16,6 +18,7 @@ import { addDays } from "@/data/logical-day";
 import { scheduleTasks, setDeadline } from "@/features/dates/commands";
 import { daysBetween, formatShortDate } from "@/features/dates/labels";
 import { ProjectDot } from "@/features/projects/project-dot";
+import { QuickAddHost } from "@/features/quick-add/quick-add";
 import { projectColorOf, projectColorVar } from "@/lib/project-color";
 import { prefersReducedMotion } from "@/lib/reduced-motion";
 import { cn } from "@/lib/utils";
@@ -24,7 +27,6 @@ import { useUi } from "@/tasks/ui-context";
 import { shiftTaskDates } from "./commands";
 import { ProjectFilterButton } from "./project-filter";
 import { clampDragDays, type DragDates, type DragEdge, draggedDates } from "./timeline-drag";
-import { TimelineHeading } from "./timeline-heading";
 import {
   shapeOf,
   type TimelineGroup,
@@ -44,6 +46,7 @@ import { timelineNav } from "./timeline-nav";
  *   動かしているあいだは、送る先の日付の形で描く。離すと送り、⌘Z 1回で戻る。Esc でやめる
  * - 「今日」で今日の位置へ、[ ] で1週ずつ前後へスクロールする
  * - 上の絞り込みで、プロジェクトを選べる
+ * - 右下の「＋」と n は、小さな追加欄（features/quick-add）。絞り込み中なら、そのプロジェクトを付けて追加する
  */
 
 /** 1日の幅（px）。ドラッグの日数もこの幅で決める */
@@ -70,12 +73,21 @@ function xOf(range: TimelineRange, date: string): number {
   return daysBetween(range.start, date) * DAY_WIDTH;
 }
 
-export const TimelineScreen = observer(function TimelineScreen() {
+/** 見出し（lazy.tsx の TimelineHeading）。起動の道筋のモジュールを、この後から読み込むモジュールから import しないために受け取る */
+export type TimelineHeadingComponent = ComponentType<{ actions?: ReactNode }>;
+
+export const TimelineScreen = observer(function TimelineScreen({
+  Heading,
+}: {
+  Heading: TimelineHeadingComponent;
+}) {
   const store = useStore();
   const model = timelineModelOf(store);
+  const { filter } = model;
   return (
+    // 幅の上限を外す（右の枠。shell/app-shell.tsx）
     <div data-wide-view="">
-      <TimelineHeading
+      <Heading
         actions={
           <div className="flex flex-none items-center gap-2">
             <button
@@ -91,6 +103,7 @@ export const TimelineScreen = observer(function TimelineScreen() {
       />
       {store.loaded && <TimelineGrid model={model} />}
       <TaskDetailPopoverHost />
+      <QuickAddHost projectId={filter.kind === "project" ? filter.id : null} />
     </div>
   );
 });

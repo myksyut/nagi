@@ -1,4 +1,4 @@
-import { computed, type IComputedValue, makeObservable, observableRef } from "mobx";
+import { computed, type IComputedValue, makeObservable, observableRef, reaction } from "mobx";
 import type { AppStore, TaskRow } from "@/data";
 import { addDays } from "@/data/logical-day";
 import { daysBetween } from "@/features/dates/labels";
@@ -193,7 +193,8 @@ function liveProjectId(store: AppStore, projectId: string | null): string | null
 
 /**
  * タイムラインの画面の状態：絞り込みと、並びの計算。並びは、中身（行とその日付）が前と同じなら知らせない。
- * ストアごとに1つ（timelineModelOf）なので、画面を離れて戻っても同じ絞り込みで開く（再読み込みでは「すべて」に戻る）
+ * ストアごとに1つ（timelineModelOf）なので、画面を離れて戻っても同じ絞り込みで開く（再読み込みでは「すべて」に戻る）。
+ * 絞り込んでいたプロジェクトがアーカイブ・削除されたら、「すべて」に戻す（カレンダーと同じ。あとでアーカイブを解除しても戻らない）
  */
 export class TimelineModel {
   filter: ProjectFilter = ALL_PROJECTS;
@@ -206,6 +207,21 @@ export class TimelineModel {
       equals: sameGroups,
     });
     makeObservable(this, { filter: observableRef, setFilter: true });
+    // 手元の控えを読み終える前は、プロジェクトの一覧が空なので見ない
+    reaction(
+      () => {
+        const { filter } = this;
+        return (
+          filter.kind === "project" &&
+          store.loaded &&
+          !store.lists.projects.some((project) => project.id === filter.id)
+        );
+      },
+      (gone) => {
+        if (gone) this.setFilter(ALL_PROJECTS);
+      },
+      { fireImmediately: true },
+    );
   }
 
   get groups(): readonly TimelineGroup[] {

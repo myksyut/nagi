@@ -1,39 +1,45 @@
 import { type CSSProperties, type ReactNode, useEffect } from "react";
 import { LoadFailedNote } from "@/components/waiting-input";
 import { defer, useDeferred } from "@/lib/deferred";
-import { TIMELINE } from "@/navigation";
+import { CALENDAR } from "@/navigation";
 import { ScreenHeading } from "@/screens/list-screen";
 import { VIEW_ICONS } from "@/shell/list-icons";
 
 /**
- * タイムラインの画面は、起動に要らないので後から読み込む（データは起動時に全件読んでいる）。
- * ふだんは起動のあとの空いた時間に先読みしてあるので、7 で開くときに待たない。
+ * カレンダーの画面は、起動に要らないので後から読み込む（データは起動時に全件読んでいる）。
+ * ふだんは起動のあとの空いた時間に先読みしてあるので、6 で開くときに待たない。
  * 先読みの前に開かれたときは、見出しだけ先に出して、届いたら画面ごと描く。読み込めなかったときは、読み直せる一行を出す
  */
-const timeline = defer(() => import("./timeline-screen"));
+const calendar = defer(() => import("./calendar-screen"));
 
-export function LazyTimelineScreen() {
-  const { module, failed, retry } = useDeferred(timeline);
+export function LazyCalendarScreen() {
+  const { module, failed, retry } = useDeferred(calendar);
   useEffect(() => {
-    document.title = `${TIMELINE.label} — nagi`;
+    document.title = `${CALENDAR.label} — nagi`;
   }, []);
-  if (module) return <module.TimelineScreen Heading={TimelineHeading} />;
+  if (module) return <module.CalendarScreen Heading={CalendarHeading} />;
   return (
     // 幅の上限を外す（右の枠。shell/app-shell.tsx）。読み込む前と後で見出しの幅を変えない
     <div data-wide-view="">
-      <TimelineHeading />
+      <CalendarHeading />
       {failed && (
         <div className="mt-5">
-          <LoadFailedNote what={TIMELINE.label} onRetry={retry} />
+          <LoadFailedNote what="カレンダー" onRetry={retry} />
         </div>
       )}
     </div>
   );
 }
 
-/** 見出し（タイムラインの色のアイコンと名前）。読み込む前も、読み込んだあとも同じ形。actions に「今日」と絞り込み */
-export function TimelineHeading({ actions }: { actions?: ReactNode }) {
-  const { Icon, color } = VIEW_ICONS.timeline;
+/** 見出し（カレンダーの色のアイコンと名前）。読み込む前も、読み込んだあとも同じ形 */
+export function CalendarHeading({
+  subtitle,
+  actions,
+}: {
+  subtitle?: ReactNode;
+  actions?: ReactNode;
+}) {
+  const { Icon, color } = VIEW_ICONS.calendar;
   return (
     <ScreenHeading
       leading={
@@ -45,9 +51,10 @@ export function TimelineHeading({ actions }: { actions?: ReactNode }) {
           <Icon className="size-4.5" strokeWidth={1.75} />
         </span>
       }
+      subtitle={subtitle}
       actions={actions}
     >
-      <h1 className="font-[650] text-[26px] leading-tight tracking-[-0.01em]">{TIMELINE.label}</h1>
+      <h1 className="font-[650] text-[26px] leading-tight tracking-[-0.01em]">{CALENDAR.label}</h1>
     </ScreenHeading>
   );
 }

@@ -1,9 +1,11 @@
 import { observable, runInAction } from "mobx";
+import { type KeyBinding, registerKeyBindings } from "@/keyboard/keymap";
 
 /**
- * タイムラインの画面が開いているあいだだけ、[ ]（1週ずつ前後へ）を効かせるための口。
- * 画面（後から読み込む）がスクロールのしかたを渡し、キーの割り当て（起動の道筋にある register.tsx）はここを見る。
- * 画面のモジュールを起動の道筋から import しないために、口だけをここに分けておく
+ * タイムラインの画面が開いているあいだだけ効くキー（[ ] で1週ずつ前後へスクロール）と、そのための口。
+ * 画面（timeline-screen.tsx）がスクロールのしかたを渡し、キーの割り当てはここを見る。
+ * 画面と一緒に後から読み込む（起動の道筋から import しない）。キーは、このモジュールが読み込まれたとき
+ * （起動のあとの空いた時間の先読み）に登録する。[ ] はカレンダーの前後の月と同じキーなので、場面（scope）を分ける
  */
 
 export type TimelineScroller = {
@@ -12,9 +14,6 @@ export type TimelineScroller = {
   /** 今日の位置へ横にスクロールする */
   scrollToToday(): void;
 };
-
-/** タイムラインの画面の URL */
-export const TIMELINE_PATH = "/timeline";
 
 const current = observable.box<TimelineScroller | null>(null, { deep: false });
 
@@ -35,3 +34,29 @@ export const timelineNav = {
       });
   },
 };
+
+/** タイムラインの画面が開いているときだけ効く割り当ての場面（カレンダーの [ ] とは別） */
+const SCOPE = "timeline";
+
+export const TIMELINE_KEY_BINDINGS: readonly KeyBinding[] = [
+  {
+    id: "timeline.previousWeek",
+    label: "前の週へ",
+    group: "移動",
+    keys: ["["],
+    scope: SCOPE,
+    when: () => timelineNav.active,
+    run: () => timelineNav.scroller?.scrollWeeks(-1),
+  },
+  {
+    id: "timeline.nextWeek",
+    label: "次の週へ",
+    group: "移動",
+    keys: ["]"],
+    scope: SCOPE,
+    when: () => timelineNav.active,
+    run: () => timelineNav.scroller?.scrollWeeks(1),
+  },
+];
+
+registerKeyBindings(TIMELINE_KEY_BINDINGS);
