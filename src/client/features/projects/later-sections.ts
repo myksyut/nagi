@@ -22,7 +22,7 @@ function projectIdOf(row: TaskRow): string | null {
 
 /**
  * あとでのまとまり：プロジェクトなしが先頭（見出しなし）、そのあとにプロジェクトごと（作成順、見出しは名前）。
- * 中の並びは自分で決めた順（rank）。アーカイブ済みのプロジェクトのタスクもそのプロジェクトのまとまりに出す
+ * 中の並びは自分で決めた順（rank）で、まとまりの中で並べ替えられる。アーカイブ済みのプロジェクトのタスクもそのプロジェクトのまとまりに出す
  * （アーカイブのあとに完了を外して「あとで」へ送った場合）。付いているプロジェクトが見つからなければプロジェクトなしに入れる
  */
 export function laterSections(store: AppStore): TaskSection[] {
@@ -51,11 +51,12 @@ export function laterSections(store: AppStore): TaskSection[] {
       (a.id < b.id ? -1 : 1),
   );
   return [
-    { key: LATER_NO_PROJECT, rows: none },
+    { key: LATER_NO_PROJECT, rows: none, reorderable: true },
     ...projects.map((project) => ({
       key: `project:${project.id}`,
       heading: project.name,
       rows: byProject.get(project.id) ?? [],
+      reorderable: true,
     })),
   ];
 }

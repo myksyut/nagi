@@ -5,6 +5,7 @@ import { type TaskRow, useStore } from "@/data";
 import { cn } from "@/lib/utils";
 import { toggleComplete } from "./commands";
 import { CompleteButton } from "./complete-button";
+import { dragOverRow, dropOnRow, startRowDrag, taskDragOf } from "./drag";
 import { rowMetaItems } from "./extensions";
 import type { ListView } from "./list-ui";
 import { TaskDetail, TitleInput } from "./task-detail";
@@ -17,12 +18,19 @@ export function taskRowId(taskId: string): string {
 
 /**
  * 一覧の1行の外側。抜けていく途中の行（完了・振り分けの直後の短い動きのあいだ）は、読み上げとクリックの対象から外す。
- * Motion の抜けていく状態の文脈は一覧を描くたびに変わるので、ここ（軽い殻）だけで受け、行の中身には値で渡す
+ * Motion の抜けていく状態の文脈は一覧を描くたびに変わるので、ここ（軽い殻）だけで受け、行の中身には値で渡す。
+ * ドラッグの並べ替えの落とし先も、開いた欄を含めたここで受ける
  */
 export function TaskItem({ task, view }: { task: TaskRow; view: ListView }) {
+  const ui = useUi();
   const present = useIsPresent();
   return (
-    <div className={cn(!present && "pointer-events-none")} aria-hidden={present ? undefined : true}>
+    <div
+      className={cn(!present && "pointer-events-none")}
+      aria-hidden={present ? undefined : true}
+      onDragOver={(event) => dragOverRow(ui, task.id, event)}
+      onDrop={(event) => dropOnRow(ui, event)}
+    >
       <TaskRowView task={task} view={view} present={present} />
     </div>
   );
@@ -43,15 +51,19 @@ const TaskRowView = observer(function TaskRowView({
 }) {
   const ui = useUi();
   const store = useStore();
+  const drag = taskDragOf(ui);
   const selected = ui.isSelected(task.id);
+  // 選択のカーソル（↑↓ の起点）。フォーカスの輪郭はこの行にだけ出す
+  const cursor = ui.isCursor(task.id);
   const open = ui.isOpen(task.id);
   const done = task.completedAt !== null;
   const arrived = !done && store.lists.isArrivedToday(task);
+  const dropEdge = drag.edgeOf(task.id);
   const row = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
-    if (selected) row.current?.scrollIntoView?.({ block: "nearest" });
-  }, [selected]);
+    if (cursor) row.current?.scrollIntoView?.({ block: "nearest" });
+  }, [cursor]);
 
   return (
     <>
@@ -63,16 +75,33 @@ const TaskRowView = observer(function TaskRowView({
         role="option"
         aria-selected={selected}
         data-selected={selected || undefined}
+        data-cursor={cursor || undefined}
+        // 開いている行（タイトルの入力欄がある）と完了した行はつかめない
+        draggable={present && !open && !done}
         className={cn(
           "relative flex min-h-9 cursor-default items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm",
           selected && "bg-primary/12",
-          "group-focus-visible/list:data-selected:ring-1 group-focus-visible/list:data-selected:ring-ring/70",
+          drag.isDragging(task.id) && "opacity-50",
+          "group-focus-visible/list:data-cursor:ring-1 group-focus-visible/list:data-cursor:ring-ring/70",
         )}
-        onClick={() => {
-          ui.toggleOpen(task.id);
+        onClick={(event) => {
+          // ⌘クリックで1行ずつ選択に足す・外す
+          if (event.metaKey) ui.toggleInSelection(task.id);
+          else ui.toggleOpen(task.id);
           ui.focusList();
         }}
+        onDragStart={(event) => startRowDrag(ui, task, event)}
+        onDragEnd={() => drag.end()}
       >
+        {dropEdge && (
+          <span
+            aria-hidden="true"
+            className={cn(
+              "pointer-events-none absolute inset-x-1 h-0.5 rounded-full bg-primary",
+              dropEdge === "before" ? "-top-px" : "-bottom-px",
+            )}
+          />
+        )}
         {arrived && (
           <span
             role="img"

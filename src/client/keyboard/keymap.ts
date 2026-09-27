@@ -22,8 +22,17 @@ export type KeyContext = {
   navigate: (path: string) => void;
 };
 
-/** `?` の一覧でのまとまり */
-export type KeyGroup = "移動" | "リスト" | "タスク" | "いつやる";
+/** `?` の一覧と ⌘K でのまとまり */
+export type KeyGroup = "移動" | "リスト" | "タスク" | "いつやる" | "全体";
+
+/** `?` の一覧と ⌘K に並べるまとまりの順 */
+export const KEY_GROUP_ORDER: readonly KeyGroup[] = [
+  "タスク",
+  "いつやる",
+  "移動",
+  "リスト",
+  "全体",
+];
 
 export type KeyBinding = {
   /** 一意の名前（例：`task.complete`）。同じ id で登録し直すと置き換わる */
@@ -100,6 +109,22 @@ export class Keymap {
     return this.#entries.get(id)?.binding;
   }
 
+  /**
+   * その割り当てを今使えるか（手元の控えを読み終えたか、when）。キーでも ⌘K でも同じ決まりで判断する
+   */
+  canRun(binding: KeyBinding, context: KeyContext): boolean {
+    if (!context.store.loaded && !binding.allowBeforeLoad) return false;
+    return !binding.when || binding.when(context);
+  }
+
+  /** ⌘K などから、キーを押したときと同じ run を呼ぶ。今使えなければ呼ばずに false */
+  run(id: string, context: KeyContext): boolean {
+    const binding = this.get(id);
+    if (!binding || !this.canRun(binding, context)) return false;
+    binding.run(context);
+    return true;
+  }
+
   /** 足そうとしている割り当てと、登録済み（同じ id は置き換えるので除く）・互いのあいだで重なるキー */
   #conflicts(adding: readonly Entry[]): string[] {
     const replacing = new Set(adding.map((entry) => entry.binding.id));
@@ -142,8 +167,7 @@ export class Keymap {
       if (editable && !binding.allowInInput) continue;
       if (activatable) continue;
       if (event.repeat && !binding.repeat) continue;
-      if (!context.store.loaded && !binding.allowBeforeLoad) continue;
-      if (binding.when && !binding.when(context)) continue;
+      if (!this.canRun(binding, context)) continue;
       event.preventDefault();
       binding.run(context);
       return true;

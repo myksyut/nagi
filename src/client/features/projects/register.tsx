@@ -3,6 +3,7 @@ import { observer } from "mobx-react-lite";
 import { useStore } from "@/data";
 import { registerKeyBindings } from "@/keyboard/keymap";
 import { cn } from "@/lib/utils";
+import { selectionForOperation } from "@/tasks/commands";
 import {
   DETAIL_ORDER,
   ROW_META_ORDER,
@@ -25,9 +26,10 @@ registerKeyBindings({
   group: "タスク",
   keys: ["p"],
   when: ({ ui }) => ui.selected !== undefined,
+  // 選んでいるすべての行に、候補を1回だけ開く（選択が 500 件を超えていたら開かずに知らせる）
   run: ({ ui }) => {
-    const task = ui.selected;
-    if (task) projectPickerOf(ui).open(task.id);
+    const rows = selectionForOperation(ui);
+    if (rows && rows.length > 0) projectPickerOf(ui).open(rows.map((row) => row.id));
   },
 });
 

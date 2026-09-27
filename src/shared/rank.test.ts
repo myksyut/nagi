@@ -1,10 +1,12 @@
 import { describe, expect, it } from "vitest";
+import { mutationSchema } from "./mutations";
 import {
   arrivalRanks,
   compareRank,
   isValidRank,
   rankAfter,
   rankBefore,
+  rankBetween,
   ranksBetween,
 } from "./rank";
 
@@ -24,9 +26,31 @@ describe("isValidRank", () => {
   it("空・記号・長すぎる文字列はfalse", () => {
     expect(isValidRank("")).toBe(false);
     expect(isValidRank("!!")).toBe(false);
-    expect(isValidRank("a".repeat(129))).toBe(false);
+    expect(isValidRank("a".repeat(1025))).toBe(false);
+  });
+
+  // 7-修正1の3：同じ隙間に入れ続けても足りるよう、上限は 1024 文字（画面とサーバーで共通）
+  it("1024 文字ちょうどは通り、1025 文字は断る", () => {
+    const ofLength = (length: number) => `a0${"0".repeat(length - 3)}1`;
+    expect(ofLength(1024)).toHaveLength(1024);
+    expect(isValidRank(ofLength(1024))).toBe(true);
+    expect(isValidRank(ofLength(1025))).toBe(false);
+    expect(mutationSchema.safeParse(taskUpdate(ofLength(1024))).success).toBe(true);
+    expect(mutationSchema.safeParse(taskUpdate(ofLength(1025))).success).toBe(false);
+  });
+
+  it("同じ隙間の直後へ別々の行を入れ続けても、1000 回までは上限に届かない", () => {
+    let upper = "a1";
+    for (let i = 0; i < 1000; i++) {
+      upper = rankBetween("a0", upper);
+      expect(isValidRank(upper)).toBe(true);
+    }
   });
 });
+
+function taskUpdate(rank: string) {
+  return { type: "task.update", id: "0199a000-0000-7000-8000-000000000001", changes: { rank } };
+}
 
 describe("compareRank", () => {
   it("rankの順に並ぶ", () => {

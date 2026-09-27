@@ -6,7 +6,7 @@ import { useListView } from "@/tasks/ui-context";
 import { ListScreen } from "./list-screen";
 
 /**
- * 今日：自分で決めた順（rank）。日付の到来や締切で入ったものは一番上に印付きで並ぶ（並びはサーバーが振る）。
+ * 今日：自分で決めた順（rank。⌥↑↓ とドラッグで並べ替える）。日付の到来や締切で入ったものは一番上に印付きで並ぶ（並びはサーバーが振る）。
  * 一番下に、今日完了したものの「完了 N件」（最初は閉じている）
  */
 export const TodayScreen = observer(function TodayScreen() {
@@ -15,7 +15,7 @@ export const TodayScreen = observer(function TodayScreen() {
     key: "today",
     kind: "today",
     sections: () => [
-      { key: "open", rows: store.lists.today },
+      { key: "open", rows: store.lists.today, reorderable: true },
       {
         key: "completed",
         rows: store.lists.completedToday,

@@ -7,6 +7,7 @@ import type { TaskRow } from "@/data";
 import { DURATION, EASE_OUT, LAYOUT_TRANSITION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { AddRow } from "./add-row";
+import { taskDragOf } from "./drag";
 import type { ListView, TaskSection } from "./list-ui";
 import { TaskItem, taskRowId } from "./task-item";
 import { useUi } from "./ui-context";
@@ -91,14 +92,24 @@ export const TaskList = observer(function TaskList({
       ref={listRef}
       role="listbox"
       aria-label={label}
+      // ⇧↑↓・⌘クリックで複数選べる
+      aria-multiselectable="true"
       tabIndex={0}
+      // 運んでいる行が一覧の外へ出たら、並べ替えの落とし先の線を消す
+      onDragLeave={(event) => {
+        const next = event.relatedTarget;
+        if (!(next instanceof Node && event.currentTarget.contains(next))) {
+          taskDragOf(ui).clearTarget();
+        }
+      }}
       className={cn(
         "group/list relative mt-5 rounded-lg outline-none",
         // 選ぶ前に Tab で入ったときは一覧そのものに輪郭を出す（選んでいれば、選択中の行に出す）
         "[&:focus-visible:not([aria-activedescendant])]:ring-2 [&:focus-visible:not([aria-activedescendant])]:ring-ring/60 [&:focus-visible:not([aria-activedescendant])]:ring-offset-4 [&:focus-visible:not([aria-activedescendant])]:ring-offset-background",
       )}
     >
-      <AnimatePresence initial={false} mode="popLayout">
+      {/* 描く範囲が飛んだら（完了ログの窓）作り直して、行の動きを出さない */}
+      <AnimatePresence key={view.layoutKey?.() ?? "list"} initial={false} mode="popLayout">
         {items.map((item) => (
           <motion.div
             key={item.key}
