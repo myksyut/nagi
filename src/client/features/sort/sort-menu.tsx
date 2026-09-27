@@ -7,9 +7,27 @@ import {
   ComboboxPrimitive,
 } from "@/components/ui/combobox";
 import { TASK_SORT_LABELS, TASK_SORTS, type TaskSort } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { useUi } from "@/tasks/ui-context";
 import { setSort, sortOf } from "./state";
+
+// 一覧の中のキー（ショートカットのページの「候補や欄の中」）。1〜4 は下の入力欄の onKeyDown、↑↓・Enter・Esc は
+// Base UI の Combobox が扱う（Esc は onOpenChange で閉じて、ボタンへ戻す）
+registerFieldKeys({
+  id: "sort-menu",
+  label: "並び方の一覧",
+  order: FIELD_SCENE_ORDER.sortMenu,
+  keys: [
+    {
+      label: "その場で決める（1 手動・2 優先度・3 工数が少ない順・4 工数が多い順）",
+      keys: ["1", "2", "3", "4"],
+    },
+    { label: "候補を選ぶ", keys: ["ArrowUp", "ArrowDown"] },
+    { label: "決める", keys: ["Enter"] },
+    { label: "閉じる", keys: ["Escape"] },
+  ],
+});
 
 /**
  * 並び方の一覧（見出しの「並び：◯◯」を押すと開く）。⇧P の優先度の候補と同じ作り（coss ui の Combobox。文字は打たない）で、

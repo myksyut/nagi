@@ -1,3 +1,4 @@
+import { createAtom } from "mobx";
 import type { AppStore } from "@/data";
 import type { ListUi } from "@/tasks/list-ui";
 import {
@@ -12,20 +13,22 @@ import {
 /**
  * キーの割り当ての一覧（キーマップ）。割り当ては登録式で、各機能が自分のキーを registerKeyBindings で足す
  * （4 の割り当ては features/core、5 と 6 は features/ の下の自分のモジュールで登録する）。
- * ⌘K のコマンド一覧、`?` のショートカット一覧、ツールチップのキー表示は、この一覧（keymap.list()）から作る
+ * ⌘K のコマンド一覧、ショートカットのページ（features/shortcuts）、ツールチップのキー表示は、
+ * この一覧（keymap.list()）から作る。候補や欄の中のキー（部品が直接扱うキー）は、説明だけを field-keys.ts に登録する
  */
 
 /** キーが押されたときに割り当てへ渡すもの */
 export type KeyContext = {
   store: AppStore;
   ui: ListUi;
-  navigate: (path: string) => void;
+  /** 画面を移る。replace なら今の画面の履歴を置き換える（ショートカットのページから戻るとき） */
+  navigate: (path: string, options?: { replace?: boolean }) => void;
 };
 
-/** `?` の一覧と ⌘K でのまとまり */
+/** ショートカットのページと ⌘K でのまとまり */
 export type KeyGroup = "移動" | "リスト" | "タスク" | "いつやる" | "全体";
 
-/** `?` の一覧と ⌘K に並べるまとまりの順 */
+/** ショートカットのページと ⌘K に並べるまとまりの順 */
 export const KEY_GROUP_ORDER: readonly KeyGroup[] = [
   "タスク",
   "いつやる",
@@ -37,11 +40,18 @@ export const KEY_GROUP_ORDER: readonly KeyGroup[] = [
 export type KeyBinding = {
   /** 一意の名前（例：`task.complete`）。同じ id で登録し直すと置き換わる */
   id: string;
-  /** ⌘K・`?` の一覧に出す名前 */
+  /** ⌘K・ショートカットのページに出す名前 */
   label: string;
   group: KeyGroup;
-  /** 割り当てるキー（keys.ts の書き方）。先頭が一覧に出す代表のキー */
+  /**
+   * 割り当てるキー（keys.ts の書き方）。先頭が一覧に出す代表のキー。
+   * 空にすると、キーのない操作になる（⌘K からだけ実行する。ショートカットのページには「キーなし」で出す）
+   */
   keys: readonly string[];
+  /**
+   * 決まった画面だけで効くキーの、効く画面の名前（例：「ボード」）。ショートカットのページで操作の名前に添える
+   */
+  where?: string;
   /** 入力欄にいるあいだも効かせる。1文字のキーには使わない（入力欄では1文字のキーを無効にする決まり） */
   allowInInput?: boolean;
   /** 手元の控えを読み終える前（store.loaded が false）でも効かせる。データを変えない割り当てだけ */
@@ -72,6 +82,11 @@ function sameCombo(a: KeyCombo, b: KeyCombo): boolean {
 
 export class Keymap {
   readonly #entries = new Map<string, Entry>();
+  /**
+   * 登録の出入りを MobX に知らせる（list() を読む observer の部品が描き直す）。画面の中だけで効くキーは、
+   * 画面と一緒に後から読み込むモジュールが登録するので、開いているショートカットのページにも後から出る
+   */
+  readonly #atom = createAtom("keymap");
 
   /**
    * 割り当てを足す。戻り値を呼ぶと外す。
@@ -93,15 +108,18 @@ export class Keymap {
       console.error(message);
     }
     for (const entry of entries) this.#entries.set(entry.binding.id, entry);
+    this.#atom.reportChanged();
     return () => {
       for (const binding of list) {
         if (this.#entries.get(binding.id)?.binding === binding) this.#entries.delete(binding.id);
       }
+      this.#atom.reportChanged();
     };
   }
 
-  /** 登録されている割り当て（登録した順） */
+  /** 登録されている割り当て（登録した順）。observer の中で読むと、登録が変わったときに描き直す */
   list(): KeyBinding[] {
+    this.#atom.reportObserved();
     return Array.from(this.#entries.values(), (entry) => entry.binding);
   }
 

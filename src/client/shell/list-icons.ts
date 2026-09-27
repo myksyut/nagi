@@ -4,6 +4,7 @@ import {
   ChartNoAxesGanttIcon,
   CheckIcon,
   InboxIcon,
+  KeyboardIcon,
   LayersIcon,
   type LucideIcon,
   SunIcon,
@@ -26,4 +27,10 @@ export const LIST_ICONS: Record<ListKey, { Icon: LucideIcon; color: string }> = 
 export const VIEW_ICONS: Record<ViewKey, { Icon: LucideIcon; color: string }> = {
   calendar: { Icon: CalendarRangeIcon, color: "var(--list-calendar)" },
   timeline: { Icon: ChartNoAxesGanttIcon, color: "var(--list-timeline)" },
+};
+
+/** ショートカットのページのアイコンと色（キーボード。完了ログと同じ控えめな灰） */
+export const SHORTCUTS_ICON: { Icon: LucideIcon; color: string } = {
+  Icon: KeyboardIcon,
+  color: "var(--list-shortcuts)",
 };

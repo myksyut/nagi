@@ -9,6 +9,7 @@ import {
   ComboboxPrimitive,
 } from "@/components/ui/combobox";
 import type { TaskRow } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { projectColorOf } from "@/lib/project-color";
 import { taskRowId } from "@/tasks/task-item";
@@ -23,6 +24,18 @@ import {
   pickerPlaceholder,
 } from "./picker";
 import { ProjectDot } from "./project-dot";
+
+// 候補の中のキー（ショートカットのページの「候補や欄の中」）。↑↓・Enter・Esc は Base UI の Combobox が扱う
+registerFieldKeys({
+  id: "project-picker",
+  label: "p の候補",
+  order: FIELD_SCENE_ORDER.projectPicker,
+  keys: [
+    { label: "候補を選ぶ", keys: ["ArrowUp", "ArrowDown"] },
+    { label: "決める（「◯◯」を作成も）", keys: ["Enter"] },
+    { label: "やめる", keys: ["Escape"] },
+  ],
+});
 
 /**
  * p（プロジェクト）の候補のポップアップ（coss ui の Combobox）。Base UI の Combobox を含むので、

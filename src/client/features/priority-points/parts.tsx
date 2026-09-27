@@ -15,27 +15,49 @@ import {
   ComboboxPopup,
   ComboboxPrimitive,
 } from "@/components/ui/combobox";
-import type { OperationResult, TaskRow } from "@/data";
+import type { OperationResult } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
-import { cn } from "@/lib/utils";
 import { runTaskOperation, toastSubject } from "@/tasks/commands";
 import type { ListUi } from "@/tasks/list-ui";
 import type { PickerPopupProps, PickerSession, RowPicker } from "@/tasks/row-picker";
-import { chipClassName } from "@/tasks/task-detail";
 import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
-import { PriorityMark, VALUE_LABELS, type ValueKind, valuePlaceholder } from "./values";
+import { VALUE_LABELS, type ValueKind, valuePlaceholder } from "./values";
 
 /**
- * ⇧P（優先度）と e（工数）の、後から読み込む部品：小さな候補（coss ui の Combobox）と、開いたタスクのボタン。
- * Base UI の Combobox を含むので、起動の JS から外す（開閉の状態は picker.tsx。ここから picker.tsx や register.tsx は
- * 読み込まない。起動の JS の分け方を変えないように、開く操作はボタンの持ち主から受け取る）。
- * 候補は、出るときは 100ms で押した場所から広がり、消えるときだけ 150ms でフェードする。
+ * ⇧P（優先度）と e（工数）の小さな候補（coss ui の Combobox）。Base UI の Combobox を含むので、このモジュールは
+ * 後から読み込む（開閉の状態は picker.tsx）。出るときは 100ms で押した場所から広がり、消えるときだけ 150ms でフェードする。
  * - 優先度：高・中・低・なし。1・2・3・0 のキーでその場で決まる。↑↓ と Enter でもよい
  * - 工数：1・2・3・5・8・13・なし。数字を打つと、その数字で始まるものに絞り込まれ、Enter で決まる（13 は 1 と 3。
  *   0 でなし）。↑↓ と Enter でもよい
  * どちらも変換中の Enter では決めない。決めたら選んでいるすべてのタスクに1つの操作としてかける（⌘Z 1回で戻る）
  */
+
+// 候補の中のキー（ショートカットのページの「候補や欄の中」）。数字は下の入力欄の onKeyDown（優先度）と絞り込み（工数）、
+// ↑↓・Enter・Esc は Base UI の Combobox が扱う
+registerFieldKeys({
+  id: "priority-picker",
+  label: "優先度の候補（⇧P）",
+  order: FIELD_SCENE_ORDER.priorityPicker,
+  keys: [
+    { label: "その場で決める（1 高・2 中・3 低・0 なし）", keys: ["1", "2", "3", "0"] },
+    { label: "候補を選ぶ", keys: ["ArrowUp", "ArrowDown"] },
+    { label: "決める", keys: ["Enter"] },
+    { label: "やめる", keys: ["Escape"] },
+  ],
+});
+registerFieldKeys({
+  id: "points-picker",
+  label: "工数の候補（e）",
+  order: FIELD_SCENE_ORDER.pointsPicker,
+  keys: [
+    { label: "数字で絞り込む（13 は 1・3、0 でなし）", keys: ["1", "2", "3", "5", "8", "0"] },
+    { label: "候補を選ぶ", keys: ["ArrowUp", "ArrowDown"] },
+    { label: "決める", keys: ["Enter"] },
+    { label: "やめる", keys: ["Escape"] },
+  ],
+});
 
 /** 候補の1つ。key は、その候補を選ぶキー（優先度はその場で決まる、工数は打つと絞り込まれる） */
 type ValueOption<T> = { value: T | null; label: string; key: string };
@@ -102,43 +124,6 @@ function closePicker(ui: ListUi, picker: RowPicker, { anchor, detached }: Picker
   if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus();
   else if (!detached) ui.focusList();
 }
-
-/**
- * 開いたタスクの一番下の列：優先度（「優先度 高」と印）と工数（「工数 3」）。なしなら点線の「優先度」「工数」。
- * 押すと ⇧P・e と同じ候補が、このボタンから広がる（onOpen）。リストで開いた詳細と、小さな詳細の両方に出る
- */
-export const ValueChip = observer(function ValueChip({
-  task,
-  kind,
-  onOpen,
-}: {
-  task: TaskRow;
-  kind: ValueKind;
-  onOpen: (anchor: Element) => void;
-}) {
-  const label = VALUE_LABELS[kind];
-  const priority = kind === "priority" ? task.priority : null;
-  const value =
-    priority !== null ? PRIORITY_LABELS[priority] : kind === "points" ? task.points : null;
-  return (
-    <button
-      type="button"
-      aria-label={value === null ? `${label}を付ける` : `${label}：${value}`}
-      className={cn(
-        chipClassName,
-        "outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/70",
-        value === null && "border-dashed text-muted-foreground/70",
-      )}
-      onClick={(event) => {
-        event.stopPropagation();
-        onOpen(event.currentTarget);
-      }}
-    >
-      {priority !== null && <PriorityMark priority={priority} />}
-      {value === null ? label : `${label} ${value}`}
-    </button>
-  );
-});
 
 export function PriorityPickerPopup(props: PickerPopupProps) {
   return <ValuePickerPopup {...props} kind="priority" />;

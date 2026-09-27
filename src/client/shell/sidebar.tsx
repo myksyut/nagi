@@ -2,6 +2,7 @@ import { observer } from "mobx-react-lite";
 import { Link, useRoute } from "wouter";
 import { type AppStore, useStore } from "@/data";
 import { dateEntryOf } from "@/features/dates/date-entry";
+import { CreateProjectButton, ProjectCreateField } from "@/features/projects/create-field";
 import { ProjectNavItems } from "@/features/projects/project-nav";
 import { moveTasks } from "@/tasks/commands";
 import { useTaskDropTarget } from "@/tasks/drag";
@@ -11,16 +12,18 @@ import {
   type ListEntry,
   type ListKey,
   LOGBOOK,
+  SHORTCUTS,
   VIEWS,
   type ViewEntry,
 } from "../navigation";
-import { LIST_ICONS, VIEW_ICONS } from "./list-icons";
+import { LIST_ICONS, SHORTCUTS_ICON, VIEW_ICONS } from "./list-icons";
 import { NavCountOf, navLinkClassName } from "./nav-parts";
 
 /**
  * 左のサイドバー（すりガラス）。上から、名前、受信箱・今日・予定・あとで（色の付いたアイコンと未完了の件数）、
  * 「ビュー」の見出しの下にカレンダー・タイムライン（navigation.ts の VIEWS）、
- * 「プロジェクト」の見出しの下に各プロジェクト（色の点と件数）、一番下に完了ログ
+ * 「プロジェクト」の見出しの下に各プロジェクト（色の点と件数）と、見出しの右の ＋ で開く名前の欄（一覧の一番下）、
+ * 一番下に完了ログとショートカット
  */
 export function Sidebar() {
   return (
@@ -53,18 +56,22 @@ export function Sidebar() {
             </li>
           ))}
         </ul>
-        <h2
-          id="sidebar-projects"
-          className="mx-2.5 mt-4 mb-1.5 font-normal text-[11px] text-faint-foreground"
-        >
-          プロジェクト
-        </h2>
+        <div className="mx-2.5 mt-4 mb-1.5 flex items-center">
+          <h2 id="sidebar-projects" className="font-normal text-[11px] text-faint-foreground">
+            プロジェクト
+          </h2>
+          <CreateProjectButton />
+        </div>
         <ul aria-labelledby="sidebar-projects" className="flex flex-col gap-px">
           <ProjectNavItems />
+          <ProjectCreateField />
         </ul>
         <ul className="mt-5 flex flex-col gap-px">
           <li>
             <NavItem list={LOGBOOK} />
+          </li>
+          <li>
+            <ShortcutsNavItem />
           </li>
         </ul>
       </nav>
@@ -126,6 +133,22 @@ const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
     </Link>
   );
 });
+
+/** 一番下の「ショートカット」（キーボードのアイコン。件数は出さない。行を落とす先にもしない） */
+function ShortcutsNavItem() {
+  const [active] = useRoute(SHORTCUTS.path);
+  const { Icon, color } = SHORTCUTS_ICON;
+  return (
+    <Link
+      href={SHORTCUTS.path}
+      aria-current={active ? "page" : undefined}
+      className={navLinkClassName(active)}
+    >
+      <Icon aria-hidden="true" className="size-4 flex-none" style={{ color }} strokeWidth={1.75} />
+      <span className="min-w-0 flex-1 truncate">{SHORTCUTS.label}</span>
+    </Link>
+  );
+}
 
 /** 「ビュー」の1行（件数は出さない。行を落とす先にもしない） */
 function ViewNavItem({ view }: { view: ViewEntry }) {

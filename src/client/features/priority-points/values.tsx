@@ -1,8 +1,8 @@
 import { PRIORITY_LABELS, type Priority } from "@shared/priority-points";
 
 /**
- * 優先度と工数の名前と、優先度の印。起動に要る行の右側（register.tsx）と、後から読み込む候補とボタン（parts.tsx）の
- * 両方が使う（ほかのモジュールを読み込まない小さなモジュールにして、後から読み込む側が起動の JS の分け方を変えないように）
+ * 優先度と工数の名前と、優先度の印。行の右側と開いたタスクのボタン（register.tsx）、候補の開閉（picker.tsx）、
+ * 後から読み込む候補（parts.tsx）が使う
  */
 
 export type ValueKind = "priority" | "points";

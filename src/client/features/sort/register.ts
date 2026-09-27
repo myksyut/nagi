@@ -17,6 +17,7 @@ registerKeyBindings(
     label: `並び方：${TASK_SORT_LABELS[sort]}`,
     group: "リスト" as const,
     keys: [],
+    where: "今日・あとで・プロジェクト",
     when: ({ ui }) => ui.view !== null && SORTABLE.includes(ui.view.kind),
     run: ({ ui }) => {
       if (ui.view) setSort(ui, ui.view.key, sort);

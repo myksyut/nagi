@@ -25,6 +25,7 @@ import { formatLongDate } from "@/features/dates/labels";
 import { ProjectDot } from "@/features/projects/project-dot";
 import { QuickAddHost } from "@/features/quick-add/quick-add";
 import { quickAddOf } from "@/features/quick-add/state";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { keymap } from "@/keyboard/keymap";
 import { formatKey } from "@/keyboard/keys";
 import { projectColorOf, projectColorVar } from "@/lib/project-color";
@@ -58,6 +59,30 @@ import { type CalendarDrag, calendarOf, monthOf, type ProjectFilter } from "./st
  * - 上の絞り込みで、プロジェクト（すべて・各プロジェクト・プロジェクトなし）を選べる
  * この画面はリストではないので、一覧の状態（ui.view）は持たない（↑↓ や x などの一覧のキーは効かない）
  */
+
+// カレンダーの中のキー（ショートカットのページの「候補や欄の中」）。マスの中のタスクと◆の Enter・Space は下の
+// EntryChip の onKeyDown、「ほか N 件」の一覧の Esc は Base UI の Popover（DayListHost）
+registerFieldKeys({
+  id: "calendar-task",
+  label: "カレンダーのタスク",
+  order: FIELD_SCENE_ORDER.calendarTask,
+  keys: [
+    { label: "小さな詳細を開く（タスクか◆にフォーカスがあるとき）", keys: ["Enter", " "] },
+    { label: "「ほか N 件」の一覧を閉じる", keys: ["Escape"] },
+  ],
+});
+
+// プロジェクトの絞り込みの中のキー。どれも Base UI の Menu が扱う（下の FilterMenu）
+registerFieldKeys({
+  id: "calendar-filter",
+  label: "カレンダーのプロジェクトの絞り込み",
+  order: FIELD_SCENE_ORDER.calendarFilter,
+  keys: [
+    { label: "候補を選ぶ", keys: ["ArrowUp", "ArrowDown"] },
+    { label: "決める", keys: ["Enter", " "] },
+    { label: "閉じる", keys: ["Escape"] },
+  ],
+});
 
 const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"] as const;
 

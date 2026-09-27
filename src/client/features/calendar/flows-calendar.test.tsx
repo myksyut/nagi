@@ -494,7 +494,7 @@ describe("完了の条件6：その他（6・[ ]・⌘K）", () => {
     expect(screen.getByText("2026年8月")).toBeInTheDocument();
   });
 
-  it("⌘K に「前の月へ」「次の月へ」「追加（カレンダー・タイムライン）」が出て実行できる", async () => {
+  it("⌘K に「前の月へ」「次の月へ」「追加」が出て実行できる", async () => {
     const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
     await openCalendar();
 
@@ -508,10 +508,7 @@ describe("完了の条件6：その他（6・[ ]・⌘K）", () => {
     expect(screen.getByText("2026年9月")).toBeInTheDocument();
 
     await user.keyboard("{Meta>}k{/Meta}");
-    await user.type(
-      screen.getByRole("combobox", { name: "検索とコマンド" }),
-      "追加（カレンダー・タイムライン）{Enter}",
-    );
+    await user.type(screen.getByRole("combobox", { name: "検索とコマンド" }), "追加{Enter}");
     expect(await screen.findByRole("textbox", { name: "受信箱に追加" })).toBeInTheDocument();
   });
 });

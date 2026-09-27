@@ -2,6 +2,7 @@ import type { ComponentType } from "react";
 import { Redirect, Route, Switch } from "wouter";
 import { LazyCalendarScreen } from "./features/calendar/lazy";
 import { ProjectScreen } from "./features/projects/project-screen";
+import { LazyShortcutsScreen } from "./features/shortcuts/lazy";
 import { LazyTimelineScreen } from "./features/timeline/lazy";
 import {
   BUCKET_LISTS,
@@ -10,6 +11,7 @@ import {
   type ListKey,
   LOGBOOK,
   PROJECT_PATH_PATTERN,
+  SHORTCUTS,
   TIMELINE,
 } from "./navigation";
 import { InboxScreen } from "./screens/inbox-screen";
@@ -46,6 +48,8 @@ export function App() {
             {/* ビュー（後から読み込む） */}
             <Route path={CALENDAR.path} component={LazyCalendarScreen} />
             <Route path={TIMELINE.path} component={LazyTimelineScreen} />
+            {/* ショートカットのページ（後から読み込む） */}
+            <Route path={SHORTCUTS.path} component={LazyShortcutsScreen} />
             {/* プロジェクトごとに一覧の状態を分けるので、プロジェクトが変わったら作り直す */}
             <Route path={PROJECT_PATH_PATTERN}>
               {(params) => <ProjectScreen key={params.id} id={params.id} />}

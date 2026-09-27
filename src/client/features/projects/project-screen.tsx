@@ -6,6 +6,7 @@ import { LazyBoard } from "@/features/board/lazy-board";
 import { useScreenLayout, ViewToggle } from "@/features/board/view-toggle";
 import { SortButton } from "@/features/sort/sort-button";
 import { sortSections } from "@/features/sort/state";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { HOME_PATH } from "@/navigation";
 import { ScreenHeading } from "@/screens/list-screen";
@@ -44,13 +45,23 @@ function projectSections(groups: ProjectTaskGroups): TaskSection[] {
 
 export const ProjectScreen = observer(function ProjectScreen({ id }: { id: string }) {
   const store = useStore();
+  const [, navigate] = useLocation();
   const layout = useScreenLayout(projectScreenKey(id));
   const project = liveProject(store, id);
   const title = project?.name ?? "";
+  /** この画面を開いてから、プロジェクトがあった */
+  const shown = useRef(false);
 
   useEffect(() => {
     document.title = title === "" ? "nagi" : `${title} — nagi`;
   }, [title]);
+
+  // 開いているあいだにプロジェクトがなくなったら（作ったあとの ⌘Z、保存できずに消えた作成）、今日へ移る
+  // （アーカイブと同じ扱い。消えたプロジェクトの画面を履歴に残さない）
+  useEffect(() => {
+    if (project) shown.current = true;
+    else if (shown.current) navigate(HOME_PATH, { replace: true });
+  }, [project, navigate]);
 
   if (!store.loaded) return null;
   if (!project) {
@@ -153,6 +164,17 @@ const ProjectHeading = observer(function ProjectHeading({ project }: { project: 
 
 /** 見出しの名前の文字（リストの画面の見出しと同じ） */
 const headingTextClassName = "min-w-0 font-[650] text-[26px] leading-tight tracking-[-0.01em]";
+
+// 見出しの名前の欄の中のキー（ショートカットのページの「候補や欄の中」）。下の RenameInput の onKeyDown と同じ
+registerFieldKeys({
+  id: "project-rename",
+  label: "プロジェクトの名前の変更（見出し）",
+  order: FIELD_SCENE_ORDER.projectRename,
+  keys: [
+    { label: "保存する", keys: ["Enter"] },
+    { label: "やめる", keys: ["Escape"] },
+  ],
+});
 
 /**
  * 名前の入力欄。Enter かフォーカスが外れたら保存、Esc でやめる。空の名前は保存しない（元の名前に戻る）。

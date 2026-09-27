@@ -1,6 +1,7 @@
+import { PRIORITY_LABELS } from "@shared/priority-points";
 import { observer } from "mobx-react-lite";
 import { registerKeyBindings } from "@/keyboard/keymap";
-import { useDeferred } from "@/lib/deferred";
+import { cn } from "@/lib/utils";
 import { selectionForOperation } from "@/tasks/commands";
 import { useDetailSurface } from "@/tasks/detail-surface";
 import {
@@ -12,13 +13,14 @@ import {
   registerRowMeta,
   type TaskSlotProps,
 } from "@/tasks/extensions";
+import { chipClassName } from "@/tasks/task-detail";
 import { useUi } from "@/tasks/ui-context";
-import { parts, ValuePickerHosts, valuePickerOf } from "./picker";
+import { ValuePickerHosts, valuePickerOf } from "./picker";
 import { PriorityMark, VALUE_LABELS, type ValueKind } from "./values";
 
 /**
  * 16 の登録：⇧P（優先度）と e（工数）のキー、行の右側（ボードのカードの下にも出る）の優先度の印と工数、
- * 開いたタスクの優先度と工数のボタン（parts.tsx。後から読み込む）。
+ * 開いたタスクの優先度と工数のボタン。
  * ⇧P と e は p と同じく、選んでいるすべての行に候補を1回だけ開く（完了した行にも付けられる）。
  * カレンダーのマスとタイムラインの棒には印を出さない（行の右側の項目はそこに出ない）。そこで押すと開く小さな詳細には、
  * リストで開く詳細と同じくボタンを出し、候補は小さな詳細の中に開く（カレンダーとタイムラインでは、ここが唯一の入口）
@@ -67,29 +69,46 @@ registerRowMeta({
 });
 
 /**
- * 開いたタスクの一番下の列の優先度と工数のボタン（parts.tsx。届くまでは出さない）。
- * 押すと、このボタンから候補が広がる（小さな詳細の中では、候補を小さな詳細の中に開く）
+ * 開いたタスクの一番下の列：優先度（「優先度 高」と印）と工数（「工数 3」）。なしなら点線の「優先度」「工数」。
+ * 押すと ⇧P・e と同じ候補が、このボタンから広がる。リストで開いた詳細と、小さな詳細（カレンダーとタイムラインの
+ * ポップオーバー。候補は小さな詳細の中に開く）の両方に出る
  */
-function LazyValueChip({ task, kind }: DetailFieldProps & { kind: ValueKind }) {
+const ValueChip = observer(function ValueChip({
+  task,
+  kind,
+}: DetailFieldProps & { kind: ValueKind }) {
   const ui = useUi();
   const { detached } = useDetailSurface();
-  const { module } = useDeferred(parts);
-  if (!module) return null;
+  const label = VALUE_LABELS[kind];
+  const priority = kind === "priority" ? task.priority : null;
+  const value =
+    priority !== null ? PRIORITY_LABELS[priority] : kind === "points" ? task.points : null;
   return (
-    <module.ValueChip
-      task={task}
-      kind={kind}
-      onOpen={(anchor) => valuePickerOf(ui, kind).open(task.id, anchor, detached)}
-    />
+    <button
+      type="button"
+      aria-label={value === null ? `${label}を付ける` : `${label}：${value}`}
+      className={cn(
+        chipClassName,
+        "outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/70",
+        value === null && "border-dashed text-muted-foreground/70",
+      )}
+      onClick={(event) => {
+        event.stopPropagation();
+        valuePickerOf(ui, kind).open(task.id, event.currentTarget, detached);
+      }}
+    >
+      {priority !== null && <PriorityMark priority={priority} />}
+      {value === null ? label : `${label} ${value}`}
+    </button>
   );
-}
+});
 
 for (const kind of ["priority", "points"] as const) {
   registerDetailField({
     id: kind,
     placement: "chip",
     order: DETAIL_ORDER[kind],
-    Component: (props) => <LazyValueChip {...props} kind={kind} />,
+    Component: (props) => <ValueChip {...props} kind={kind} />,
   });
 }
 

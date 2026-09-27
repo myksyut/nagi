@@ -7,7 +7,7 @@ import { VALUE_LABELS, type ValueKind, valuePlaceholder } from "./values";
 
 /**
  * ⇧P（優先度）と e（工数）の小さな候補の開閉の状態と、それを描く枠。開閉は p の候補と同じ RowPicker で、
- * 候補の部品（Base UI の Combobox）と開いたタスクのボタンは parts.tsx にあり、起動に要らないので後から読み込む。
+ * 候補の部品（Base UI の Combobox）は parts.tsx にあり、起動に要らないので後から読み込む。
  * 候補は、対象のタスクの行の右側の枠（register.tsx の優先度の印と工数）から描き、行（キーのとき）か押したボタンから広がる
  */
 
@@ -23,12 +23,9 @@ export function valuePickerOf(ui: ListUi, kind: ValueKind): RowPicker {
   return value[kind];
 }
 
-/** 後から読み込む部品（候補と、開いたタスクのボタン） */
-export const parts = defer(() => import("./parts"));
-
 const popups = {
-  priority: defer(() => parts.load().then((module) => module.PriorityPickerPopup)),
-  points: defer(() => parts.load().then((module) => module.PointsPickerPopup)),
+  priority: defer(() => import("./parts").then((module) => module.PriorityPickerPopup)),
+  points: defer(() => import("./parts").then((module) => module.PointsPickerPopup)),
 };
 
 /**

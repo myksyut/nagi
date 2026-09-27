@@ -4,9 +4,23 @@ import { type KeyboardEvent, useRef, useState } from "react";
 import { Popover, PopoverPopup, PopoverTrigger } from "@/components/ui/popover";
 import { type AppStore, useStore } from "@/data";
 import { ProjectDot } from "@/features/projects/project-dot";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { projectColorOf } from "@/lib/project-color";
 import { cn } from "@/lib/utils";
 import { ALL_PROJECTS, type ProjectFilter, type TimelineModel } from "./timeline-model";
+
+// 絞り込みの候補の中のキー（ショートカットのページの「候補や欄の中」）。↑↓ は下の onKeyDown、候補はボタンなので
+// Enter と Space で押すと決まる。Esc は Base UI の Popover が閉じる
+registerFieldKeys({
+  id: "timeline-filter",
+  label: "タイムラインのプロジェクトの絞り込み",
+  order: FIELD_SCENE_ORDER.timelineFilter,
+  keys: [
+    { label: "候補を選ぶ", keys: ["ArrowUp", "ArrowDown"] },
+    { label: "決める", keys: ["Enter", " "] },
+    { label: "閉じる", keys: ["Escape"] },
+  ],
+});
 
 /**
  * 上の絞り込み（「すべてのプロジェクト ▾」）。押すと、すべて・各プロジェクト・プロジェクトなしが小さく開き、

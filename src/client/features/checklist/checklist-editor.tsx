@@ -13,6 +13,7 @@ import {
 } from "react";
 import { Checkbox } from "@/components/ui/checkbox";
 import type { OperationResult, TaskRow } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { LAYOUT_TRANSITION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
@@ -31,6 +32,22 @@ import {
   sameOrder,
   toggleItem,
 } from "./checklist";
+
+// チェックリストの中のキー（ショートカットのページの「候補や欄の中」）。下の ChecklistItemRow と AddItemInput の onKeyDown と同じ
+registerFieldKeys({
+  id: "checklist",
+  label: "チェックリスト",
+  order: FIELD_SCENE_ORDER.checklist,
+  keys: [
+    { label: "次の項目へ", keys: ["Enter", "ArrowDown"] },
+    { label: "前の項目へ", keys: ["ArrowUp"] },
+    { label: "並べ替え", keys: ["Alt+ArrowUp", "Alt+ArrowDown"] },
+    { label: "空の項目を消す", keys: ["Backspace"] },
+    { label: "チェックを付ける・外す（チェックボックスの上で）", keys: [" ", "Enter"] },
+    { label: "項目を足して続けて打つ（「項目を追加」の欄）", keys: ["Enter"] },
+    { label: "閉じる", keys: ["Escape"] },
+  ],
+});
 
 /**
  * 開いたタスクのチェックリスト（メモの下）。

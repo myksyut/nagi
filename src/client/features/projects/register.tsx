@@ -17,12 +17,15 @@ import {
 } from "@/tasks/extensions";
 import { chipClassName } from "@/tasks/task-detail";
 import { useUi } from "@/tasks/ui-context";
+import { PROJECT_CREATE_BINDING_ID, projectCreatorOf } from "./create-field";
 import { ProjectPickerHost, projectPickerOf } from "./picker";
 import { ProjectDot } from "./project-dot";
 
 /**
  * 6 の登録：p（プロジェクト）、行の右側のプロジェクト名、開いたタスクのプロジェクトのボタン。
- * プロジェクトの画面とサイドバーの一覧、あとでのまとまりは、それぞれ project-screen・project-nav・later-sections
+ * 17 の登録：プロジェクトを作成（キーはなし。⌘K とサイドバーの ＋ から、名前の欄を開く）。
+ * プロジェクトの画面とサイドバーの一覧・名前の欄、あとでのまとまりは、それぞれ project-screen・project-nav・
+ * create-field・later-sections
  */
 
 registerKeyBindings({
@@ -36,6 +39,15 @@ registerKeyBindings({
     const rows = selectionForOperation(ui);
     if (rows && rows.length > 0) projectPickerOf(ui).open(rows.map((row) => row.id));
   },
+});
+
+registerKeyBindings({
+  id: PROJECT_CREATE_BINDING_ID,
+  label: "プロジェクトを作成",
+  group: "リスト",
+  // キーはなし（⌘K からは名前の欄を開くだけ。名前は欄で打つ）
+  keys: [],
+  run: ({ ui }) => projectCreatorOf(ui).show(),
 });
 
 /** 付いているプロジェクト（削除済みなら出さない。アーカイブ済みは完了ログなどのために出す） */
