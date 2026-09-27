@@ -410,7 +410,13 @@ export class TaskActions {
       const normalized = normalizeTaskChanges(current, changes);
       if (normalized === null) return { ok: false, reason: "invalid" };
       if (Object.keys(normalized).length === 0) continue;
-      mutations.push({ type: "task.update", id, changes: normalized });
+      mutations.push(
+        normalized.checklist === undefined
+          ? { type: "task.update", id, changes: normalized }
+          : // チェックリストは配列をまるごと置き換えるので、変える前の配列（確定データに、それより前の
+            // 送信中の操作を重ねたもの）を添える。ほかの画面が先に変えていたら、サーバーが断る
+            { type: "task.update", id, changes: normalized, baseChecklist: current.checklist },
+      );
     }
     return this.#perform(kind, mutations, options);
   }

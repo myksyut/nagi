@@ -150,7 +150,7 @@ describe("追加・削除・並べ替え", () => {
     expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["B", "A"]);
   });
 
-  it("追加・削除・並べ替えは ⌘Z で戻せる（一覧にフォーカスがあるとき）", async () => {
+  it("追加は ⌘Z で戻せる（一覧にフォーカスがあるとき）", async () => {
     const server = new FakeServer();
     server.putTask(
       makeTask({
@@ -175,6 +175,101 @@ describe("追加・削除・並べ替え", () => {
     await user.keyboard("{Escape}");
     await user.keyboard("{Meta>}z{/Meta}");
     expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["元の項目"]);
+  });
+});
+
+describe("削除・並べ替えも、画面から操作して ⌘Z で戻せる", () => {
+  function setupThree() {
+    const server = new FakeServer();
+    server.putTask(
+      makeTask({
+        title: "タスク",
+        bucket: "today",
+        checklist: [
+          { id: nextId(), title: "A", done: false },
+          { id: nextId(), title: "B", done: true },
+          { id: nextId(), title: "C", done: false },
+        ],
+      }),
+    );
+    return server;
+  }
+
+  /** タスクを閉じて一覧にフォーカスを戻してから ⌘Z（入力欄の中の ⌘Z はブラウザの取り消し） */
+  async function undoFromList(user: ReturnType<typeof userEvent.setup>, store: AppStore) {
+    screen.getByRole("listbox", { name: "今日" }).focus();
+    await user.keyboard("{Meta>}z{/Meta}");
+    await act(async () => {
+      await store.idle();
+    });
+  }
+
+  it("削除ボタンで消した項目は、⌘Z で元の位置・元のチェックのまま戻る", async () => {
+    const store = await openToday(setupThree());
+    const user = userEvent.setup();
+    const taskId = store.lists.today[0]?.id ?? "";
+
+    await user.keyboard("j{Enter}");
+    await user.click(within(checklistGroup()).getByRole("button", { name: "「B」を削除" }));
+    await act(async () => {
+      await store.idle();
+    });
+    expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["A", "C"]);
+
+    await undoFromList(user, store);
+    expect(store.task(taskId)?.checklist.map(({ title, done }) => ({ title, done }))).toEqual([
+      { title: "A", done: false },
+      { title: "B", done: true },
+      { title: "C", done: false },
+    ]);
+    // 開いている画面にも戻っている
+    expect(within(checklistGroup()).getByRole("checkbox", { name: "B" })).toBeChecked();
+  });
+
+  it("空の欄で ⌫ を押して消した項目も、⌘Z で戻る", async () => {
+    const store = await openToday(setupThree());
+    const user = userEvent.setup();
+    const taskId = store.lists.today[0]?.id ?? "";
+
+    await user.keyboard("j{Enter}");
+    const field = within(checklistGroup()).getByDisplayValue("C");
+    await user.clear(field);
+    await user.keyboard("{Backspace}");
+    await act(async () => {
+      await store.idle();
+    });
+    expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["A", "B"]);
+
+    await undoFromList(user, store);
+    expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["A", "B", "C"]);
+  });
+
+  it("⌥↑／⌥↓ の並べ替えは、1回ずつ ⌘Z で戻る", async () => {
+    const store = await openToday(setupThree());
+    const user = userEvent.setup();
+    const taskId = store.lists.today[0]?.id ?? "";
+
+    await user.keyboard("j{Enter}");
+    within(checklistGroup()).getByDisplayValue("C").focus();
+    await user.keyboard("{Alt>}{ArrowUp}{/Alt}");
+    await user.keyboard("{Alt>}{ArrowUp}{/Alt}");
+    await act(async () => {
+      await store.idle();
+    });
+    expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["C", "A", "B"]);
+    within(checklistGroup()).getByDisplayValue("A").focus();
+    await user.keyboard("{Alt>}{ArrowDown}{/Alt}");
+    await act(async () => {
+      await store.idle();
+    });
+    expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["C", "B", "A"]);
+
+    await undoFromList(user, store);
+    expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["C", "A", "B"]);
+    await undoFromList(user, store);
+    expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["A", "C", "B"]);
+    await undoFromList(user, store);
+    expect(store.task(taskId)?.checklist.map((c) => c.title)).toEqual(["A", "B", "C"]);
   });
 });
 

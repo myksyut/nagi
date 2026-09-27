@@ -57,6 +57,22 @@ export function isScheduleConsistent(task: Pick<Task, "bucket" | "scheduledOn">)
   return (task.bucket === "scheduled") === (task.scheduledOn !== null);
 }
 
+/** チェックリストが同じか（項目の順・id・名前・チェック） */
+export function sameChecklist(a: readonly ChecklistItem[], b: readonly ChecklistItem[]): boolean {
+  return (
+    a.length === b.length &&
+    a.every((item, i) => {
+      const other = b[i];
+      return (
+        other !== undefined &&
+        item.id === other.id &&
+        item.title === other.title &&
+        item.done === other.done
+      );
+    })
+  );
+}
+
 /** 未完了で、削除されていない */
 export function isOpenTask(task: Pick<Task, "completedAt" | "deletedAt">): boolean {
   return task.completedAt === null && task.deletedAt === null;

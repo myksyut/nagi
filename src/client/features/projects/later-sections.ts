@@ -1,8 +1,24 @@
+import { computed, type IComputedValue } from "mobx";
 import type { AppStore, TaskRow } from "@/data";
 import type { TaskSection } from "@/tasks/list-ui";
 
 /** あとでの「プロジェクトなし」のまとまり（一番上。n の追加欄もここに開く） */
 export const LATER_NO_PROJECT = "none";
+
+/**
+ * 行ごとのプロジェクトの観測値。プロジェクトが変わったときだけ知らせる（タイトルやメモを直しても知らせない）。
+ * 付け替えても あとで の中身と並びは変わらないので、store.lists.later は知らせてこない。そのため行ごとに見張る
+ */
+const projectIdCache = new WeakMap<TaskRow, IComputedValue<string | null>>();
+
+function projectIdOf(row: TaskRow): string | null {
+  let value = projectIdCache.get(row);
+  if (!value) {
+    value = computed(() => row.projectId);
+    projectIdCache.set(row, value);
+  }
+  return value.get();
+}
 
 /**
  * あとでのまとまり：プロジェクトなしが先頭（見出しなし）、そのあとにプロジェクトごと（作成順、見出しは名前）。
@@ -13,9 +29,7 @@ export function laterSections(store: AppStore): TaskSection[] {
   const byProject = new Map<string, TaskRow[]>();
   const none: TaskRow[] = [];
   for (const task of store.lists.later) {
-    // プロジェクトは行ごとに観測する。付け替えても あとで の中身と並びは変わらないので、
-    // store.lists.later は知らせてこない（まとまりの見た目が変わらなければ、一覧は描き直さない）
-    const { projectId } = task;
+    const projectId = projectIdOf(task);
     const project = projectId === null ? undefined : store.project(projectId);
     if (projectId === null || !project || project.deletedAt !== null) {
       none.push(task);

@@ -10,6 +10,7 @@ import {
   ComboboxPrimitive,
 } from "@/components/ui/combobox";
 import type { ProjectRow, TaskRow } from "@/data";
+import { isComposingKey } from "@/keyboard/keys";
 import type { ListUi } from "@/tasks/list-ui";
 import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
@@ -139,9 +140,11 @@ const ProjectPickerPopup = observer(function ProjectPickerPopup({
   const items = pickerItems(store.lists.projects, query, task.projectId);
   const current = items.find((item) => item.kind === "project" && item.id === task.projectId);
 
+  /** 閉じて、開いた元へフォーカスを戻す（ボタンから開いたらボタンへ。ボタンが消えていたら一覧へ） */
   const close = () => {
     picker.close();
-    ui.focusList();
+    if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus();
+    else ui.focusList();
   };
 
   const choose = (item: PickerItem) => {
@@ -186,6 +189,11 @@ const ProjectPickerPopup = observer(function ProjectPickerPopup({
             placeholder="プロジェクト名"
             autoFocus
             className="h-8 w-full rounded-md bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/60"
+            onKeyDown={(event) => {
+              // 変換中のキー（確定の Enter を含む）は Base UI に渡さない。Base UI が止めるのは
+              // keyCode 229 のときだけで、isComposing だけが立つ確定の Enter では候補を選んでしまう
+              if (isComposingKey(event.nativeEvent)) event.preventBaseUIHandler();
+            }}
           />
         </div>
         <ComboboxEmpty>名前を入れると、新しいプロジェクトを作れます</ComboboxEmpty>

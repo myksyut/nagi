@@ -532,6 +532,91 @@ describe("検証（何も書かれないことまで確かめる）", () => {
   });
 });
 
+describe("チェックリストのぶつかり（baseChecklist）", () => {
+  const item = (title: string, done = false, id: string = crypto.randomUUID()) => ({
+    id,
+    title,
+    done,
+  });
+
+  async function createWithChecklist(checklist: ReturnType<typeof item>[]) {
+    const { post } = apiApp();
+    const id = crypto.randomUUID();
+    const res = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.create", task: taskInput({ id, checklist }) }]),
+    );
+    expect(res.status).toBe(200);
+    return { post, id };
+  }
+
+  it("★ 今の配列が添えた配列と同じなら通る。違えば 400 checklist_conflict で何も書かれない", async () => {
+    const a = item("A");
+    const b = item("B");
+    const { post, id } = await createWithChecklist([a, b]);
+
+    // 別の画面が先に A をチェックした
+    const first = await post(
+      "/api/mutate",
+      mutationBatch([
+        {
+          type: "task.update",
+          id,
+          changes: { checklist: [{ ...a, done: true }, b] },
+          baseChecklist: [a, b],
+        },
+      ]),
+    );
+    expect(first.status).toBe(200);
+
+    // こちらの画面は古い配列のまま B をチェックしようとする → 断る
+    const before = await snapshot();
+    const second = await post(
+      "/api/mutate",
+      mutationBatch([
+        {
+          type: "task.update",
+          id,
+          changes: { checklist: [a, { ...b, done: true }] },
+          baseChecklist: [a, b],
+        },
+      ]),
+    );
+    expect(second.status).toBe(400);
+    const body = await errorBody(second);
+    expect(body.reason).toBe("checklist_conflict");
+    expect(body.mutationIndex).toBe(0);
+    expect(await snapshot()).toEqual(before);
+    const row = await db.select().from(tasks).where(eq(tasks.id, id)).get();
+    expect(row?.checklist).toEqual([{ ...a, done: true }, b]);
+  });
+
+  it("同じまとまりの中の前の操作で変わった配列を添えれば通る（続けて操作したとき）", async () => {
+    const a = item("A");
+    const { post, id } = await createWithChecklist([a]);
+    const res = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "task.update", id, changes: { checklist: [a, item("B")] }, baseChecklist: [a] },
+        { type: "task.update", id, changes: { title: "改名" } },
+      ]),
+    );
+    expect(res.status).toBe(200);
+  });
+
+  it("baseChecklist を添えない更新は、これまでどおり配列をそのまま置き換える", async () => {
+    const a = item("A");
+    const { post, id } = await createWithChecklist([a]);
+    const res = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.update", id, changes: { checklist: [] } }]),
+    );
+    expect(res.status).toBe(200);
+    const row = await db.select().from(tasks).where(eq(tasks.id, id)).get();
+    expect(row?.checklist).toEqual([]);
+  });
+});
+
 describe("版とログイン", () => {
   it("★ X-Api-Versionがない、または違うと、どちらのAPIも409になる。/api/session には要らない", async () => {
     const { post, app } = apiApp();

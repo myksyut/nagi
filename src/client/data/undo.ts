@@ -89,17 +89,17 @@ export function buildInverse(mutations: readonly Mutation[], read: Readers): Inv
         if (before && after) {
           const previous = previousValues(before, changes);
           steps.push(() => {
-            // チェックリストは、戻すときの今の中身と合わせる（revertChecklist）
+            // チェックリストは、戻すときの今の中身と合わせ（revertChecklist）、今の配列を添える
             const current = previous.checklist && read.task(id)?.checklist;
+            if (!current) return { type: "task.update", id, changes: previous };
             return {
               type: "task.update",
               id,
-              changes: current
-                ? {
-                    ...previous,
-                    checklist: revertChecklist(before.checklist, after.checklist, current),
-                  }
-                : previous,
+              changes: {
+                ...previous,
+                checklist: revertChecklist(before.checklist, after.checklist, current),
+              },
+              baseChecklist: [...current],
             };
           });
         }

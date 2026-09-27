@@ -8,6 +8,7 @@ import type { AddTarget, TaskSection } from "@/tasks/list-ui";
 import { TaskList } from "@/tasks/task-list";
 import { useListView, useUi } from "@/tasks/ui-context";
 import { archiveProject, renameProject, unarchiveProject } from "./commands";
+import { projectNameDraftsOf } from "./name-drafts";
 
 /**
  * プロジェクトの画面：そのプロジェクトのタスクを「今日／予定／あとで／受信箱」のまとまりで並べ、
@@ -108,25 +109,60 @@ const ProjectHeading = observer(function ProjectHeading({ project }: { project: 
   );
 });
 
-/** 名前の入力欄。Enter かフォーカスが外れたら保存、Esc でやめる。空の名前は保存しない */
+/**
+ * 名前の入力欄。Enter かフォーカスが外れたら保存、Esc でやめる。空の名前は保存しない（元の名前に戻る）。
+ * オフラインなどで受け付けられなかったら、欄を開いたまま文字を残す。
+ * 送ったあとに保存できなかった名前は、次にこの欄を開いたときに入っている（projectNameDraftsOf）
+ */
 function RenameInput({ project, onDone }: { project: ProjectRow; onDone: () => void }) {
   const ui = useUi();
-  const [value, setValue] = useState(project.name);
+  const drafts = projectNameDraftsOf(ui.store);
+  const [value, setValue] = useState(() => drafts.get(project.id) ?? project.name);
+  const latest = useRef(value);
+  latest.current = value;
   const input = useRef<HTMLInputElement>(null);
-  const finished = useRef(false);
+  const done = useRef(false);
 
   useEffect(() => {
     input.current?.focus();
     input.current?.select();
   }, []);
 
-  const finish = (save: boolean) => {
-    if (finished.current) return;
-    finished.current = true;
-    if (save && value.trim() !== "" && value.trim() !== project.name) {
-      renameProject(ui, project, value);
-    }
+  // 保存できないまま画面を離れたら、打った名前を残す
+  useEffect(
+    () => () => {
+      const name = latest.current.trim();
+      if (!done.current && name !== "" && name !== project.name) {
+        drafts.keep(project.id, latest.current);
+      }
+    },
+    [drafts, project],
+  );
+
+  const close = () => {
+    done.current = true;
     onDone();
+  };
+
+  /** 保存して閉じる。受け付けられなかったら開いたまま（false） */
+  const save = (): boolean => {
+    if (done.current) return true;
+    const name = value.trim();
+    if (name === "" || name === project.name) {
+      drafts.clear(project.id);
+      close();
+      return true;
+    }
+    const result = renameProject(ui, project, value);
+    if (!result.ok && result.reason === "offline") return false;
+    close();
+    return true;
+  };
+
+  const cancel = () => {
+    if (done.current) return;
+    drafts.clear(project.id);
+    close();
   };
 
   return (
@@ -138,13 +174,16 @@ function RenameInput({ project, onDone }: { project: ProjectRow; onDone: () => v
       onChange={(event) => setValue(event.target.value)}
       onKeyDown={(event) => {
         if (isComposingKey(event.nativeEvent)) return;
-        if (event.key === "Enter" || event.key === "Escape") {
+        if (event.key === "Enter") {
           event.preventDefault();
-          finish(event.key === "Enter");
+          if (save()) ui.focusList();
+        } else if (event.key === "Escape") {
+          event.preventDefault();
+          cancel();
           ui.focusList();
         }
       }}
-      onBlur={() => finish(true)}
+      onBlur={() => save()}
     />
   );
 }

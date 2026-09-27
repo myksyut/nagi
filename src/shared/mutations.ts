@@ -65,11 +65,16 @@ export const taskCreateSchema = z.strictObject({
   }),
 });
 
-/** 更新。変える項目だけを送る。削除は deletedAt を入れる更新、削除の取り消しは deletedAt を null にする更新 */
+/**
+ * 更新。変える項目だけを送る。削除は deletedAt を入れる更新、削除の取り消しは deletedAt を null にする更新。
+ * チェックリストは配列をまるごと置き換えるので、変える前の配列（baseChecklist）を添える。
+ * サーバーは今の配列がそれと違えば（ほかの画面が先に変えていたら）、まとまりごと断る（checklist_conflict）
+ */
 export const taskUpdateSchema = z.strictObject({
   type: z.literal("task.update"),
   id: idSchema,
   changes: z.strictObject(taskFields).partial().refine(hasSomeChange, "no_changes"),
+  baseChecklist: taskFields.checklist.optional(),
 });
 
 export const projectCreateSchema = z.strictObject({

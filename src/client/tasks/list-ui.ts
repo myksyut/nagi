@@ -428,7 +428,9 @@ export class ListUi {
       }
     });
     this.toaster.error(
-      "保存できませんでした",
+      notice.reason === "conflict"
+        ? "ほかの画面で先に変更されていたため、保存できませんでした"
+        : "保存できませんでした",
       titles.length > 0
         ? "追加した文字は、追加欄の下書きに戻しました"
         : lost.size > 0
