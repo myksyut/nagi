@@ -1,4 +1,4 @@
-import { type CSSProperties, useLayoutEffect, useState } from "react";
+import { type CSSProperties, type KeyboardEvent, useLayoutEffect, useState } from "react";
 import { createPortal } from "react-dom";
 import { isComposingKey } from "@/keyboard/keys";
 import { cn } from "@/lib/utils";
@@ -20,6 +20,7 @@ export function WaitingInput({
   onRetry,
   className,
   style,
+  onKeyDown,
 }: {
   label: string;
   placeholder?: string;
@@ -31,6 +32,8 @@ export function WaitingInput({
   onRetry: () => void;
   className?: string;
   style?: CSSProperties;
+  /** 欄の中で押したキー（先に呼ぶ。preventDefault したら、この欄の Esc・Enter の扱いもしない） */
+  onKeyDown?: (event: KeyboardEvent<HTMLElement>) => void;
 }) {
   const takesText = value !== undefined;
   return createPortal(
@@ -48,7 +51,8 @@ export function WaitingInput({
       style={style}
       onClick={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
-        if (isComposingKey(event.nativeEvent)) return;
+        onKeyDown?.(event);
+        if (event.defaultPrevented || isComposingKey(event.nativeEvent)) return;
         if (event.key === "Escape") {
           event.preventDefault();
           // 小さな詳細（ポップオーバー）の中から開いたときに、小さな詳細まで一緒に閉じないように

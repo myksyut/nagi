@@ -15,18 +15,32 @@ const STORAGE_KEY = "nagi:task-sorts";
 /** 手動以外の並び方にしている画面（一覧の状態ごとに1つ。アプリの外枠ごとに1つ） */
 const sorts = new WeakMap<ListUi, ObservableMap<string, TaskSort>>();
 
+/**
+ * localStorage に残っている並び方。localStorage を使えなければ null（壊れた値は、どの画面も手動として読む）
+ */
+function loadSaved(): Map<string, TaskSort> | null {
+  let text: string | null;
+  try {
+    text = localStorage.getItem(STORAGE_KEY);
+  } catch {
+    return null;
+  }
+  const saved = new Map<string, TaskSort>();
+  try {
+    const parsed: object = JSON.parse(text ?? "{}");
+    for (const [screen, sort] of Object.entries(parsed)) {
+      if (isTaskSort(sort) && sort !== "manual") saved.set(screen, sort);
+    }
+  } catch {
+    // 読めなければ、どの画面も手動
+  }
+  return saved;
+}
+
 function sortsOf(ui: ListUi): ObservableMap<string, TaskSort> {
   let value = sorts.get(ui);
   if (!value) {
-    value = observable.map<string, TaskSort>();
-    try {
-      const saved: object = JSON.parse(localStorage.getItem(STORAGE_KEY) ?? "{}");
-      for (const [screen, sort] of Object.entries(saved)) {
-        if (isTaskSort(sort)) value.set(screen, sort);
-      }
-    } catch {
-      // 読めなければ、どの画面も手動
-    }
+    value = observable.map<string, TaskSort>(loadSaved() ?? undefined);
     sorts.set(ui, value);
   }
   return value;
@@ -37,16 +51,21 @@ export function sortOf(ui: ListUi, screen: string): TaskSort {
   return sortsOf(ui).get(screen) ?? "manual";
 }
 
-/** その画面の並び方を変えて、覚える。選んでいる行の位置が変わるので、見えるところまで動かす */
+/**
+ * その画面の並び方を変えて、覚える。選んでいる行の位置が変わるので、見えるところまで動かす。
+ * 書くときは localStorage の最新を読み、変えた画面の分だけを差し替える（ほかのタブがほかの画面の並び方を変えていても、
+ * 上書きしない）。読んだ最新は、このタブの表示にも合わせる。読み書きできないときは、このタブのあいだだけ覚える
+ */
 export function setSort(ui: ListUi, screen: string, sort: TaskSort): void {
   const map = sortsOf(ui);
-  runInAction(() => {
-    if (sort === "manual") map.delete(screen);
-    else map.set(screen, sort);
-  });
+  const next = loadSaved() ?? new Map(map);
+  if (sort === "manual") next.delete(screen);
+  else next.set(screen, sort);
+  runInAction(() => map.replace(next));
   ui.revealSelected();
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(map)));
+    if (next.size === 0) localStorage.removeItem(STORAGE_KEY);
+    else localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(next)));
   } catch {
     // 書けなければ（容量切れなど）、このタブのあいだだけ覚える
   }

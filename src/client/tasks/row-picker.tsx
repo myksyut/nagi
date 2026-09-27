@@ -1,6 +1,11 @@
 import { action, makeObservable, observable, observableRef, reaction } from "mobx";
 import { observer } from "mobx-react-lite";
-import { type ComponentType, useEffect, useState } from "react";
+import {
+  type ComponentType,
+  type KeyboardEvent as ReactKeyboardEvent,
+  useEffect,
+  useState,
+} from "react";
 import { useAnchoredStyle, WaitingInput } from "@/components/waiting-input";
 import type { TaskRow } from "@/data";
 import { type Deferred, useDeferred } from "@/lib/deferred";
@@ -153,6 +158,11 @@ export type PickerPopupProps = {
   session: PickerSession;
   /** 開いたときの入力欄の文字（読み込みを待つあいだに打った文字） */
   initialQuery: string;
+  /**
+   * 読み込みを待つあいだに押した、その場で決めるキー（waitingKey が受け取ったもの。1回分だけ）。
+   * 候補は、開いたときに押したのと同じように決める
+   */
+  initialKey?: string;
 };
 
 /**
@@ -168,6 +178,7 @@ export const RowPickerHost = observer(function RowPickerHost({
   label,
   placeholder,
   detached = false,
+  waitingKey,
 }: {
   task: TaskRow;
   picker: RowPicker;
@@ -178,11 +189,18 @@ export const RowPickerHost = observer(function RowPickerHost({
   placeholder: (taskIds: readonly string[]) => string;
   /** 小さな詳細の中に置いた枠（小さな詳細から開いた候補だけを描く） */
   detached?: boolean;
+  /**
+   * 待ちの欄で押したキーのうち、届いたら候補へ渡す「その場で決めるキー」（⇧P の 1・2・3・0 など）。
+   * 渡すキーを返す（渡さないなら undefined。変換中や修飾キー付きは渡さない）。最初の1回分だけを持ち、待ちのあいだに
+   * 閉じた（Esc）候補には渡さない
+   */
+  waitingKey?: (event: KeyboardEvent) => string | undefined;
 }) {
   const ui = useUi();
   const session = picker.sessionOf(task.id, detached);
-  // 届く前に打った文字（候補を開くたびに）
+  // 届く前に打った文字と、押したその場で決めるキー（候補を開くたびに）
   const [typed, setTyped] = useState<{ id: number; text: string } | null>(null);
+  const [pending, setPending] = useState<{ id: number; key: string } | null>(null);
   const { module: Popup, failed, retry } = useDeferred(popup, session !== null, session?.id);
   // 小さな詳細の中の枠は、小さな詳細と一緒に消える。そのとき開いていた候補も閉じる
   useEffect(() => {
@@ -193,7 +211,14 @@ export const RowPickerHost = observer(function RowPickerHost({
   const text = typed?.id === session.id ? typed.text : "";
   if (Popup) {
     return (
-      <Popup key={session.id} task={task} picker={picker} session={session} initialQuery={text} />
+      <Popup
+        key={session.id}
+        task={task}
+        picker={picker}
+        session={session}
+        initialQuery={text}
+        initialKey={pending?.id === session.id ? pending.key : undefined}
+      />
     );
   }
   // 閉じる途中の候補は、届いていなければ描かない
@@ -206,6 +231,15 @@ export const RowPickerHost = observer(function RowPickerHost({
       placeholder={placeholder(session.taskIds)}
       text={text}
       onText={(next) => setTyped({ id: session.id, text: next })}
+      onKeyDown={(event) => {
+        const key = waitingKey?.(event.nativeEvent);
+        if (key === undefined) return;
+        // 欄には打たず、最初の1回分だけを持つ（持ったキーを欄に出して、受け取ったことが分かるようにする）
+        event.preventDefault();
+        if (pending?.id === session.id) return;
+        setPending({ id: session.id, key });
+        setTyped({ id: session.id, text: key });
+      }}
       failed={failed}
       onRetry={retry}
       onCancel={() => {
@@ -225,6 +259,7 @@ function PickerWaiting({
   placeholder,
   text,
   onText,
+  onKeyDown,
   failed,
   onRetry,
   onCancel,
@@ -234,6 +269,7 @@ function PickerWaiting({
   placeholder: string;
   text: string;
   onText: (text: string) => void;
+  onKeyDown: (event: ReactKeyboardEvent<HTMLElement>) => void;
   failed: boolean;
   onRetry: () => void;
   onCancel: () => void;
@@ -248,6 +284,7 @@ function PickerWaiting({
       placeholder={placeholder}
       value={text}
       onChange={onText}
+      onKeyDown={onKeyDown}
       onCancel={onCancel}
       failed={failed}
       onRetry={onRetry}

@@ -187,6 +187,8 @@ export class ListUi {
   /** ⌘K の検索で選んだタスク。そのリストが開いたら（開いていれば今すぐ）選ぶ */
   #reveal: { taskId: string; viewKey: string } | null = null;
   #listElement: HTMLElement | null = null;
+  /** 選んでいる行を見えるところまで動かすのを待っているタイマー（revealSelected） */
+  #revealTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** 下書きを localStorage に残す */
   readonly #drafts: DraftStorage;
@@ -697,11 +699,16 @@ export class ListUi {
   revealSelected(): void {
     const list = this.#listElement;
     if (!list) return;
+    // 続けて呼ばれたら、最後の1回だけ測る
+    clearTimeout(this.#revealTimer);
     let waits = 0;
     const reveal = () => {
+      // 待つあいだに画面が変わっていたら（一覧が入れ替わった・外れた）何もしない。新しい画面に同じタスクの行があっても、
+      // そこで選んでいない行を動かさないように。行も、その一覧の中のものだけを測る
+      if (list !== this.#listElement || !list.isConnected) return;
       const id = list.getAttribute("aria-activedescendant");
       const row = id === null ? null : document.getElementById(id);
-      if (!row) return;
+      if (!row || !list.contains(row)) return;
       // まだ動いている（行を包む要素に layout の transform が残っている）なら、止まるまで待つ（長くても 0.5 秒）
       let moving = false;
       for (
@@ -711,10 +718,10 @@ export class ListUi {
       ) {
         if (getComputedStyle(element).transform !== "none") moving = true;
       }
-      if (moving && waits++ < 10) setTimeout(reveal, 50);
+      if (moving && waits++ < 10) this.#revealTimer = setTimeout(reveal, 50);
       else row.scrollIntoView?.({ block: "nearest" });
     };
-    setTimeout(reveal, DURATION.base * 1000);
+    this.#revealTimer = setTimeout(reveal, DURATION.base * 1000);
   }
 
   // --- 動かす -----------------------------------------------------------------------------

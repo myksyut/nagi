@@ -6,7 +6,7 @@ import {
   type Priority,
 } from "@shared/priority-points";
 import { observer } from "mobx-react-lite";
-import { type KeyboardEvent, useEffect, useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Combobox,
   ComboboxEmpty,
@@ -23,7 +23,13 @@ import type { ListUi } from "@/tasks/list-ui";
 import type { PickerPopupProps, PickerSession, RowPicker } from "@/tasks/row-picker";
 import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
-import { VALUE_LABELS, type ValueKind, valuePlaceholder } from "./values";
+import {
+  PRIORITY_KEYS,
+  priorityKeyOf,
+  VALUE_LABELS,
+  type ValueKind,
+  valuePlaceholder,
+} from "./values";
 
 /**
  * ⇧P（優先度）と e（工数）の小さな候補（coss ui の Combobox）。Base UI の Combobox を含むので、このモジュールは
@@ -64,11 +70,12 @@ type ValueOption<T> = { value: T | null; label: string; key: string };
 
 const NONE = { value: null, label: "なし", key: "0" } as const;
 
+/** 高・中・低・なし。キーは PRIORITY_KEYS（1・2・3・0）の順 */
 const PRIORITY_OPTIONS: readonly ValueOption<Priority>[] = [
   ...PRIORITIES.map((priority, i) => ({
     value: priority,
     label: PRIORITY_LABELS[priority],
-    key: String(i + 1),
+    key: PRIORITY_KEYS[i] ?? "",
   })),
   NONE,
 ];
@@ -84,11 +91,9 @@ export function pointsOptions(query: string): readonly ValueOption<Points>[] {
   return POINTS_OPTIONS.filter((option) => option.key.startsWith(q));
 }
 
-/** 押したキーが選ぶ優先度の候補（修飾キーなしの 1・2・3・0。全角の数字も読む） */
-function priorityOptionOfKey(event: KeyboardEvent): ValueOption<Priority> | undefined {
-  if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return undefined;
-  const key = event.key.normalize("NFKC");
-  return PRIORITY_OPTIONS.find((option) => option.key === key);
+/** その場で決めるキー（1・2・3・0。priorityKeyOf が読んだもの）が選ぶ優先度の候補 */
+function priorityOptionOfKey(key: string | undefined): ValueOption<Priority> | undefined {
+  return key === undefined ? undefined : PRIORITY_OPTIONS.find((option) => option.key === key);
 }
 
 /**
@@ -142,6 +147,7 @@ const ValuePickerPopup = observer(function ValuePickerPopup({
   picker,
   session,
   initialQuery,
+  initialKey,
 }: PickerPopupProps & { kind: ValueKind }) {
   const ui = useUi();
   const { store } = ui;
@@ -170,6 +176,20 @@ const ValuePickerPopup = observer(function ValuePickerPopup({
     // 並び方（手動以外）で並べていると、選んでいる行の位置が変わるので、見えるところまで動かす
     if (result.ok) ui.revealSelected();
   };
+
+  // 読み込みを待つあいだに押した 1・2・3・0 は、届いたら、候補の中で押したときと同じように決める（1回だけ）。
+  // そのときは候補を描かない（開いてすぐ閉じる候補を見せない）。待ちのあいだに閉じた候補には渡さない
+  const [pendingOption] = useState(() =>
+    priority && picker.session?.id === session.id ? priorityOptionOfKey(initialKey) : undefined,
+  );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: 届いた最初の1回だけ決める（そのあとの描き直しでは決めない）
+  useEffect(() => {
+    if (!pendingOption || picker.session?.id !== session.id) return;
+    choose(pendingOption);
+    // 描いていないので、消えるときのフェードもない
+    picker.left(session.id);
+  }, []);
+  if (pendingOption) return null;
 
   return (
     <Combobox<AnyOption>
@@ -220,7 +240,9 @@ const ValuePickerPopup = observer(function ValuePickerPopup({
                 event.preventBaseUIHandler();
                 return;
               }
-              const option = priority ? priorityOptionOfKey(event) : undefined;
+              const option = priority
+                ? priorityOptionOfKey(priorityKeyOf(event.nativeEvent))
+                : undefined;
               if (option) {
                 event.preventDefault();
                 event.preventBaseUIHandler();

@@ -3,7 +3,7 @@ import { defer } from "@/lib/deferred";
 import type { ListUi } from "@/tasks/list-ui";
 import { RowPicker, RowPickerHost } from "@/tasks/row-picker";
 import { useUi } from "@/tasks/ui-context";
-import { VALUE_LABELS, type ValueKind, valuePlaceholder } from "./values";
+import { priorityKeyOf, VALUE_LABELS, type ValueKind, valuePlaceholder } from "./values";
 
 /**
  * ⇧P（優先度）と e（工数）の小さな候補の開閉の状態と、それを描く枠。開閉は p の候補と同じ RowPicker で、
@@ -43,6 +43,8 @@ export function ValuePickerHosts({ task, detached }: { task: TaskRow; detached?:
       label={VALUE_LABELS[kind]}
       placeholder={(ids) => valuePlaceholder(kind, ids)}
       detached={detached}
+      // 優先度は、読み込みを待つあいだに押した 1・2・3・0 も、届いたらその場で決める（工数は打った数字を欄へ移す）
+      waitingKey={kind === "priority" ? priorityKeyOf : undefined}
     />
   ));
 }
