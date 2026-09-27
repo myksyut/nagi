@@ -1,5 +1,5 @@
 import { observer } from "mobx-react-lite";
-import { useState } from "react";
+import { useDeferredValue, useState } from "react";
 import { BeamLine } from "@/components/beam-line";
 import {
   Command,
@@ -46,6 +46,9 @@ export const CommandPalette = observer(function CommandPalette({
   const overlays = overlaysOf(context.ui);
   return (
     <CommandDialog
+      // フォーカスは閉じ込めるが、ページのスクロールは止めず、外の要素も隠さない
+      // （開くたびにページ全体のレイアウトと属性を変えて、1フレームを超えないように。外は背景が覆っている）
+      modal="trap-focus"
       open={overlays.palette}
       onOpenChange={(open) => {
         if (open) overlays.openPalette();
@@ -119,7 +122,9 @@ const PaletteContent = observer(function PaletteContent({
       });
     },
   };
-  const groups = paletteGroups(context, query, actions);
+  // 一覧は、入力欄より一歩遅れて描く（開いた最初のフレームと、打ったキーの反映を待たせない。2 万件の検索も含む）
+  const shownQuery = useDeferredValue(query, "");
+  const groups = paletteGroups(context, shownQuery, actions);
 
   const choose = (item: PaletteItem) => overlays.runFromPalette(item.run);
 

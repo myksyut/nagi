@@ -1,5 +1,3 @@
-import { m } from "motion/react";
-import { DURATION, EASE_OUT } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 
 /**
@@ -33,16 +31,21 @@ export function CompleteButton({
       )}
     >
       <svg viewBox="0 0 16 16" className="size-3" aria-hidden="true">
-        <m.path
+        {/* チェックは線を描くように出す（CSS の stroke-dashoffset。行ごとに Motion の部品を作らない） */}
+        <path
           d="M4 8.5 7 11.2 12 5.2"
           fill="none"
           stroke="currentColor"
           strokeWidth={1.8}
           strokeLinecap="round"
           strokeLinejoin="round"
-          initial={false}
-          animate={{ pathLength: done ? 1 : 0, opacity: done ? 1 : 0 }}
-          transition={{ duration: DURATION.exit, ease: EASE_OUT }}
+          pathLength={1}
+          strokeDasharray={1}
+          strokeDashoffset={done ? 0 : 1}
+          className={cn(
+            "transition-[stroke-dashoffset,opacity] duration-(--duration-exit) ease-out",
+            done ? "opacity-100" : "opacity-0",
+          )}
         />
       </svg>
     </button>

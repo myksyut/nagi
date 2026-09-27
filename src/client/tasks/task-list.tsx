@@ -2,7 +2,7 @@ import { ChevronRightIcon } from "lucide-react";
 import { autorun } from "mobx";
 import { observer } from "mobx-react-lite";
 import { AnimatePresence, m } from "motion/react";
-import { type ReactNode, useCallback } from "react";
+import { memo, type ReactNode, useCallback } from "react";
 import type { TaskRow } from "@/data";
 import { DURATION, EASE_OUT, LAYOUT_TRANSITION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
@@ -110,26 +110,83 @@ export const TaskList = observer(function TaskList({
     >
       {/* 描く範囲が飛んだら（完了ログの窓）作り直して、行の動きを出さない */}
       <AnimatePresence key={view.layoutKey?.() ?? "list"} initial={false} mode="popLayout">
-        {items.map((item) => (
-          <m.div
-            key={item.key}
-            layout="position"
-            initial={{ opacity: 0 }}
-            animate={{ opacity: 1 }}
-            exit={
-              item.type === "row"
-                ? { opacity: 0, x: 12, transition: { duration: DURATION.exit, ease: EASE_OUT } }
-                : { opacity: 0, transition: { duration: DURATION.exit } }
-            }
-            transition={{ ...LAYOUT_TRANSITION, opacity: { duration: DURATION.short } }}
-          >
-            <ItemView item={item} view={view} empty={empty} />
-          </m.div>
+        {positioned(items).map(({ item, position }) => (
+          <ListItem key={item.key} item={item} position={position} view={view} empty={empty} />
         ))}
       </AnimatePresence>
     </div>
   );
 });
+
+/**
+ * 項目ごとの「上から何番目か」。追加欄は数えない（追加欄を開いても、下の行を動かさない。
+ * 動かすのは、行が別のまとまりへ移る・抜けるときだけ）
+ */
+function positioned(items: readonly Item[]): { item: Item; position: number }[] {
+  let position = 0;
+  return items.map((item) => ({ item, position: item.type === "add" ? -1 : position++ }));
+}
+
+const ITEM_INITIAL = { opacity: 0 };
+const ITEM_ANIMATE = { opacity: 1 };
+const ROW_EXIT = { opacity: 0, x: 12, transition: { duration: DURATION.exit, ease: EASE_OUT } };
+const ITEM_EXIT = { opacity: 0, transition: { duration: DURATION.exit } };
+const ITEM_TRANSITION = { ...LAYOUT_TRANSITION, opacity: { duration: DURATION.short } };
+
+/** 同じ項目か（まとまりのオブジェクトは計算のたびに作り直されるので、中身で比べる） */
+function sameItem(a: Item, b: Item): boolean {
+  if (a.type !== b.type || a.key !== b.key) return false;
+  switch (a.type) {
+    case "row":
+      return b.type === "row" && a.task === b.task;
+    case "heading":
+      return b.type === "heading" && a.first === b.first && a.section.heading === b.section.heading;
+    case "fold":
+      return (
+        b.type === "fold" && a.open === b.open && a.section.fold?.label === b.section.fold?.label
+      );
+    case "add":
+    case "empty":
+      return true;
+  }
+}
+
+/**
+ * 一覧の1項目（Motion の layout アニメーションの単位）。上から何番目か（position）が変わったときだけ描き直し、
+ * そのときだけ Motion が位置を測って動かす。位置の変わらない行は、ほかの行の出入りで描き直さない
+ * （100 行の一覧で、完了のたびに全行を描き直して測らないように）
+ */
+const ListItem = memo(
+  function ListItem({
+    item,
+    position,
+    view,
+    empty,
+  }: {
+    item: Item;
+    position: number;
+    view: ListView;
+    empty?: ReactNode;
+  }) {
+    return (
+      <m.div
+        layout="position"
+        layoutDependency={position}
+        initial={ITEM_INITIAL}
+        animate={ITEM_ANIMATE}
+        exit={item.type === "row" ? ROW_EXIT : ITEM_EXIT}
+        transition={ITEM_TRANSITION}
+      >
+        <ItemView item={item} view={view} empty={empty} />
+      </m.div>
+    );
+  },
+  (a, b) =>
+    a.position === b.position &&
+    a.view === b.view &&
+    a.empty === b.empty &&
+    sameItem(a.item, b.item),
+);
 
 function ItemView({ item, view, empty }: { item: Item; view: ListView; empty?: ReactNode }) {
   switch (item.type) {
