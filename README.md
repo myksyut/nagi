@@ -59,8 +59,9 @@ components.json  # shadcn / coss ui の設定
 - すりガラス（`glass`。`backdrop-filter`）は、サイドバーとポップオーバー・ダイアログだけに使う。スクロールする一覧・カード・トーストには使わない（トーストは不透明の `bg-surface`）
 - 選んだ行は `row-selected`（紫の淡い背景と輪郭の光）、フォーカスの輪郭は `outline` で別に出す。上からの光は `body::before` に固定して置くだけで動かさない
 - プロジェクトの色は `lib/project-color.ts` の `projectColorOf` から取る（今は作成順で決める一時の形。データに色が入ったら中身だけを差し替える）
-- 右下の「＋」（`shell/add-button.tsx`）は、キーマップの `task.add`（n）をそのまま呼ぶ。完了の光の輪（`tasks/completion-ring.ts`）は、完了にする操作（`completeTasks`）が受け付けられたときに、丸の位置へ画面に固定した要素を置いて 300ms で外す
-- 画面の部品で件数などの変わりやすい値を読まない（完了のたびに画面ごと描き直し、一覧の全行を描き直してしまう）。見出しの件数は `ListScreen` に関数で渡し、見出しの一行の中だけで読む
+- 右下の「＋」（`shell/add-button.tsx`）は、キーマップの `task.add`（n）をそのまま呼ぶ。完了の光の輪（`tasks/completion-ring.ts`）は、完了にする操作（`completeTasks`）が受け付けられた直後に、丸をタスクの id から引いて（見えている丸を最大 20 個）、その位置へ画面に固定した要素を置いて 300ms で外す。途中で reduced motion に変わったらすぐ外す
+- 画面の部品で件数などの変わりやすい値を読まない（完了のたびに画面ごと描き直し、一覧の全行を描き直してしまう）。見出しの件数は `ListScreen` に関数で渡し、見出しの一行の中だけで読む。サイドバーの件数も `NavCountOf` の中だけで読む
+- 小さい補助の文字（`--muted-foreground`・`--faint-foreground`）は、地・面・サイドバーの上で 4.5:1 以上を保つ
 
 オフラインと失敗のとき（8）：
 

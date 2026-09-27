@@ -30,7 +30,7 @@ export function AddButton() {
         type="button"
         aria-label="タスクを追加"
         aria-keyshortcuts={key}
-        className="pointer-events-auto relative grid size-13.5 place-items-center rounded-full bg-(image:--fab) text-white shadow-[0_10px_30px_var(--fab-shadow),inset_0_0_0_1px_rgb(255_255_255/12%)] outline-none focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-ring"
+        className="pointer-events-auto relative grid size-13.5 place-items-center rounded-full bg-(image:--fab) text-primary-foreground shadow-[0_10px_30px_var(--fab-shadow),inset_0_0_0_1px_var(--fab-edge)] outline-none focus-visible:outline-2 focus-visible:outline-offset-3 focus-visible:outline-ring"
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => keymap.run(ADD_BINDING_ID, context)}
       >

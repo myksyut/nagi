@@ -3,7 +3,7 @@ import { Link, useRoute } from "wouter";
 import { type ProjectRow, useStore } from "@/data";
 import { projectColorOf } from "@/lib/project-color";
 import { projectPath } from "@/navigation";
-import { NavCount, navLinkClassName } from "@/shell/nav-parts";
+import { NavCountOf, navLinkClassName } from "@/shell/nav-parts";
 import { useTaskDropTarget } from "@/tasks/drag";
 import { useUi } from "@/tasks/ui-context";
 import { setTaskProject } from "./commands";
@@ -29,7 +29,6 @@ const ProjectNavItem = observer(function ProjectNavItem({ project }: { project: 
   const store = useStore();
   const path = projectPath(project.id);
   const [active] = useRoute(path);
-  const count = openCountOfProject(store, project.id);
   const { over, dropProps } = useTaskDropTarget((ids) => {
     setTaskProject(ui, ids, project.id);
     ui.focusList();
@@ -43,7 +42,7 @@ const ProjectNavItem = observer(function ProjectNavItem({ project }: { project: 
     >
       <ProjectDot color={projectColorOf(store, project.id)} className="mx-[3.5px] size-[9px]" />
       <span className="min-w-0 flex-1 truncate">{project.name}</span>
-      {count > 0 && <NavCount count={count} />}
+      <NavCountOf count={() => openCountOfProject(store, project.id)} />
     </Link>
   );
 });

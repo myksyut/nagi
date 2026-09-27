@@ -1,3 +1,4 @@
+import { observer } from "mobx-react-lite";
 import { AnimatePresence, m } from "motion/react";
 import { useState } from "react";
 import { DURATION, EASE_OUT } from "@/lib/motion";
@@ -25,6 +26,15 @@ export function navLinkClassName(active: boolean, dropping = false): string {
   );
 }
 
+/**
+ * 件数を読んで出す（0 件なら出さない）。件数はここでだけ読むので、件数が変わっても描き直すのは数字だけ
+ * （行のリンクやドラッグの受け口、色の点は描き直さない）
+ */
+export const NavCountOf = observer(function NavCountOf({ count }: { count: () => number }) {
+  const n = count();
+  return n > 0 ? <NavCount count={n} /> : null;
+});
+
 /** 件数の数字が入れ替わるときの動き（増えたら下から、減ったら上から。数字だけが小さく入れ替わる） */
 const COUNT_VARIANTS = {
   enter: (direction: number) => ({ y: direction * 6, opacity: 0 }),
@@ -47,13 +57,17 @@ export function NavCount({ count }: { count: number }) {
   if (last.count !== count) setLast({ count, direction: count > last.count ? 1 : -1 });
   const { direction } = last;
   return (
-    <span className="relative ml-auto inline-flex flex-none text-[11px] text-faint-foreground tabular-nums">
+    <span className="relative ml-auto inline-grid flex-none justify-items-end text-[11px] text-faint-foreground tabular-nums">
       <span className="sr-only">（{count}件）</span>
-      {/* 抜けていく数字は、新しい数字の位置に重ねる（popLayout） */}
-      <AnimatePresence initial={false} mode="popLayout" custom={direction}>
+      {/*
+        抜けていく数字は、新しい数字と同じ升目に重ねる。popLayout（抜けていく要素の位置を描き直しの途中で測る）は
+        使わない（完了のたびにレイアウトの計算を起こさないため）
+      */}
+      <AnimatePresence initial={false} custom={direction}>
         <m.span
           key={count}
           aria-hidden="true"
+          className="col-start-1 row-start-1"
           custom={direction}
           variants={COUNT_VARIANTS}
           initial="enter"

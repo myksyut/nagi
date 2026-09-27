@@ -3,13 +3,16 @@ import type { AppStore } from "@/data";
 
 /**
  * サイドバーに出す、プロジェクトごとの未完了の件数（受信箱・今日・予定・あとでにあるタスクの数）。
- * データ層のリスト（store.lists.inbox など）を数え直すだけの、画面側の計算。
  * データ層の openTaskCountOfProject は、プロジェクトごとに完了済み（全期間）まで並べ直すので、
  * サイドバーでずっと観測すると、完了のたびに全プロジェクトぶん完了済みを数え直してしまう（2 万件で重い）。
- * 未完了の行だけを見て、プロジェクト（行ごとに観測する）で数える。件数が変わらなければ知らせない
+ * ここでは未完了の区分（taskIndex.rows）だけを観測し、行の中身は peek() で読む。区分は行の出入りと
+ * プロジェクトの付け替え（projectId）で知らせるので、タイトル・メモ・チェックリストの保存では数え直さない。
+ * 件数が変わらなければ、読んでいる部品には知らせない
  */
 
 type Counts = ReadonlyMap<string, number>;
+
+const OPEN_PARTITIONS = ["inbox", "today", "scheduled", "later"] as const;
 
 function sameCounts(a: Counts, b: Counts): boolean {
   if (a.size !== b.size) return false;
@@ -17,26 +20,27 @@ function sameCounts(a: Counts, b: Counts): boolean {
   return true;
 }
 
+/** 数える本体（テストで数え直しの回数を数えられるよう、オブジェクトのメソッドにしてある） */
+export const openCountsCalculator = {
+  count(store: AppStore): Counts {
+    const counts = new Map<string, number>();
+    const index = store.replica.taskIndex;
+    for (const partition of OPEN_PARTITIONS) {
+      for (const row of index.rows(partition)) {
+        const { projectId } = row.peek();
+        if (projectId !== null) counts.set(projectId, (counts.get(projectId) ?? 0) + 1);
+      }
+    }
+    return counts;
+  },
+};
+
 const countsByStore = new WeakMap<AppStore, IComputedValue<Counts>>();
 
 function countsOf(store: AppStore): Counts {
   let counts = countsByStore.get(store);
   if (!counts) {
-    counts = computed(
-      () => {
-        const next = new Map<string, number>();
-        const { lists } = store;
-        for (const rows of [lists.inbox, lists.today, lists.scheduled, lists.later]) {
-          for (const row of rows) {
-            // プロジェクトの付け替え（p）では置き場が変わらないので、行ごとに観測する
-            const projectId = row.projectId;
-            if (projectId !== null) next.set(projectId, (next.get(projectId) ?? 0) + 1);
-          }
-        }
-        return next;
-      },
-      { equals: sameCounts },
-    );
+    counts = computed(() => openCountsCalculator.count(store), { equals: sameCounts });
     countsByStore.set(store, counts);
   }
   return counts.get();

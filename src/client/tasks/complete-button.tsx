@@ -1,9 +1,9 @@
 import { cn } from "@/lib/utils";
-import { COMPLETE_FOR_ATTRIBUTE } from "./completion-ring";
+import { completeButtonId } from "./completion-ring";
 
 /**
  * 行の左の丸（完了ボタン）。完了すると丸が埋まり、チェックが描かれる（約 150ms）。
- * 同時に丸から光の輪が広がる（completion-ring.ts。丸の位置をこの印で探す）。
+ * 同時に丸から光の輪が広がる（completion-ring.ts。丸の位置を、タスクの id から作った要素の id で引く）。
  * キーボードでは x を使うので、Tab では止まらない
  */
 export function CompleteButton({
@@ -23,7 +23,7 @@ export function CompleteButton({
       tabIndex={-1}
       aria-label={done ? `「${title}」の完了を外す` : `「${title}」を完了にする`}
       aria-pressed={done}
-      {...{ [COMPLETE_FOR_ATTRIBUTE]: taskId }}
+      id={completeButtonId(taskId)}
       onClick={(event) => {
         event.stopPropagation();
         onToggle();

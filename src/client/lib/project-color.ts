@@ -31,25 +31,41 @@ function compareStrings(a: string, b: string): number {
   return a < b ? -1 : a > b ? 1 : 0;
 }
 
-/** ストアごとの「プロジェクトの id → 色の名前」（プロジェクトが増えた・消えたときだけ計算し直す） */
+/** 色の割り当てが同じか（名前の変更やアーカイブでは色が変わらないので、読んでいる部品に知らせない） */
+function sameColors(
+  a: ReadonlyMap<string, ProjectColor>,
+  b: ReadonlyMap<string, ProjectColor>,
+): boolean {
+  if (a.size !== b.size) return false;
+  for (const [id, color] of a) if (b.get(id) !== color) return false;
+  return true;
+}
+
+/**
+ * ストアごとの「プロジェクトの id → 色の名前」。プロジェクトのどの変更でも計算し直すが、色の割り当てが同じなら
+ * 読んでいる部品（行のプロジェクト名の点など）には知らせない
+ */
 const colorMaps = new WeakMap<AppStore, IComputedValue<ReadonlyMap<string, ProjectColor>>>();
 
 function colorMapOf(store: AppStore): ReadonlyMap<string, ProjectColor> {
   let map = colorMaps.get(store);
   if (!map) {
-    map = computed(() => {
-      const projects = store.replica
-        .allProjects()
-        .map((project) => project.peek())
-        .filter((project) => project.deletedAt === null)
-        .sort((a, b) => compareStrings(a.createdAt, b.createdAt) || compareStrings(a.id, b.id));
-      return new Map(
-        projects.map((project, i) => [
-          project.id,
-          PROJECT_COLORS[i % PROJECT_COLORS.length] ?? PROJECT_COLORS[0],
-        ]),
-      );
-    });
+    map = computed(
+      () => {
+        const projects = store.replica
+          .allProjects()
+          .map((project) => project.peek())
+          .filter((project) => project.deletedAt === null)
+          .sort((a, b) => compareStrings(a.createdAt, b.createdAt) || compareStrings(a.id, b.id));
+        return new Map(
+          projects.map((project, i) => [
+            project.id,
+            PROJECT_COLORS[i % PROJECT_COLORS.length] ?? PROJECT_COLORS[0],
+          ]),
+        );
+      },
+      { equals: sameColors },
+    );
     colorMaps.set(store, map);
   }
   return map.get();

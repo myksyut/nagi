@@ -146,9 +146,13 @@
   /* フォーカスの輪郭。選んだ行の紫の光と見分けられるよう、白に近い色にする */
   --ring: #dcd6ff;
   --muted: rgb(255 255 255 / 5%);
-  --muted-foreground: #7d8197;
-  /* 件数・見出しなど、さらに控えめな文字 */
-  --faint-foreground: #6b6f85;
+  /*
+   * 控えめな文字（日付・行の右側の情報など）と、さらに控えめな文字（件数・まとまりの見出し・空の表示の案内）。
+   * どちらも、地・面（--surface）・サイドバー（ホバーと選んでいる行も）・上からの光の上で 4.5:1 以上
+   * （--muted-foreground は 5.2:1 以上、--faint-foreground は 4.8:1 以上）
+   */
+  --muted-foreground: #8b8fa6;
+  --faint-foreground: #84889e;
   --accent: rgb(255 255 255 / 6%);
   --accent-foreground: #f1f1f6;
   --primary: #8b5cf6;
@@ -180,6 +184,7 @@
   /* 右下の「＋」：紫から水色へ */
   --fab: linear-gradient(135deg, #8b5cf6, #6366f1 55%, #38bdf8);
   --fab-shadow: rgb(99 102 241 / 45%);
+  --fab-edge: rgb(255 255 255 / 12%);
   /* リストの色（アイコン）。赤系は使わない */
   --list-inbox: #60a5fa;
   --list-today: #fbbf24;
@@ -293,7 +298,8 @@
 /*
  * 完了の光の輪（tasks/completion-ring.ts が画面に固定して置き、終わったら外す）。
  * 丸が埋まるのに合わせて広がりながら消える。動かすのは transform（scale）と opacity だけ。
- * prefers-reduced-motion のときは置かない（下の規則で animation も止まる）
+ * prefers-reduced-motion のときは置かない（出ているあいだに設定が変わったら、completion-ring.ts が外し、
+ * 下の規則でも隠す）
  */
 @layer components {
   .complete-ring {
@@ -340,6 +346,10 @@
         color, background-color, border-color, outline-color, text-decoration-color, fill, stroke !important;
       animation: none !important;
       /* biome-ignore-end lint/complexity/noImportantStyles: 同上 */
+    }
+    /* 完了の光の輪は出さない（輪が出ているあいだに設定を変えたときも、止まった輪を見せない） */
+    .complete-ring {
+      display: none;
     }
   }
 }

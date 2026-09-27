@@ -1,6 +1,6 @@
 import { observer } from "mobx-react-lite";
 import { Link, useRoute } from "wouter";
-import { useStore } from "@/data";
+import { type AppStore, useStore } from "@/data";
 import { dateEntryOf } from "@/features/dates/date-entry";
 import { ProjectNavItems } from "@/features/projects/project-nav";
 import { moveTasks } from "@/tasks/commands";
@@ -8,7 +8,7 @@ import { useTaskDropTarget } from "@/tasks/drag";
 import { useUi } from "@/tasks/ui-context";
 import { BUCKET_LISTS, type ListEntry, type ListKey, LOGBOOK } from "../navigation";
 import { LIST_ICONS } from "./list-icons";
-import { NavCount, navLinkClassName } from "./nav-parts";
+import { NavCountOf, navLinkClassName } from "./nav-parts";
 
 /**
  * 左のサイドバー（すりガラス）。上から、名前、受信箱・今日・予定・あとで（色の付いたアイコンと未完了の件数）、
@@ -52,9 +52,8 @@ export function Sidebar() {
   );
 }
 
-/** 未完了の件数（データ層のリストの計算を読むだけ）。完了ログには出さない。0 件のときは出さない */
-function useCount(key: ListKey): number {
-  const { lists } = useStore();
+/** 未完了の件数（データ層のリストの計算を読むだけ）。完了ログには出さない（0 件のときは出さない） */
+function countOf({ lists }: AppStore, key: ListKey): number {
   switch (key) {
     case "inbox":
       return lists.inboxCount;
@@ -89,8 +88,8 @@ function useListDrop(key: ListKey) {
 }
 
 const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
+  const store = useStore();
   const [active] = useRoute(list.path);
-  const count = useCount(list.key);
   const { over, dropProps } = useListDrop(list.key);
   const { Icon, color } = LIST_ICONS[list.key];
   return (
@@ -102,7 +101,7 @@ const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
     >
       <Icon aria-hidden="true" className="size-4 flex-none" style={{ color }} strokeWidth={1.75} />
       <span className="min-w-0 flex-1 truncate">{list.label}</span>
-      {count > 0 && <NavCount count={count} />}
+      <NavCountOf count={() => countOf(store, list.key)} />
     </Link>
   );
 });

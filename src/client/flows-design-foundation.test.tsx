@@ -2,6 +2,7 @@ import { act, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AppStore } from "./data";
+import { completeButtonId } from "./tasks/completion-ring";
 import { FakeServer } from "./test/fake-server";
 import { makeProject, makeTask } from "./test/fixtures";
 import { setupApp } from "./test/render-app";
@@ -235,21 +236,25 @@ describe("完了の光の輪（実際の x・丸の操作から）", () => {
     vi.restoreAllMocks();
   });
 
-  it("x で完了にすると、丸の位置に輪が出る", async () => {
+  it("x で完了にすると、丸の位置に輪が出る（丸の位置は1回だけ読む）", async () => {
     const user = userEvent.setup();
     const server = new FakeServer();
-    server.putTask(makeTask({ title: "A", bucket: "today" }));
+    const task = server.putTask(makeTask({ title: "A", bucket: "today" }));
     const { store } = await setupApp("/today", server);
     stores.push(store);
     await act(async () => {
       await store.sync();
     });
     await screen.findByRole("listbox", { name: "今日" });
+    const button = document.getElementById(completeButtonId(task.id));
+    if (!button) throw new Error("丸が見つかりません");
+    const read = vi.spyOn(button, "getBoundingClientRect");
 
     expect(document.querySelectorAll("[data-complete-ring]")).toHaveLength(0);
     await user.keyboard("j");
     await user.keyboard("x");
     expect(document.querySelectorAll("[data-complete-ring]")).toHaveLength(1);
+    expect(read).toHaveBeenCalledTimes(1);
   });
 
   it("reduced motion のときは出ない", async () => {
@@ -292,16 +297,19 @@ describe("完了の光の輪（実際の x・丸の操作から）", () => {
     expect(document.querySelectorAll("[data-complete-ring]")).toHaveLength(0);
   });
 
-  it("オフラインで断られたときは出ない", async () => {
+  it("オフラインで断られたときは出さず、丸の位置も読まない", async () => {
     const user = userEvent.setup();
     const server = new FakeServer();
-    server.putTask(makeTask({ title: "A", bucket: "today" }));
+    const task = server.putTask(makeTask({ title: "A", bucket: "today" }));
     const { store } = await setupApp("/today", server);
     stores.push(store);
     await act(async () => {
       await store.sync();
     });
     await screen.findByRole("listbox", { name: "今日" });
+    const button = document.getElementById(completeButtonId(task.id));
+    if (!button) throw new Error("丸が見つかりません");
+    const read = vi.spyOn(button, "getBoundingClientRect");
 
     await act(async () => {
       window.dispatchEvent(new Event("offline"));
@@ -310,5 +318,7 @@ describe("完了の光の輪（実際の x・丸の操作から）", () => {
     await user.keyboard("x");
     expect(store.lists.completedTodayCount).toBe(0);
     expect(document.querySelectorAll("[data-complete-ring]")).toHaveLength(0);
+    // 断られた操作では、レイアウトの計算を起こさない
+    expect(read).not.toHaveBeenCalled();
   });
 });
