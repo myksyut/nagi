@@ -1,6 +1,7 @@
 import {
   CalendarDaysIcon,
   CalendarRangeIcon,
+  ChartNoAxesGanttIcon,
   CheckIcon,
   InboxIcon,
   LayersIcon,
@@ -24,4 +25,5 @@ export const LIST_ICONS: Record<ListKey, { Icon: LucideIcon; color: string }> = 
 /** 「ビュー」のアイコンと色（カレンダー：紫、タイムライン：緑） */
 export const VIEW_ICONS: Record<ViewKey, { Icon: LucideIcon; color: string }> = {
   calendar: { Icon: CalendarRangeIcon, color: "var(--list-calendar)" },
+  timeline: { Icon: ChartNoAxesGanttIcon, color: "var(--list-timeline)" },
 };

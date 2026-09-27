@@ -22,8 +22,11 @@ const LISTS = [
   { path: "/logbook", label: "完了ログ" },
 ] as const;
 
-/** 「ビュー」の見出しの下の画面（13）。サイドバーでは「いつやるか」のリストと完了ログのあいだに並ぶ */
-const VIEWS = [{ path: "/calendar", label: "カレンダー" }] as const;
+/** 「ビュー」の見出しの下の画面（13・14）。サイドバーでは「いつやるか」のリストと完了ログのあいだに並ぶ */
+const VIEWS = [
+  { path: "/calendar", label: "カレンダー" },
+  { path: "/timeline", label: "タイムライン" },
+] as const;
 
 /** サイドバーのリンクの並び（プロジェクトがないとき） */
 const SIDEBAR_LINKS = [...LISTS.slice(0, 4), ...VIEWS, ...LISTS.slice(4)];

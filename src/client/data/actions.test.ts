@@ -1,12 +1,13 @@
-import type { Mutation } from "@shared/mutations";
+import type { Task } from "@shared/model";
+import { MAX_MUTATIONS_PER_BATCH, type Mutation } from "@shared/mutations";
 import { rankAfter } from "@shared/rank";
 import { describe, expect, it } from "vitest";
 import { makeProject, makeTask } from "../test/fixtures";
 import { normalizeTaskChanges, type OperationResult, TaskActions } from "./actions";
-import { LogicalDay } from "./logical-day";
-import type { OperationKind } from "./replica";
+import { addDays, LogicalDay } from "./logical-day";
+import type { OperationKind, PendingBatch } from "./replica";
 import { Replica } from "./replica";
-import { UndoStack } from "./undo";
+import { buildInverse, UndoStack } from "./undo";
 
 /** 11. 操作の入口の決まり */
 
@@ -43,6 +44,42 @@ function setup(now: () => Date = () => new Date("2026-01-15T05:00:00.000Z")) {
     },
   });
   return { replica, day, actions, performed };
+}
+
+/**
+ * shiftTaskDates（14：タイムライン）用に、perform を実際に replica へ重ね、元に戻す（undo）の控えも積む setup
+ * （AppStore.#perform と同じ契約：mutations を重ねて undoStack に逆向きを積む。500 件を超えたら too-many）。
+ * moveTasks → setDeadline と続けてかけた結果と、shiftTaskDates 1回の結果を比べたり、⌘Z 相当を確かめるのに使う
+ */
+function setupLive(now: () => Date = () => new Date("2026-01-15T05:00:00.000Z")) {
+  const replica = new Replica();
+  const day = new LogicalDay({ now, timeZone: "Asia/Tokyo" });
+  const undoStack = new UndoStack();
+  let nextId = 0;
+  const actions = new TaskActions({
+    replica,
+    day,
+    undoStack,
+    now,
+    newId: () => `new-id-${++nextId}`,
+    perform: (kind, mutations, options): OperationResult => {
+      if (mutations.length === 0) return { ok: false, reason: "noop" };
+      if (mutations.length > MAX_MUTATIONS_PER_BATCH) return { ok: false, reason: "too-many" };
+      const id = `batch-${++nextId}`;
+      const inverse =
+        options?.undoable === false
+          ? null
+          : buildInverse(mutations, {
+              task: (taskId) => replica.task(taskId)?.peek(),
+              project: (projectId) => replica.project(projectId)?.peek(),
+            });
+      const batch: PendingBatch = { id, mutations, at: now().toISOString(), operationId: id, kind };
+      replica.addPending([batch]);
+      if (inverse) undoStack.push({ operationId: id, kind, inverse });
+      return { ok: true, operationId: id, ids: [...new Set(mutations.map(targetIdOf))] };
+    },
+  });
+  return { replica, day, actions };
 }
 
 describe("addTask", () => {
@@ -869,3 +906,396 @@ describe("setProject", () => {
     ]);
   });
 });
+
+describe("shiftTaskDates（14：タイムラインの棒の真ん中のドラッグ）", () => {
+  it("予定＋締切を未来へ：やる日・締切とも days ずれ、予定のまま", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({
+      bucket: "scheduled",
+      scheduledOn: addDays(day.today, 5),
+      deadlineOn: addDays(day.today, 10),
+    });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    const result = actions.shiftTaskDates([task.id], 10);
+
+    expect(result.ok).toBe(true);
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "task.update",
+      id: task.id,
+      // bucket はすでに scheduled なので送らない（変わらない項目は送らない決まり）
+      changes: {
+        scheduledOn: addDays(day.today, 15),
+        deadlineOn: addDays(day.today, 20),
+      },
+    });
+  });
+
+  it("予定を今日以前へ：今日の一番下へ入る", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({ bucket: "scheduled", scheduledOn: addDays(day.today, 5), rank: "zz" });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    const result = actions.shiftTaskDates([task.id], -20);
+
+    expect(result.ok).toBe(true);
+    const mutation = performed[0]?.mutations[0];
+    expect(mutation).toMatchObject({
+      type: "task.update",
+      id: task.id,
+      changes: { bucket: "today", scheduledOn: null },
+    });
+    const rank = mutation?.type === "task.update" ? mutation.changes.rank : undefined;
+    expect(typeof rank).toBe("string");
+  });
+
+  it("今日のタスクを未来へ：予定へ移り、予定の一番下の rank が付く", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({ bucket: "today", rank: "a5" });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    const result = actions.shiftTaskDates([task.id], 7);
+
+    expect(result.ok).toBe(true);
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "task.update",
+      id: task.id,
+      changes: { bucket: "scheduled", scheduledOn: addDays(day.today, 7) },
+    });
+  });
+
+  it("今日のタスクを過去へ：今日のまま動かず、締切だけ動く", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({
+      bucket: "today",
+      rank: "a5",
+      deadlineOn: addDays(day.today, 10),
+    });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    const result = actions.shiftTaskDates([task.id], -20);
+
+    expect(result.ok).toBe(true);
+    const mutation = performed[0]?.mutations[0];
+    expect(mutation).toMatchObject({
+      type: "task.update",
+      id: task.id,
+      changes: { deadlineOn: addDays(day.today, -10) },
+    });
+    // bucket・scheduledOn・rank は送らない（今日のまま動かさない）
+    const changes = mutation?.type === "task.update" ? Object.keys(mutation.changes) : [];
+    expect(changes).toEqual(["deadlineOn"]);
+  });
+
+  it("進行中の今日のタスクを未来へ：予定へ出るので startedAt が消える", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({ bucket: "today", rank: "a5", startedAt: "2026-01-14T00:00:00.000Z" });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    const result = actions.shiftTaskDates([task.id], 3);
+
+    expect(result.ok).toBe(true);
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "task.update",
+      id: task.id,
+      changes: { bucket: "scheduled", scheduledOn: addDays(day.today, 3), startedAt: null },
+    });
+  });
+
+  it("あとで＋締切を今日以前へ：今日の到着の位置へ移り、arrivedOn が付く", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({ bucket: "later", rank: "a5", deadlineOn: addDays(day.today, 5) });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    const result = actions.shiftTaskDates([task.id], -20);
+
+    expect(result.ok).toBe(true);
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "task.update",
+      id: task.id,
+      // scheduledOn はもともと null（あとで）なので送らない（変わらない項目は送らない決まり）
+      changes: {
+        bucket: "today",
+        deadlineOn: addDays(day.today, -15),
+        arrivedOn: day.today,
+      },
+    });
+  });
+
+  it("受信箱＋締切を今日以前へ：受信箱のまま、締切だけ動く", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({ bucket: "inbox", rank: "a5", deadlineOn: addDays(day.today, 5) });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    const result = actions.shiftTaskDates([task.id], -20);
+
+    expect(result.ok).toBe(true);
+    const mutation = performed[0]?.mutations[0];
+    expect(mutation).toMatchObject({
+      type: "task.update",
+      id: task.id,
+      changes: { deadlineOn: addDays(day.today, -15) },
+    });
+    const changes = mutation?.type === "task.update" ? Object.keys(mutation.changes) : [];
+    expect(changes).toEqual(["deadlineOn"]);
+  });
+
+  it("予定の日付が今日より後のまま、締切だけ今日以前になる：今日の到着の位置へ（予定は捨てる）", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({
+      bucket: "scheduled",
+      rank: "a5",
+      scheduledOn: addDays(day.today, 20),
+      deadlineOn: addDays(day.today, 5),
+    });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    const result = actions.shiftTaskDates([task.id], -10);
+
+    expect(result.ok).toBe(true);
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "task.update",
+      id: task.id,
+      changes: {
+        bucket: "today",
+        scheduledOn: null,
+        deadlineOn: addDays(day.today, -5),
+        arrivedOn: day.today,
+      },
+    });
+  });
+
+  it("締切なしはやる日だけ動く（deadlineOn は送らない）", () => {
+    const { replica, actions, performed, day } = setup();
+    const task = makeTask({ bucket: "scheduled", scheduledOn: addDays(day.today, 5) });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    actions.shiftTaskDates([task.id], 3);
+
+    const mutation = performed[0]?.mutations[0];
+    const changes = mutation?.type === "task.update" ? Object.keys(mutation.changes) : [];
+    expect(changes).not.toContain("deadlineOn");
+  });
+
+  it("やる日も締切もない・完了・削除のタスクは対象外で noop", () => {
+    const { replica, actions, performed } = setup();
+    const noDates = makeTask({ bucket: "inbox" });
+    const completed = makeTask({
+      bucket: "scheduled",
+      scheduledOn: "2026-02-01",
+      completedAt: "2026-01-14T00:00:00.000Z",
+    });
+    const deleted = makeTask({
+      bucket: "scheduled",
+      scheduledOn: "2026-02-01",
+      deletedAt: "2026-01-14T00:00:00.000Z",
+    });
+    replica.replaceConfirmed(
+      [noDates, completed, deleted].map((row) => ({ kind: "task" as const, row })),
+    );
+
+    const result = actions.shiftTaskDates([noDates.id, completed.id, deleted.id], 5);
+
+    expect(result).toEqual({ ok: false, reason: "noop" });
+    expect(performed).toHaveLength(0);
+  });
+
+  it("days が 0 は noop、整数でなければ invalid（対象を読む前に断る）", () => {
+    const { replica, actions, performed } = setup();
+    const task = makeTask({ bucket: "today" });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    expect(actions.shiftTaskDates([task.id], 0)).toEqual({ ok: false, reason: "noop" });
+    expect(actions.shiftTaskDates([task.id], 1.5)).toEqual({ ok: false, reason: "invalid" });
+    expect(actions.shiftTaskDates([task.id], Number.NaN)).toEqual({ ok: false, reason: "invalid" });
+    expect(performed).toHaveLength(0);
+  });
+
+  it("複数の id をまとめて渡しても1つの操作（1回の perform）", () => {
+    const { replica, actions, performed, day } = setup();
+    const a = makeTask({ bucket: "today", rank: "a1" });
+    const b = makeTask({ bucket: "scheduled", scheduledOn: addDays(day.today, 3), rank: "a2" });
+    replica.replaceConfirmed([a, b].map((row) => ({ kind: "task" as const, row })));
+
+    const result = actions.shiftTaskDates([a.id, b.id], 2);
+
+    expect(result.ok).toBe(true);
+    expect(performed).toHaveLength(1);
+    expect(performed[0]?.mutations).toHaveLength(2);
+  });
+
+  it("501 件は too-many で、何も送らない（AppStore と同じ 500 件の上限）", () => {
+    const { replica, actions } = setupLive();
+    const tasks = Array.from({ length: 501 }, () => makeTask({ bucket: "today", rank: "a0" }));
+    replica.replaceConfirmed(tasks.map((row) => ({ kind: "task" as const, row })));
+
+    const result = actions.shiftTaskDates(
+      tasks.map((t) => t.id),
+      5,
+    );
+
+    expect(result).toEqual({ ok: false, reason: "too-many" });
+    expect(replica.pending).toHaveLength(0);
+  });
+
+  it("⌘Z 相当：actions.undo() 1回で、やる日・締切がともに元へ戻る", () => {
+    const { replica, actions, day } = setupLive();
+    const task = makeTask({
+      bucket: "scheduled",
+      scheduledOn: addDays(day.today, 5),
+      deadlineOn: addDays(day.today, 10),
+    });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    actions.shiftTaskDates([task.id], 10);
+    expect(replica.task(task.id)?.peek().scheduledOn).toBe(addDays(day.today, 15));
+    expect(replica.task(task.id)?.peek().deadlineOn).toBe(addDays(day.today, 20));
+
+    const undoResult = actions.undo();
+
+    expect(undoResult.ok).toBe(true);
+    expect(replica.task(task.id)?.peek().scheduledOn).toBe(addDays(day.today, 5));
+    expect(replica.task(task.id)?.peek().deadlineOn).toBe(addDays(day.today, 10));
+  });
+
+  describe("d（moveTasks）と ⇧D（setDeadline）を続けてかけたときと同じ結果になる", () => {
+    it("予定＋締切を未来へ", () => {
+      const days = 12;
+      const initial = {
+        bucket: "scheduled" as const,
+        scheduledOn: "2026-01-20",
+        deadlineOn: "2026-01-25",
+      };
+
+      const shifted = setupLive();
+      const shiftedTask = makeTask(initial);
+      shifted.replica.replaceConfirmed([{ kind: "task", row: shiftedTask }]);
+      shifted.actions.shiftTaskDates([shiftedTask.id], days);
+
+      const sequential = setupLive();
+      const sequentialTask = makeTask(initial);
+      sequential.replica.replaceConfirmed([{ kind: "task", row: sequentialTask }]);
+      sequential.actions.moveTasks([sequentialTask.id], {
+        bucket: "scheduled",
+        on: addDays(initial.scheduledOn, days),
+      });
+      sequential.actions.setDeadline([sequentialTask.id], addDays(initial.deadlineOn, days));
+
+      expect(withoutId(shifted.replica.task(shiftedTask.id)?.peek())).toEqual(
+        withoutId(sequential.replica.task(sequentialTask.id)?.peek()),
+      );
+    });
+
+    it("予定の日付が今日より後のまま、締切だけ今日以前になる（到着）", () => {
+      const days = -10;
+      const initial = {
+        bucket: "scheduled" as const,
+        scheduledOn: "2026-02-01",
+        deadlineOn: "2026-01-20",
+      };
+
+      const shifted = setupLive();
+      const shiftedTask = makeTask(initial);
+      shifted.replica.replaceConfirmed([{ kind: "task", row: shiftedTask }]);
+      shifted.actions.shiftTaskDates([shiftedTask.id], days);
+
+      const sequential = setupLive();
+      const sequentialTask = makeTask(initial);
+      sequential.replica.replaceConfirmed([{ kind: "task", row: sequentialTask }]);
+      sequential.actions.moveTasks([sequentialTask.id], {
+        bucket: "scheduled",
+        on: addDays(initial.scheduledOn, days),
+      });
+      sequential.actions.setDeadline([sequentialTask.id], addDays(initial.deadlineOn, days));
+
+      expect(withoutId(shifted.replica.task(shiftedTask.id)?.peek())).toEqual(
+        withoutId(sequential.replica.task(sequentialTask.id)?.peek()),
+      );
+    });
+
+    it("あとで＋締切を今日以前へ（d は効かず、⇧D だけと同じ）", () => {
+      const days = -20;
+      const initial = { bucket: "later" as const, deadlineOn: "2026-01-20" };
+
+      const shifted = setupLive();
+      const shiftedTask = makeTask(initial);
+      shifted.replica.replaceConfirmed([{ kind: "task", row: shiftedTask }]);
+      shifted.actions.shiftTaskDates([shiftedTask.id], days);
+
+      const sequential = setupLive();
+      const sequentialTask = makeTask(initial);
+      sequential.replica.replaceConfirmed([{ kind: "task", row: sequentialTask }]);
+      sequential.actions.setDeadline([sequentialTask.id], addDays(initial.deadlineOn, days));
+
+      expect(withoutId(shifted.replica.task(shiftedTask.id)?.peek())).toEqual(
+        withoutId(sequential.replica.task(sequentialTask.id)?.peek()),
+      );
+    });
+
+    /**
+     * 同じ内容の行に、shiftTaskDates 1回と、ずらした日で d → ⇧D を続けてかけたものを比べる
+     * （やる日は、予定は予定の日付、今日のタスクは今日。ない方はかけない）
+     */
+    function expectSameAsSequential(initial: Partial<Task>, days: number) {
+      const shifted = setupLive();
+      const shiftedTask = makeTask(initial);
+      shifted.replica.replaceConfirmed([{ kind: "task", row: shiftedTask }]);
+      expect(shifted.actions.shiftTaskDates([shiftedTask.id], days).ok).toBe(true);
+
+      const sequential = setupLive();
+      const sequentialTask = makeTask(initial);
+      sequential.replica.replaceConfirmed([{ kind: "task", row: sequentialTask }]);
+      const doOn =
+        sequentialTask.bucket === "today"
+          ? sequential.day.today
+          : sequentialTask.bucket === "scheduled"
+            ? sequentialTask.scheduledOn
+            : null;
+      if (doOn !== null) {
+        sequential.actions.moveTasks([sequentialTask.id], {
+          bucket: "scheduled",
+          on: addDays(doOn, days),
+        });
+      }
+      if (sequentialTask.deadlineOn !== null) {
+        sequential.actions.setDeadline(
+          [sequentialTask.id],
+          addDays(sequentialTask.deadlineOn, days),
+        );
+      }
+
+      expect(withoutId(shifted.replica.task(shiftedTask.id)?.peek())).toEqual(
+        withoutId(sequential.replica.task(sequentialTask.id)?.peek()),
+      );
+    }
+
+    it("予定＋締切を今日以前へ（今日の一番下へ入り、締切も過去へ）", () => {
+      expectSameAsSequential(
+        { bucket: "scheduled", scheduledOn: "2026-01-18", deadlineOn: "2026-01-20" },
+        -10,
+      );
+    });
+
+    it("進行中の今日のタスク＋締切を未来へ（予定へ出て、未着手に戻る）", () => {
+      expectSameAsSequential(
+        {
+          bucket: "today",
+          startedAt: "2026-01-15T01:00:00.000Z",
+          deadlineOn: "2026-01-17",
+        },
+        4,
+      );
+    });
+
+    it("今日のタスク＋締切を過去へ（今日のまま、締切だけ動く）", () => {
+      expectSameAsSequential({ bucket: "today", deadlineOn: "2026-01-17" }, -5);
+    });
+  });
+});
+
+/** 比べるときに邪魔な id（別の makeTask から作った行なので当然違う）を外す */
+function withoutId(task: { id: string } | undefined): unknown {
+  if (!task) return task;
+  const { id: _id, ...rest } = task;
+  return rest;
+}
