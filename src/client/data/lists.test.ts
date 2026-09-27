@@ -1,16 +1,23 @@
+import { autorun, reaction } from "mobx";
 import { describe, expect, it } from "vitest";
 import { makeProject, makeTask } from "../test/fixtures";
-import { TaskLists } from "./lists";
+import { PROJECT_BOARD_COMPLETED_DAYS, TaskLists } from "./lists";
 import { LogicalDay } from "./logical-day";
 import { Replica } from "./replica";
 
-/** 4. 各リストの中身と並び */
+/** 4. 各リストの中身と並び。10：ボードの計算（todayBoard・projectBoard・projectColors）と観測の取りこぼし */
 
 function setup(now: () => Date = () => new Date("2026-01-15T05:00:00.000Z")) {
   const replica = new Replica();
   const day = new LogicalDay({ now, timeZone: "Asia/Tokyo" });
   const lists = new TaskLists(replica, day);
   return { replica, day, lists };
+}
+
+let seqCounter = 0;
+function nextSeq(): number {
+  seqCounter += 1;
+  return seqCounter;
 }
 
 describe("受信箱", () => {
@@ -209,5 +216,281 @@ describe("日付の切り替わりの前後", () => {
     expect(lists.isArrivedToday(byId("id-arrived"))).toBe(true);
     expect(lists.isArrivedToday(byId("id-old"))).toBe(false);
     expect(lists.isArrivedToday(byId("id-none"))).toBe(false);
+  });
+});
+
+describe("todayBoard", () => {
+  it("今日のタスクを未着手・進行中・完了に分ける。未着手と進行中は今日の並び順、完了は completedToday と同じ", () => {
+    const { replica, lists } = setup();
+    const notStarted = makeTask({ bucket: "today", rank: "a1" });
+    const inProgress = makeTask({
+      bucket: "today",
+      rank: "a0",
+      startedAt: "2026-01-15T00:00:00.000Z",
+    });
+    const completed = makeTask({
+      bucket: "later",
+      completedAt: "2026-01-15T01:00:00.000Z",
+    });
+    const notToday = makeTask({ bucket: "later" });
+    replica.replaceConfirmed(
+      [notStarted, inProgress, completed, notToday].map((row) => ({
+        kind: "task" as const,
+        row,
+      })),
+    );
+
+    const board = lists.todayBoard;
+    expect(board.notStarted.map((t) => t.id)).toEqual([notStarted.id]);
+    expect(board.inProgress.map((t) => t.id)).toEqual([inProgress.id]);
+    expect(board.completed.map((t) => t.id)).toEqual([completed.id]);
+    expect(lists.inProgressToday.map((t) => t.id)).toEqual([inProgress.id]);
+    expect(lists.inProgressTodayCount).toBe(1);
+  });
+});
+
+describe("projectBoard", () => {
+  it("未着手は置き場ごと（今日は進行中を除く）、進行中は今日の並び順、完了は直近 PROJECT_BOARD_COMPLETED_DAYS 日", () => {
+    const { replica, lists } = setup();
+    const projectId = "proj-1";
+    const todayNotStarted = makeTask({ bucket: "today", rank: "a0", projectId });
+    const todayInProgress = makeTask({
+      bucket: "today",
+      rank: "a1",
+      projectId,
+      startedAt: "2026-01-15T00:00:00.000Z",
+    });
+    const scheduled = makeTask({ bucket: "scheduled", scheduledOn: "2026-02-01", projectId });
+    const later = makeTask({ bucket: "later", projectId });
+    const inbox = makeTask({ bucket: "inbox", projectId });
+    // 直近7日（今日を含む論理日付）に完了したもの
+    const recentlyCompleted = makeTask({
+      bucket: "later",
+      projectId,
+      completedAt: "2026-01-10T00:00:00.000Z",
+    });
+    // 7日より前に完了したもの（プロジェクトのボードの完了列には出ない）
+    const oldCompleted = makeTask({
+      bucket: "later",
+      projectId,
+      completedAt: "2025-12-01T00:00:00.000Z",
+    });
+    replica.replaceConfirmed(
+      [
+        todayNotStarted,
+        todayInProgress,
+        scheduled,
+        later,
+        inbox,
+        recentlyCompleted,
+        oldCompleted,
+      ].map((row) => ({ kind: "task" as const, row })),
+    );
+
+    const board = lists.projectBoard(projectId);
+    expect(board.notStarted.today.map((t) => t.id)).toEqual([todayNotStarted.id]);
+    expect(board.notStarted.scheduled.map((t) => t.id)).toEqual([scheduled.id]);
+    expect(board.notStarted.later.map((t) => t.id)).toEqual([later.id]);
+    expect(board.notStarted.inbox.map((t) => t.id)).toEqual([inbox.id]);
+    expect(board.inProgress.map((t) => t.id)).toEqual([todayInProgress.id]);
+    expect(board.completed.map((t) => t.id)).toEqual([recentlyCompleted.id]);
+    expect(lists.inProgressCountOfProject(projectId)).toBe(1);
+  });
+
+  it("完了の境目は PROJECT_BOARD_COMPLETED_DAYS 日ちょうど前の論理日付を含む", () => {
+    const { replica, lists, day } = setup();
+    const projectId = "proj-1";
+    const boundary = makeTask({
+      bucket: "later",
+      projectId,
+      completedAt: `2026-01-${String(15 - (PROJECT_BOARD_COMPLETED_DAYS - 1)).padStart(2, "0")}T05:00:00.000Z`,
+    });
+    replica.replaceConfirmed([{ kind: "task", row: boundary }]);
+    expect(day.today).toBe("2026-01-15");
+    expect(lists.projectBoard(projectId).completed.map((t) => t.id)).toEqual([boundary.id]);
+  });
+});
+
+describe("projectColors / projectColor", () => {
+  it("color があればその色、なければ作成順（アーカイブ済みも数に入る）で決まる色。削除済みは undefined", () => {
+    const { replica, lists } = setup();
+    const first = makeProject({ createdAt: "2026-01-01T00:00:00.000Z" });
+    const archived = makeProject({
+      createdAt: "2026-01-02T00:00:00.000Z",
+      archivedAt: "2026-01-03T00:00:00.000Z",
+    });
+    const withColor = makeProject({ createdAt: "2026-01-03T00:00:00.000Z", color: "pink" });
+    const deleted = makeProject({
+      createdAt: "2026-01-04T00:00:00.000Z",
+      deletedAt: "2026-01-05T00:00:00.000Z",
+    });
+    replica.replaceConfirmed(
+      [first, archived, withColor, deleted].map((row) => ({ kind: "project" as const, row })),
+    );
+
+    expect(lists.projectColor(first.id)).toBe("violet");
+    expect(lists.projectColor(archived.id)).toBe("sky");
+    expect(lists.projectColor(withColor.id)).toBe("pink");
+    expect(lists.projectColor(deleted.id)).toBeUndefined();
+    expect(lists.projectColors.size).toBe(3);
+  });
+});
+
+describe("観測の取りこぼしがないこと", () => {
+  it("並びが変わらないまま進行中にする・戻すと、todayBoard を読む autorun が再実行される", () => {
+    const { replica, lists } = setup();
+    const task = makeTask({ bucket: "today", rank: "a0", seq: nextSeq() });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+
+    let seen: string[] = [];
+    const dispose = autorun(() => {
+      seen = lists.todayBoard.inProgress.map((t) => t.id);
+    });
+    expect(seen).toEqual([]);
+
+    // 別のタブが同じタスクを進行中にした、という体で確定データに差分を重ねる（並びは変わらない）
+    replica.mergeConfirmed([
+      {
+        kind: "task",
+        row: { ...task, startedAt: "2026-01-15T00:00:00.000Z", seq: nextSeq() },
+      },
+    ]);
+    expect(seen).toEqual([task.id]);
+
+    replica.mergeConfirmed([{ kind: "task", row: { ...task, startedAt: null, seq: nextSeq() } }]);
+    expect(seen).toEqual([]);
+
+    dispose();
+  });
+
+  it("タイトルだけを変えても、todayBoard と projectColors を読む reaction は動かない", () => {
+    const { replica, lists } = setup();
+    const task = makeTask({ bucket: "today", seq: nextSeq() });
+    const project = makeProject({ createdAt: "2026-01-01T00:00:00.000Z", seq: nextSeq() });
+    replica.replaceConfirmed([
+      { kind: "task", row: task },
+      { kind: "project", row: project },
+    ]);
+
+    const taskSpy: unknown[] = [];
+    const disposeTask = reaction(
+      () => lists.todayBoard,
+      (v) => taskSpy.push(v),
+    );
+    const colorSpy: unknown[] = [];
+    const disposeColor = reaction(
+      () => lists.projectColors,
+      (v) => colorSpy.push(v),
+    );
+
+    replica.mergeConfirmed([
+      { kind: "task", row: { ...task, title: "新しいタイトル", seq: nextSeq() } },
+    ]);
+    replica.mergeConfirmed([
+      { kind: "project", row: { ...project, name: "新しい名前", seq: nextSeq() } },
+    ]);
+
+    expect(taskSpy).toHaveLength(0);
+    expect(colorSpy).toHaveLength(0);
+
+    disposeTask();
+    disposeColor();
+  });
+
+  it("TaskRow：startedAt・status・isInProgress は項目ごとに観測する（タイトル変更では動かず、startedAt の変化で動く）", () => {
+    const { replica } = setup();
+    const task = makeTask({ bucket: "today", seq: nextSeq() });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+    const row = replica.task(task.id);
+    if (!row) throw new Error("row が見つかりません");
+
+    let startedAtRuns = 0;
+    let isInProgressRuns = 0;
+    const disposeStarted = autorun(() => {
+      void row.startedAt;
+      startedAtRuns++;
+    });
+    const disposeStatus = autorun(() => {
+      void row.isInProgress;
+      isInProgressRuns++;
+    });
+    expect(startedAtRuns).toBe(1);
+    expect(isInProgressRuns).toBe(1);
+
+    replica.mergeConfirmed([
+      { kind: "task", row: { ...task, title: "新しいタイトル", seq: nextSeq() } },
+    ]);
+    expect(startedAtRuns).toBe(1);
+    expect(isInProgressRuns).toBe(1);
+
+    replica.mergeConfirmed([
+      { kind: "task", row: { ...task, startedAt: "2026-01-15T00:00:00.000Z", seq: nextSeq() } },
+    ]);
+    expect(startedAtRuns).toBe(2);
+    expect(isInProgressRuns).toBe(2);
+    expect(row.status).toBe("in-progress");
+
+    disposeStarted();
+    disposeStatus();
+  });
+
+  it("ProjectRow.color も項目ごとに観測する（名前の変更では動かず、色の変化で動く）", () => {
+    const { replica } = setup();
+    const project = makeProject({ seq: nextSeq() });
+    replica.replaceConfirmed([{ kind: "project", row: project }]);
+    const row = replica.project(project.id);
+    if (!row) throw new Error("row が見つかりません");
+
+    let runs = 0;
+    const dispose = autorun(() => {
+      void row.color;
+      runs++;
+    });
+    expect(runs).toBe(1);
+
+    replica.mergeConfirmed([
+      { kind: "project", row: { ...project, name: "新しい名前", seq: nextSeq() } },
+    ]);
+    expect(runs).toBe(1);
+
+    replica.mergeConfirmed([
+      { kind: "project", row: { ...project, color: "amber", seq: nextSeq() } },
+    ]);
+    expect(runs).toBe(2);
+    expect(row.color).toBe("amber");
+
+    dispose();
+  });
+
+  it("プロジェクトのボードの完了列：完了の並びが同じまま completedAt が7日の境目をまたぐと、列から抜ける・入る", () => {
+    const { replica, lists } = setup();
+    const projectId = "proj-1";
+    // 8日前（境目の外）の完了
+    const task = makeTask({
+      bucket: "later",
+      projectId,
+      completedAt: "2026-01-07T05:00:00.000Z",
+      seq: nextSeq(),
+    });
+    replica.replaceConfirmed([{ kind: "task", row: task }]);
+    expect(lists.projectBoard(projectId).completed).toHaveLength(0);
+
+    // 別のタブが、境目の内側（直近7日）に完了した時刻へ書き換えた
+    replica.mergeConfirmed([
+      {
+        kind: "task",
+        row: { ...task, completedAt: "2026-01-10T05:00:00.000Z", seq: nextSeq() },
+      },
+    ]);
+    expect(lists.projectBoard(projectId).completed.map((t) => t.id)).toEqual([task.id]);
+
+    // 境目の外側へ戻す
+    replica.mergeConfirmed([
+      {
+        kind: "task",
+        row: { ...task, completedAt: "2025-12-01T05:00:00.000Z", seq: nextSeq() },
+      },
+    ]);
+    expect(lists.projectBoard(projectId).completed).toHaveLength(0);
   });
 });

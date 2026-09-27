@@ -2,7 +2,7 @@ import { rankAfter } from "@shared/rank";
 import { reaction } from "mobx";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { FakeServer } from "../test/fake-server";
-import { makeTask } from "../test/fixtures";
+import { makeProject, makeTask } from "../test/fixtures";
 import { createMemoryLocalDb, openLocalDb } from "./local-db";
 import type { Notice } from "./notices";
 import { AppStore, DELETED_ROW_TTL_DAYS } from "./store";
@@ -749,5 +749,241 @@ describe("11. setDeadline（Store 統合：元に戻す）", () => {
     expect(store.task(task.id)?.scheduledOn).toBeNull();
     expect(store.task(task.id)?.arrivedOn).toBeNull();
     expect(store.task(task.id)?.deadlineOn).toBeNull();
+  });
+});
+
+describe("10. 進行中（startTasks・stopTasks）と、元に戻す", () => {
+  it("今日以外のタスクを進行中にすると今日の一番上へ移る。⌘Z で置き場・位置・未着手に戻る", async () => {
+    const server = new FakeServer();
+    const originalRank = rankAfter(null);
+    const task = server.putTask(makeTask({ bucket: "later", rank: originalRank }));
+    const existingToday = server.putTask(makeTask({ bucket: "today", rank: "a5" }));
+    const store = makeStore(server);
+    await store.start();
+
+    const result = store.actions.startTasks([task.id]);
+    expect(result.ok).toBe(true);
+    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.task(task.id)?.startedAt).not.toBeNull();
+    expect(store.lists.today.map((t) => t.id)[0]).toBe(task.id);
+    await store.idle();
+
+    store.actions.undo();
+    expect(store.task(task.id)?.bucket).toBe("later");
+    expect(store.task(task.id)?.rank).toBe(originalRank);
+    expect(store.task(task.id)?.startedAt).toBeNull();
+    expect(store.task(existingToday.id)?.bucket).toBe("today");
+  });
+
+  it("予定から進行中にすると scheduledOn が null になり、⌘Z で予定の日付に戻る", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(makeTask({ bucket: "scheduled", scheduledOn: "2026-03-01" }));
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.startTasks([task.id]);
+    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.task(task.id)?.scheduledOn).toBeNull();
+
+    store.actions.undo();
+    expect(store.task(task.id)?.bucket).toBe("scheduled");
+    expect(store.task(task.id)?.scheduledOn).toBe("2026-03-01");
+    expect(store.task(task.id)?.startedAt).toBeNull();
+  });
+
+  it("今日にあるタスクを進行中にしても位置は変わらない。⌘Z で未着手に戻る", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(makeTask({ bucket: "today", rank: "a0" }));
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.startTasks([task.id]);
+    expect(store.task(task.id)?.rank).toBe("a0");
+    expect(store.task(task.id)?.startedAt).not.toBeNull();
+
+    store.actions.undo();
+    expect(store.task(task.id)?.rank).toBe("a0");
+    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.task(task.id)?.startedAt).toBeNull();
+  });
+
+  it("stopTasks は startedAt を消すだけで位置は変えない。⌘Z で進行中に戻る", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ bucket: "today", rank: "a0", startedAt: "2026-01-14T00:00:00.000Z" }),
+    );
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.stopTasks([task.id]);
+    expect(store.task(task.id)?.startedAt).toBeNull();
+    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.task(task.id)?.rank).toBe("a0");
+
+    store.actions.undo();
+    expect(store.task(task.id)?.startedAt).not.toBeNull();
+  });
+
+  it("進行中のタスクを moveTasks で今日から出すと未着手になる。⌘Z で今日・進行中に戻る", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ bucket: "today", rank: "a0", startedAt: "2026-01-14T00:00:00.000Z" }),
+    );
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.moveTasks([task.id], { bucket: "later" });
+    expect(store.task(task.id)?.bucket).toBe("later");
+    expect(store.task(task.id)?.startedAt).toBeNull();
+    await store.idle();
+
+    store.actions.undo();
+    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.task(task.id)?.rank).toBe("a0");
+    expect(store.task(task.id)?.startedAt).not.toBeNull();
+  });
+
+  it("完了の直後に ⌘Z で戻すと、進行中のまま（startedAt は消えていない）に戻る", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ bucket: "today", rank: "a0", startedAt: "2026-01-14T00:00:00.000Z" }),
+    );
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.completeTasks([task.id]);
+    expect(store.task(task.id)?.completedAt).not.toBeNull();
+    expect(store.task(task.id)?.startedAt).not.toBeNull();
+
+    store.actions.undo();
+    expect(store.task(task.id)?.completedAt).toBeNull();
+    expect(store.task(task.id)?.startedAt).not.toBeNull();
+  });
+
+  it("あとから完了を外すと（完了ログ・完了N件から）、未着手で今日の一番下に戻る", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({
+        bucket: "today",
+        rank: "a0",
+        startedAt: "2026-01-14T00:00:00.000Z",
+        completedAt: "2026-01-14T05:00:00.000Z",
+      }),
+    );
+    const other = server.putTask(makeTask({ bucket: "today", rank: "a1" }));
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.uncompleteTasks([task.id]);
+    expect(store.task(task.id)?.completedAt).toBeNull();
+    expect(store.task(task.id)?.startedAt).toBeNull();
+    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.lists.today.map((t) => t.id).at(-1)).toBe(task.id);
+    expect(store.task(other.id)?.bucket).toBe("today");
+  });
+
+  it("501件の startTasks・stopTasks は too-many で、何も送らない", async () => {
+    const server = new FakeServer();
+    const laterTasks = Array.from({ length: 501 }, () =>
+      server.putTask(makeTask({ bucket: "later" })),
+    );
+    const store = makeStore(server);
+    await store.start();
+
+    const startResult = store.actions.startTasks(laterTasks.map((t) => t.id));
+    expect(startResult).toEqual({ ok: false, reason: "too-many" });
+    expect(server.requestsTo("/api/mutate")).toHaveLength(0);
+
+    const startedTasks = Array.from({ length: 501 }, () =>
+      server.putTask(makeTask({ bucket: "today", startedAt: "2026-01-14T00:00:00.000Z" })),
+    );
+    const storeForStop = makeStore(server);
+    await storeForStop.start();
+    const stopResult = storeForStop.actions.stopTasks(startedTasks.map((t) => t.id));
+    expect(stopResult).toEqual({ ok: false, reason: "too-many" });
+  });
+
+  it("⌘Z で「今日の外で進行中」に戻りそうなときは、startedAt を null にして送る（サーバーに断られないように）", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(makeTask({ bucket: "later", rank: "a0" }));
+    const store = makeStore(server);
+    await store.start();
+
+    // 今日以外 → 今日へ移す（進行中にはしない）。この操作の元に戻すは bucket・rank だけを戻し、startedAt は触らない
+    store.actions.moveTasks([task.id], { bucket: "today" });
+    await store.idle();
+    expect(store.task(task.id)?.bucket).toBe("today");
+
+    // ほかのタブが、今日にあるあいだにこのタスクを進行中にした
+    server.putTask({ id: task.id, startedAt: "2026-01-14T00:00:00.000Z" });
+    await store.sync();
+    expect(store.task(task.id)?.startedAt).not.toBeNull();
+    expect(store.task(task.id)?.bucket).toBe("today");
+
+    // ここで元に戻す（今日以外へ戻す）と、崩れないように startedAt: null が同じ changes に入る
+    const result = store.actions.undo();
+    expect(result.ok).toBe(true);
+    await store.idle();
+
+    const lastRequest = server.requestsTo("/api/mutate").at(-1);
+    const body = lastRequest?.body as { mutations: { changes?: Record<string, unknown> }[] };
+    expect(body.mutations[0]?.changes?.startedAt).toBeNull();
+    expect(store.task(task.id)?.bucket).toBe("later");
+    expect(store.task(task.id)?.startedAt).toBeNull();
+  });
+});
+
+describe("10. プロジェクトの色（Store 統合）", () => {
+  it("続けて作ると作成順で色が violet → sky → pink … と進む", async () => {
+    const server = new FakeServer();
+    const store = makeStore(server);
+    await store.start();
+
+    const r1 = store.actions.createProject("1つ目");
+    const r2 = store.actions.createProject("2つ目");
+    const r3 = store.actions.createProject("3つ目");
+    expect(r1.ok && store.project(r1.ids[0] ?? "")?.color).toBe("violet");
+    expect(r2.ok && store.project(r2.ids[0] ?? "")?.color).toBe("sky");
+    expect(r3.ok && store.project(r3.ids[0] ?? "")?.color).toBe("pink");
+  });
+
+  it("色を変えて ⌘Z すると前の色に戻る", async () => {
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ color: "violet" }));
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.updateProject(project.id, { color: "amber" });
+    expect(store.project(project.id)?.color).toBe("amber");
+    store.actions.undo();
+    expect(store.project(project.id)?.color).toBe("violet");
+  });
+
+  it("色を null に戻して ⌘Z すると、null にする前の色に戻る", async () => {
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ color: "amber" }));
+    const store = makeStore(server);
+    await store.start();
+
+    store.actions.updateProject(project.id, { color: null });
+    expect(store.project(project.id)?.color).toBeNull();
+    store.actions.undo();
+    expect(store.project(project.id)?.color).toBe("amber");
+  });
+
+  it("パレットにない色は、送信の手前（共有の検証）で invalid になり、何も送らない", async () => {
+    const server = new FakeServer();
+    const project = server.putProject(makeProject({ color: "violet" }));
+    const store = makeStore(server);
+    await store.start();
+
+    // updateProject の型は ProjectColor に絞っているが、共有の検証（mutationSchema）で
+    // 断られることを確かめるために、型をすり抜けさせて渡す
+    const result = store.actions.updateProject(project.id, {
+      color: "red" as unknown as never,
+    });
+    expect(result).toEqual({ ok: false, reason: "invalid" });
+    expect(store.project(project.id)?.color).toBe("violet");
+    expect(server.requestsTo("/api/mutate")).toHaveLength(0);
   });
 });
