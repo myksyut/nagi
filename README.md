@@ -67,7 +67,7 @@ components.json  # shadcn / coss ui の設定
 ## 事前準備（本番に出すまでに1回だけ）
 
 1. GitHub に `myksyut/nagi`（private）を作る（済み）
-2. Cloudflare のアカウントを Workers Paid（月 $5）に切り替え、workers.dev のサブドメインを確かめる。サブドメインは `wizard1026miya` で、Worker の URL は `https://nagi.wizard1026miya.workers.dev` になる
+2. Cloudflare の workers.dev のサブドメインを確かめる（済み）。サブドメインは `wizard1026miya` で、Worker の URL は `https://nagi.wizard1026miya.workers.dev` になる。プランは、まず無料のまま出す。1回の処理の CPU 時間（10ms）などの制限に当たったら（ダッシュボードやログに「exceeded CPU」のエラーが出る、同期が失敗するなど）、Workers Paid（月 $5）に切り替える
 3. M7 の wrangler を Cloudflare に接続する（済み）。M7 には画面がないので、デバイスコードでログインする。権限は nagi のデプロイに要るものだけに絞る
 
    ```sh
