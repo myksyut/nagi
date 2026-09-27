@@ -1,0 +1,40 @@
+name: desktop
+
+# デスクトップ版（Tauri）の試作を、GitHub の Mac（Apple シリコン）でビルドする。
+# 本番の URL を開くだけの窓なので、画面のビルドは要らない。できた nagi.app は zip にして Artifacts に置く
+on:
+  push:
+    branches: [spike/tauri-desktop]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: desktop-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build-macos:
+    runs-on: macos-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Build nagi.app
+        working-directory: desktop
+        run: npx --yes @tauri-apps/cli@2.12.0 build --bundles app
+      # upload-artifact は実行の権限を落とすので、ditto で zip にしてから、zip のまま置く（署名と権限を保つ）
+      - name: Zip nagi.app
+        run: ditto -c -k --keepParent desktop/src-tauri/target/release/bundle/macos/nagi.app nagi-macos.zip
+      - uses: actions/upload-artifact@v7
+        with:
+          path: nagi-macos.zip
+          archive: false
+          retention-days: 14

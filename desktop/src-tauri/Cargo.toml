@@ -1,0 +1,12 @@
+[package]
+name = "nagi-desktop"
+version = "0.1.0"
+description = "nagi のデスクトップ版（試作）。本番の URL を開くだけの窓"
+edition = "2021"
+publish = false
+
+[build-dependencies]
+tauri-build = { version = "2.7", features = [] }
+
+[dependencies]
+tauri = { version = "2.12", features = [] }
