@@ -44,9 +44,11 @@ components.json  # shadcn / coss ui の設定
 
 最初の表示と、後から読み込む部品（8）：
 
-- 起動に要らない部品は `defer(() => import("…"))`（`lib/deferred.ts`）で最初の JS から外し、部品の中では `useDeferred` で受け取る。今は ⌘K、`?` の一覧、完了ログの一覧、日付の入力（カレンダー）、p の候補、チェックリストの編集、border-beam、Motion の機能一式（`LazyMotion` に渡す。行などは `motion.*` ではなく `m.*` で書く）
+- 起動に要らない部品は `defer(() => import("…"))`（`lib/deferred.ts`）で最初の JS から外し、部品の中では `useDeferred` で受け取る。今は ⌘K、`?` の一覧、完了ログの一覧、日付の入力（カレンダー）、p の候補、チェックリストの編集、border-beam、Motion の機能一式（`LazyMotion` に渡す。行などは `motion.*` ではなく `m.*` で書く）、カレンダーの画面（小さな追加欄を含む）
 - 登録したものは、アプリの外枠が起動のあとの空いた時間にまとめて先読みする（最初のキー操作で読み込みを待たせない）。テストでは各ファイルの最初に読み込んでおく（`test/setup.ts`）
 - 後から読み込むモジュールを、起動の道筋（`main.tsx` から静的に import される側）から import しない。import すると最初の JS に戻ってしまう。`pnpm build` の出力で `index-*.js` と一緒に読まれる分を確かめる
+- 逆向きにも気を付ける：後から読み込む画面から、それを `defer` している起動側のモジュール（`lazy.tsx` など）を import しない。循環すると、起動側のモジュールが細かいチャンクに分かれて、起動に要る JS が数 KB 増える（13 で見つけた）。起動側の部品を使いたいときは props で渡す（カレンダーの見出しは `LazyCalendarScreen` が `Heading` として渡している）
+- 画面の中だけで効くキー（カレンダーの [ ] など）は、画面と一緒に後から読み込むモジュールで登録してよい（先読みのときに登録される）。起動に要る JS を増やさないため
 
 動きの決まり（8）：
 
@@ -59,7 +61,7 @@ components.json  # shadcn / coss ui の設定
 - すりガラス（`glass`。`backdrop-filter`）は、サイドバーとポップオーバー・ダイアログだけに使う。スクロールする一覧・カード・トーストには使わない（トーストは不透明の `bg-surface`）
 - 選んだ行は `row-selected`（紫の淡い背景と輪郭の光）、フォーカスの輪郭は `outline` で別に出す。上からの光は `body::before` に固定して置くだけで動かさない
 - プロジェクトの色は `lib/project-color.ts` の `projectColorOf` から取る（中身はデータ層の `store.lists.projectColor(id)`。選んだ色 `color` があればその色、空なら作成順の色）。色の値は `projectColorVar(color)`（`var(--project-<名前>)`）、点は `features/projects/project-dot.tsx` の `ProjectDot`
-- 右下の「＋」（`shell/add-button.tsx`）は、キーマップの `task.add`（n）をそのまま呼ぶ。完了の光の輪（`tasks/completion-ring.ts`）は、完了にする操作（`completeTasks`）が受け付けられた直後に、丸をタスクの id から引いて（見えている丸を最大 20 個）、その位置へ画面に固定した要素を置いて 300ms で外す。途中で reduced motion に変わったらすぐ外す
+- 右下の「＋」（`shell/add-button.tsx`）は、キーマップの `task.add`（n）をそのまま呼ぶ（使えない画面では、小さな追加欄の `quickAdd.open`。下の「小さな追加欄」）。完了の光の輪（`tasks/completion-ring.ts`）は、完了にする操作（`completeTasks`）が受け付けられた直後に、丸をタスクの id から引いて（見えている丸を最大 20 個）、その位置へ画面に固定した要素を置いて 300ms で外す。途中で reduced motion に変わったらすぐ外す
 - 画面の部品で件数などの変わりやすい値を読まない（完了のたびに画面ごと描き直し、一覧の全行を描き直してしまう）。見出しの件数は `ListScreen` に関数で渡し、見出しの一行の中だけで読む。サイドバーの件数も `NavCountOf` の中だけで読む
 - 小さい補助の文字（`--muted-foreground`・`--faint-foreground`）は、地・面・サイドバーの上で 4.5:1 以上を保つ
 
@@ -92,6 +94,43 @@ import { TaskDetailPopoverHost, taskDetailPopoverOf } from "@/tasks/task-detail-
 - 欄から開く日付の入力と p の候補は、小さな詳細の中に描く（`registerDetachedHost` で、dates と projects が自分の描き方を登録している）。欄からポップオーバーを開く機能を足すときは、`useDetailSurface().detached` を見て、同じように登録する
 - 欄の中の要素の id には `useDetailSurface().idScope`（一覧の中は ""、小さな詳細は詳細ごとの接頭辞）を付ける。同じタスクが一覧と小さな詳細の両方に出ても id が重ならず、id で探すフォーカスの移し先が相手の側へ飛ばないように。欄に id を持つ要素を足すときも同じようにする
 - 小さな詳細のモジュールは Base UI の Popover を使う。起動の道筋から import せず、後から読み込む画面（カレンダー・タイムライン）から使う
+
+ビュー（13・14）：
+
+- サイドバーの「ビュー」の見出しの下は `navigation.ts` の `VIEWS` を並べる。ビューを足すときは、`VIEWS` に1行（`{ key, path, label }`。`ViewKey` にも足す）、`shell/list-icons.ts` の `VIEW_ICONS` に1行（アイコンと `--list-*` の色）、`app.tsx` にルートを1行足す
+- 右の枠の幅の上限（`max-w-3xl`）は、画面の一番外の要素に `data-wide-view` を付けると外れる（`shell/app-shell.tsx`）
+- ビューはリストではないので、一覧の状態（`ui.view`）を持たない（`useListView` を使わない）。そのため一覧のキー（↑↓・x など）は効かない。画面の中だけで効くキーは、自分の場面（`scope`）で登録し、`when` で画面が出ているときだけにする
+- 「キーマップのすべての割り当てを ⌘K から実行できる」のテスト（`command-palette.test.tsx`）は、場面を分けていない割り当てだけを見る。場面を分けた割り当ては、その画面が出ているときだけ使えるので、その画面のテストで確かめる
+
+カレンダー（13。`features/calendar`）：
+
+- 6 か、サイドバーの「カレンダー」で開く。画面（`calendar-screen.tsx`）・状態と [ ] のキー（`state.ts`）・中身の計算（`model.ts`）は後から読み込み、起動側には 6 の割り当て（`register.ts`）と、読み込みを待つ枠（`lazy.tsx`）だけを置く
+- マスの中身は `model.ts` の `entriesByDate`：締切の◆（受信箱・今日・予定・あとでの未完了のタスクの締切の日）が先、そのあとにタスク（今日のマスに今日のタスク、予定の日付のマスに予定のタスク）。予定の日付・締切・プロジェクトは `row.field(key)` で項目ごとに観測する。日ごとの中身は、その日の中身が変わったときだけ知らせる（`CalendarModel.entriesOn`）
+- マスに出すのは 3 行まで（超えたら 2 行と「ほか N 件」。押すとその日の一覧）
+- ドラッグは、タスクなら `scheduleTasks`、◆なら `setDeadline`（`features/dates/commands.ts`）を呼ぶだけ。タスクは `taskDragOf(ui)` にも載せるので、サイドバーの今日・あとで・プロジェクトにも落とせる
+- 小さな詳細を開いた要素がマスから消えたら（日付を変えて別のマスへ移ったなど）、同じもの（タスクか◆）の新しい要素から開き直す（`useFollowDetailAnchor`。表の中の要素の `data-calendar-entry`・`data-calendar-task` で探す）。どこにもなければ閉じる。月を替えたら閉じる
+
+小さな追加欄（13 が作り、14 もつなぐ。`features/quick-add`）：
+
+```tsx
+import { QuickAddHost } from "@/features/quick-add/quick-add";
+import { quickAddOf } from "@/features/quick-add/state";
+
+// 画面（後から読み込む画面）に1つ置く。置いているあいだだけ、右下の「＋」と n がこの欄につながる。
+// projectId を渡すと、追加したタスクにそのプロジェクトを付ける（絞り込みで選んでいるプロジェクトなど）
+<QuickAddHost projectId={null} />
+
+// 右下の「＋」と n：何も書かなくてよい（「＋」の上に開き、行き先は「受信箱｜今日」。開くたびに受信箱から）
+
+// その日の予定として追加する欄を、自分で開くとき（カレンダーの日のマスの「＋」）。
+// anchor の下に開き、Esc で閉じたら returnFocus（省くと anchor）へフォーカスを戻す。今日か過去の日なら今日へ入る
+quickAddOf(ui).open({ kind: "date", on: "2026-10-05" }, anchor, returnFocus);
+```
+
+- 右下の「＋」（`shell/add-button.tsx`）は、一覧の追加欄（`task.add`）が使えないときに、小さな追加欄の割り当て（`quickAdd.open`、同じ n、場面 `quick-add`）を呼ぶ。割り当ては `features/quick-add/state.ts` が読み込まれたときに登録する
+- Enter で追加して開いたまま続けられ、Esc で閉じる。打った文字は一覧の追加欄と同じ下書き（`ui.addDraft`）に残る（オフライン・保存できずに戻ってきたときも）。追加しても画面に出ないことがある（受信箱など）ので、追加したら「受信箱に追加しました・元に戻す」を出す
+- 予定への追加は `store.actions.addTask({ title, bucket: "scheduled", on })`（1つの操作。今日か過去なら今日の一番下へ。⌘Z 1回で消える）
+- 開いたら小さな詳細は閉じる。中ではアプリの1文字のキーを止める（`data-keymap="off"`）
 
 オフラインと失敗のとき（8）：
 
