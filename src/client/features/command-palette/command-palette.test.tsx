@@ -98,7 +98,8 @@ describe("完了の条件3：キーマップのすべての割り当てを ⌘K 
       .filter((binding) => binding.id !== PALETTE_BINDING_ID && binding.scope === undefined);
     expect(bindings.length).toBeGreaterThan(5);
     await expectRunnableFromPalette(user, bindings);
-  });
+    // 割り当てごとに ⌘K を開いて実行するので、割り当てが増えるほど長くなる（共有のホストでは 5 秒を超えることがある）
+  }, 30_000);
 
   it("ボードの場面の割り当て（←→）が、今日のボードで正しいキー表示で並び、選ぶと run が呼ばれる", async () => {
     localStorage.setItem("nagi:board-screens", JSON.stringify(["today"]));
