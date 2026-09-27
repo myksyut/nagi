@@ -27,6 +27,13 @@ afterEach(() => {
 /** このファイルで動きを確かめた、場面の id と操作の名前 */
 const VERIFIED: Record<string, readonly string[]> = {
   "project-picker": ["候補を選ぶ", "決める（「◯◯」を作成も）", "やめる"],
+  "priority-picker": [
+    "その場で決める（1 高・2 中・3 低・0 なし）",
+    "候補を選ぶ",
+    "決める",
+    "やめる",
+  ],
+  "points-picker": ["数字で絞り込む（13 は 1・3、0 でなし）", "候補を選ぶ", "決める", "やめる"],
   "date-entry": ["決める", "締切を外す（欄を空にして）", "やめる"],
   "date-calendar": [
     "前の日・次の日へ",
@@ -53,6 +60,12 @@ const VERIFIED: Record<string, readonly string[]> = {
   "task-detail-popover": ["閉じる（押したタスクへ戻る）", "完了にする・戻す（丸の上で）"],
   "project-rename": ["保存する", "やめる"],
   "project-color": ["色を選ぶ", "決める", "閉じる"],
+  "sort-menu": [
+    "その場で決める（1 手動・2 優先度・3 工数が少ない順・4 工数が多い順）",
+    "候補を選ぶ",
+    "決める",
+    "閉じる",
+  ],
   "calendar-task": [
     "小さな詳細を開く（タスクか◆にフォーカスがあるとき）",
     "「ほか N 件」の一覧を閉じる",
@@ -206,6 +219,151 @@ describe("p の候補", () => {
       expect(screen.queryByRole("combobox", { name: "プロジェクト" })).toBeNull(),
     );
     expect(store.lists.inbox[0]?.projectId).toBeNull();
+  });
+});
+
+/** 今日に1件のタスクを置いて開き、そのタスクを選ぶ（⇧P・e の候補の対象） */
+async function openTodayWithTask(user: ReturnType<typeof userEvent.setup>) {
+  const server = new FakeServer();
+  server.putTask(makeTask({ title: "付ける先", bucket: "today" }));
+  const setup = await open("/today", server);
+  await screen.findByRole("listbox", { name: "今日" });
+  await user.keyboard("j");
+  return setup;
+}
+
+/** 候補の一覧に出ている候補の文字 */
+function pickerOptions(): string[] {
+  return within(pickerListbox())
+    .getAllByRole("option")
+    .map((option) => option.textContent ?? "");
+}
+
+describe("⇧P の候補（優先度）", () => {
+  const openPicker = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.keyboard("{Shift>}P{/Shift}");
+    await screen.findByRole("combobox", { name: "優先度" });
+  };
+  const closed = () =>
+    waitFor(() => expect(screen.queryByRole("combobox", { name: "優先度" })).toBeNull());
+
+  it("1・2・3・0 で、その場で高・中・低・なしに決まる", async () => {
+    const user = userEvent.setup();
+    const { store } = await openTodayWithTask(user);
+    const label = "その場で決める（1 高・2 中・3 低・0 なし）";
+    expect(keysOf("priority-picker", label)).toEqual(["1", "2", "3", "0"]);
+    for (const [index, value] of (["high", "medium", "low", null] as const).entries()) {
+      await openPicker(user);
+      await press(user, "priority-picker", label, index);
+      await closed();
+      expect(store.lists.today[0]?.priority).toBe(value);
+    }
+  });
+
+  it("↑↓ で候補を選び、Enter で決める（↓2回と↑1回は↓1回と同じ候補。↓2回は別の候補）", async () => {
+    const user = userEvent.setup();
+    const { store } = await openTodayWithTask(user);
+    const down = keysOf("priority-picker", "候補を選ぶ").indexOf("ArrowDown");
+    const up = keysOf("priority-picker", "候補を選ぶ").indexOf("ArrowUp");
+    expect(down).toBeGreaterThanOrEqual(0);
+    expect(up).toBeGreaterThanOrEqual(0);
+    const pickWith = async (moves: readonly number[]) => {
+      await openPicker(user);
+      for (const index of moves) await press(user, "priority-picker", "候補を選ぶ", index);
+      await press(user, "priority-picker", "決める");
+      await closed();
+      return store.lists.today[0]?.priority;
+    };
+
+    const once = await pickWith([down]);
+    expect(once).not.toBeNull();
+    expect(await pickWith([down, down, up])).toBe(once);
+    const twice = await pickWith([down, down]);
+    expect(twice).not.toBeNull();
+    expect(twice).not.toBe(once);
+  });
+
+  it("Esc でやめる（何も変わらず、一覧へ戻る）", async () => {
+    const user = userEvent.setup();
+    const { store } = await openTodayWithTask(user);
+    await openPicker(user);
+    await user.keyboard("{ArrowDown}");
+    await press(user, "priority-picker", "やめる");
+    await closed();
+    expect(store.lists.today[0]?.priority).toBeNull();
+    expect(screen.getByRole("listbox", { name: "今日" })).toHaveFocus();
+  });
+});
+
+describe("e の候補（工数）", () => {
+  const label = "数字で絞り込む（13 は 1・3、0 でなし）";
+  const openPicker = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.keyboard("e");
+    await screen.findByRole("combobox", { name: "工数" });
+  };
+  const closed = () =>
+    waitFor(() => expect(screen.queryByRole("combobox", { name: "工数" })).toBeNull());
+
+  it("数字で絞り込み、Enter で決める（13 は 1・3、0 でなし）", async () => {
+    const user = userEvent.setup();
+    const { store } = await openTodayWithTask(user);
+    const keys = keysOf("points-picker", label);
+    expect(keys).toEqual(["1", "2", "3", "5", "8", "0"]);
+
+    // 13 は 1 と 3
+    await openPicker(user);
+    await press(user, "points-picker", label, keys.indexOf("1"));
+    expect(pickerOptions()).toEqual(["1", "13"]);
+    await press(user, "points-picker", label, keys.indexOf("3"));
+    expect(pickerOptions()).toEqual(["13"]);
+    await press(user, "points-picker", "決める");
+    await closed();
+    expect(store.lists.today[0]?.points).toBe(13);
+
+    // 1 桁の数字は、その数字（1 なら 1 と 13 のうち先の 1）。0 でなし
+    const expected: Record<string, number | null> = { 1: 1, 2: 2, 3: 3, 5: 5, 8: 8, 0: null };
+    for (const [index, key] of keys.entries()) {
+      await openPicker(user);
+      await press(user, "points-picker", label, index);
+      expect(pickerOptions()[0]).toBe(key === "0" ? "なし" : key);
+      await press(user, "points-picker", "決める");
+      await closed();
+      expect(store.lists.today[0]?.points).toBe(expected[key]);
+    }
+  });
+
+  it("↑↓ で候補を選び、Enter で決める（↓2回と↑1回は↓1回と同じ候補。↓2回は別の候補）", async () => {
+    const user = userEvent.setup();
+    const { store } = await openTodayWithTask(user);
+    const down = keysOf("points-picker", "候補を選ぶ").indexOf("ArrowDown");
+    const up = keysOf("points-picker", "候補を選ぶ").indexOf("ArrowUp");
+    expect(down).toBeGreaterThanOrEqual(0);
+    expect(up).toBeGreaterThanOrEqual(0);
+    const pickWith = async (moves: readonly number[]) => {
+      await openPicker(user);
+      for (const index of moves) await press(user, "points-picker", "候補を選ぶ", index);
+      await press(user, "points-picker", "決める");
+      await closed();
+      return store.lists.today[0]?.points;
+    };
+
+    const once = await pickWith([down]);
+    expect(once).not.toBeNull();
+    expect(await pickWith([down, down, up])).toBe(once);
+    const twice = await pickWith([down, down]);
+    expect(twice).not.toBeNull();
+    expect(twice).not.toBe(once);
+  });
+
+  it("Esc でやめる（何も変わらず、一覧へ戻る）", async () => {
+    const user = userEvent.setup();
+    const { store } = await openTodayWithTask(user);
+    await openPicker(user);
+    await user.keyboard("5");
+    await press(user, "points-picker", "やめる");
+    await closed();
+    expect(store.lists.today[0]?.points).toBeNull();
+    expect(screen.getByRole("listbox", { name: "今日" })).toHaveFocus();
   });
 });
 
@@ -681,6 +839,69 @@ describe("プロジェクトの色の候補", () => {
     await waitFor(() => expect(screen.queryByRole("radiogroup")).toBeNull());
     expect(button).toHaveFocus();
     expect(store.project(project.id)?.color).toBe("pink");
+  });
+});
+
+describe("並び方の一覧", () => {
+  const button = () => screen.getByRole("button", { name: /^並び：/ });
+  const openMenu = async (user: ReturnType<typeof userEvent.setup>) => {
+    await user.click(button());
+    await screen.findByRole("combobox", { name: "並び方" });
+  };
+  const closed = () =>
+    waitFor(() => expect(screen.queryByRole("combobox", { name: "並び方" })).toBeNull());
+
+  it("1〜4 で、その場で手動・優先度・工数が少ない順・工数が多い順に決まる", async () => {
+    const user = userEvent.setup();
+    await open("/today");
+    await screen.findByRole("listbox", { name: "今日" });
+    const label = "その場で決める（1 手動・2 優先度・3 工数が少ない順・4 工数が多い順）";
+    expect(keysOf("sort-menu", label)).toEqual(["1", "2", "3", "4"]);
+    // 手動から始めるので、2・3・4・1 の順に押す（どれも今と違う並び方になる）
+    for (const [index, name] of [
+      [1, "優先度"],
+      [2, "工数が少ない順"],
+      [3, "工数が多い順"],
+      [0, "手動"],
+    ] as const) {
+      await openMenu(user);
+      await press(user, "sort-menu", label, index);
+      await closed();
+      expect(button()).toHaveAccessibleName(`並び：${name}`);
+    }
+  });
+
+  it("↑↓ で候補を選び、Enter で決める（↓2回と↑1回は↓1回と同じ候補。↓2回は別の候補）", async () => {
+    const user = userEvent.setup();
+    await open("/today");
+    await screen.findByRole("listbox", { name: "今日" });
+    const down = keysOf("sort-menu", "候補を選ぶ").indexOf("ArrowDown");
+    const up = keysOf("sort-menu", "候補を選ぶ").indexOf("ArrowUp");
+    expect(down).toBeGreaterThanOrEqual(0);
+    expect(up).toBeGreaterThanOrEqual(0);
+    const pickWith = async (moves: readonly number[]) => {
+      await openMenu(user);
+      for (const index of moves) await press(user, "sort-menu", "候補を選ぶ", index);
+      await press(user, "sort-menu", "決める");
+      await closed();
+      return button().textContent;
+    };
+
+    const once = await pickWith([down]);
+    expect(await pickWith([down, down, up])).toBe(once);
+    expect(await pickWith([down, down])).not.toBe(once);
+  });
+
+  it("Esc で閉じてボタンへ戻る（並び方は変わらない）", async () => {
+    const user = userEvent.setup();
+    await open("/today");
+    await screen.findByRole("listbox", { name: "今日" });
+    await openMenu(user);
+    await user.keyboard("{ArrowDown}");
+    await press(user, "sort-menu", "閉じる");
+    await closed();
+    expect(button()).toHaveAccessibleName("並び：手動");
+    expect(button()).toHaveFocus();
   });
 });
 

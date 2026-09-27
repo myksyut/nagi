@@ -35,6 +35,8 @@ export type FieldKeyScene = {
  */
 export const FIELD_SCENE_ORDER = {
   projectPicker: 10,
+  priorityPicker: 12,
+  pointsPicker: 14,
   dateEntry: 20,
   dateCalendar: 25,
   addRow: 30,
@@ -46,6 +48,7 @@ export const FIELD_SCENE_ORDER = {
   projectName: 70,
   projectRename: 72,
   projectColor: 74,
+  sortMenu: 76,
   calendarTask: 80,
   calendarFilter: 82,
   timelineBar: 85,

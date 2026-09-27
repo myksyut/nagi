@@ -8,6 +8,7 @@ import {
   runInAction,
 } from "mobx";
 import type { AppStore, Notice, TaskRow } from "@/data";
+import { DURATION } from "@/lib/motion";
 import { type DraftChange, DraftStorage } from "./draft-storage";
 import { Toaster } from "./toaster";
 
@@ -56,6 +57,11 @@ export type TaskSection = {
    * （今日、あとでのプロジェクトごとのまとまり、プロジェクトの画面の「今日」と「あとで」）
    */
   reorderable?: boolean;
+  /**
+   * 並び方（features/sort。手動以外）で並べ替えて見せている、並べ替えられるまとまり。選択は表示の並びのとおりに動くが、
+   * ⌥↑↓ とドラッグの並べ替えは止め、「手動の並びのときに使えます」と知らせる（rank は表示の並びと違うため）
+   */
+  sorted?: boolean;
   /**
    * ボードの列の名前（例：`notStarted`）。列のある一覧では、↑↓・⇧↑↓ は同じ列の中だけを動き、
    * ←→（moveColumn）で隣の列へ移る。1つの列に、見出しの付いたまとまりをいくつ並べてもよい
@@ -123,6 +129,7 @@ function sameSections(a: readonly TaskSection[], b: readonly TaskSection[]): boo
         section.key === other.key &&
         section.heading === other.heading &&
         section.column === other.column &&
+        section.sorted === other.sorted &&
         section.fold?.label === other.fold?.label &&
         compareShallow(section.rows, other.rows)
       );
@@ -180,6 +187,8 @@ export class ListUi {
   /** ⌘K の検索で選んだタスク。そのリストが開いたら（開いていれば今すぐ）選ぶ */
   #reveal: { taskId: string; viewKey: string } | null = null;
   #listElement: HTMLElement | null = null;
+  /** 選んでいる行を見えるところまで動かすのを待っているタイマー（revealSelected） */
+  #revealTimer: ReturnType<typeof setTimeout> | undefined;
 
   /** 下書きを localStorage に残す */
   readonly #drafts: DraftStorage;
@@ -302,7 +311,10 @@ export class ListUi {
     return this.sectionOf(taskId)?.column;
   }
 
-  /** ids の行がすべて入っている、並べ替えられるまとまり（なければ undefined） */
+  /**
+   * ids の行がすべて入っている、並べ替えられるまとまり（なければ undefined）。並び方で並べ替えて見せているまとまり
+   * （sorted）も返す（⌥↑↓ とドラッグは、受けたうえで「手動の並びのときに使えます」と知らせる）
+   */
   reorderableSectionOf(ids: readonly string[]): TaskSection | undefined {
     const first = ids[0];
     const section = first === undefined ? undefined : this.sectionOf(first);
@@ -676,6 +688,40 @@ export class ListUi {
 
   focusList(): void {
     this.#listElement?.focus({ preventScroll: true });
+  }
+
+  /**
+   * 自分の操作（⇧P・e・⌘Z・並び方の切り替え）で選んでいる行の位置が変わったときに、その行が見えるところまで
+   * スクロールする（↑↓ と同じく、はみ出したときだけ最小限に動かす）。キーだけで操作していて、選んだ行を見失わないように。
+   * 行が別の位置へ移る動き（layout。中身は transform）が終わってから測る（途中では前の位置で測ってしまう）。
+   * ほかのタブの変更や同期で並びが変わったときは呼ばない（動かさない）
+   */
+  revealSelected(): void {
+    const list = this.#listElement;
+    if (!list) return;
+    // 続けて呼ばれたら、最後の1回だけ測る
+    clearTimeout(this.#revealTimer);
+    let waits = 0;
+    const reveal = () => {
+      // 待つあいだに画面が変わっていたら（一覧が入れ替わった・外れた）何もしない。新しい画面に同じタスクの行があっても、
+      // そこで選んでいない行を動かさないように。行も、その一覧の中のものだけを測る
+      if (list !== this.#listElement || !list.isConnected) return;
+      const id = list.getAttribute("aria-activedescendant");
+      const row = id === null ? null : document.getElementById(id);
+      if (!row || !list.contains(row)) return;
+      // まだ動いている（行を包む要素に layout の transform が残っている）なら、止まるまで待つ（長くても 0.5 秒）
+      let moving = false;
+      for (
+        let element = row.parentElement;
+        element && element !== list;
+        element = element.parentElement
+      ) {
+        if (getComputedStyle(element).transform !== "none") moving = true;
+      }
+      if (moving && waits++ < 10) this.#revealTimer = setTimeout(reveal, 50);
+      else row.scrollIntoView?.({ block: "nearest" });
+    };
+    this.#revealTimer = setTimeout(reveal, DURATION.base * 1000);
   }
 
   // --- 動かす -----------------------------------------------------------------------------

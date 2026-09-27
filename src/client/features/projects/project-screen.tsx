@@ -4,6 +4,8 @@ import { useLocation } from "wouter";
 import { type ProjectRow, type ProjectTaskGroups, useStore } from "@/data";
 import { LazyBoard } from "@/features/board/lazy-board";
 import { useScreenLayout, ViewToggle } from "@/features/board/view-toggle";
+import { SortButton } from "@/features/sort/sort-button";
+import { sortSections } from "@/features/sort/state";
 import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { HOME_PATH } from "@/navigation";
@@ -23,7 +25,8 @@ import { isArchivedProject, liveProject, projectAddTo, projectScreenKey } from "
  * n で追加すると、そのプロジェクトの「あとで」に入る。
  * 見出しの名前を押すと名前を直せる。見出しの右の小さなボタンから、名前の変更とアーカイブ。
  * 見出しの左にはプロジェクトの色の点。押すとパレット（8 色）が開き、色を選び直せる（color-palette.tsx。⌘Z で戻る）。
- * 見出しの一番右の「リスト｜ボード」か v で、状態の列のボードに切り替わる（features/board。どちらで見ていたかは覚える）
+ * 見出しの一番右の「リスト｜ボード」か v で、状態の列のボードに切り替わる（features/board。どちらで見ていたかは覚える）。
+ * その左の並び方（features/sort）で、今日とあとでのまとまりの中を優先度や工数の順に並べて見られる（ボードでも同じ）
  */
 
 function projectSections(groups: ProjectTaskGroups): TaskSection[] {
@@ -84,10 +87,12 @@ export const ProjectScreen = observer(function ProjectScreen({ id }: { id: strin
 /** リストで見るとき：今日／予定／あとで／受信箱のまとまりと、一番下の「完了 N件」 */
 const ProjectList = observer(function ProjectList({ id, label }: { id: string; label: string }) {
   const store = useStore();
+  const ui = useUi();
   const view = useListView(() => ({
     key: projectScreenKey(id),
     kind: "project",
-    sections: () => projectSections(store.lists.project(id)),
+    sections: () =>
+      sortSections(ui, projectScreenKey(id), projectSections(store.lists.project(id))),
     // アーカイブ済みのプロジェクトには付けられないので、そのときは受信箱（プロジェクトなし）に入れる
     get addTo(): AddTarget {
       return projectAddTo(store, id);
@@ -114,15 +119,19 @@ const ProjectEmpty = observer(function ProjectEmpty({ id }: { id: string }) {
 });
 
 /**
- * 見出し：色の点（押すと色を選び直せる）、名前（押すと直せる）、その下に未完了の件数（アーカイブ済みなら「アーカイブ済み」）、
- * 右に小さな「名前を変更」「アーカイブ」（名前を直しているあいだは出さない）
+ * 見出し：色の点（押すと色を選び直せる）、名前（押すと直せる）、その下に未完了の件数と工数の合計
+ * （「5 件 ・ 工数 8」。工数のあるタスクがなければ件数だけ。アーカイブ済みなら「アーカイブ済み」）、
+ * 右に小さな「名前を変更」「アーカイブ」（名前を直しているあいだは出さない）と並び方
  */
 const ProjectHeading = observer(function ProjectHeading({ project }: { project: ProjectRow }) {
   const store = useStore();
   const [editing, setEditing] = useState(false);
   const count = store.lists.openTaskCountOfProject(project.id);
+  const points = store.lists.projectPoints(project.id);
   const subtitle =
-    project.archivedAt !== null ? "アーカイブ済み" : count > 0 ? `${count} 件` : undefined;
+    project.archivedAt !== null
+      ? "アーカイブ済み"
+      : [count > 0 && `${count} 件`, points > 0 && `工数 ${points}`].filter(Boolean).join(" ・ ");
   return (
     <ScreenHeading
       leading={<ProjectColorButton project={project} />}
@@ -130,6 +139,7 @@ const ProjectHeading = observer(function ProjectHeading({ project }: { project: 
       actions={
         <>
           {!editing && <ProjectActions project={project} onRename={() => setEditing(true)} />}
+          <SortButton screen={projectScreenKey(project.id)} />
           <ViewToggle screen={projectScreenKey(project.id)} />
         </>
       }

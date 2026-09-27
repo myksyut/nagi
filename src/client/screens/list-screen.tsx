@@ -15,6 +15,7 @@ export const ListScreen = observer(function ListScreen({
   list,
   date,
   count,
+  points,
   actions,
   children,
 }: {
@@ -25,7 +26,9 @@ export const ListScreen = observer(function ListScreen({
   date?: string;
   /** 未完了の件数を読む（0 件なら出さない。完了ログでは渡さない） */
   count?: () => number;
-  /** 見出しの右に置く操作（今日の「リスト｜ボード」） */
+  /** 未完了の工数の合計を読む（今日だけ。0 なら出さない） */
+  points?: () => number;
+  /** 見出しの右に置く操作（今日の並び方と「リスト｜ボード」、あとでの並び方） */
   actions?: ReactNode;
   children?: ReactNode;
 }) {
@@ -47,7 +50,7 @@ export const ListScreen = observer(function ListScreen({
             <Icon className="size-4.5" strokeWidth={1.75} />
           </span>
         }
-        subtitle={<HeadingSubtitle date={date} count={count} />}
+        subtitle={<HeadingSubtitle date={date} count={count} points={points} />}
         actions={actions}
       >
         <h1 className="font-[650] text-[26px] leading-tight tracking-[-0.01em]">{title}</h1>
@@ -57,16 +60,22 @@ export const ListScreen = observer(function ListScreen({
   );
 });
 
-/** 見出しの下の一行（「9月28日 月曜日 ・ 5 件」）。件数はここでだけ読む（変わっても描き直すのはこの一行だけ） */
+/**
+ * 見出しの下の一行（「9月28日 月曜日 ・ 5 件 ・ 工数 8」）。件数と工数はここでだけ読む（変わっても描き直すのはこの一行だけ）。
+ * 工数のあるタスクがなければ工数は出さない
+ */
 const HeadingSubtitle = observer(function HeadingSubtitle({
   date,
   count,
+  points,
 }: {
   date?: string;
   count?: () => number;
+  points?: () => number;
 }) {
   const n = count?.() ?? 0;
-  const text = [date, n > 0 ? `${n} 件` : undefined].filter(Boolean).join(" ・ ");
+  const m = points?.() ?? 0;
+  const text = [date, n > 0 && `${n} 件`, m > 0 && `工数 ${m}`].filter(Boolean).join(" ・ ");
   if (text === "") return null;
   return <p className="mt-1 text-[13px] text-muted-foreground">{text}</p>;
 });

@@ -1,7 +1,7 @@
 import { action, makeObservable, observable, observableRef } from "mobx";
 import { type DragEvent, useState } from "react";
 import type { TaskRow } from "@/data";
-import { dropRows, openRowsOf, withinBulkLimit } from "./commands";
+import { dropRows, MANUAL_ORDER_ONLY_MESSAGE, openRowsOf, withinBulkLimit } from "./commands";
 import type { ListUi } from "./list-ui";
 import { planDrop } from "./reorder";
 import { taskRowId } from "./task-item";
@@ -23,6 +23,11 @@ export class TaskDrag {
   ids: readonly string[] | null = null;
   /** 並べ替えの落とし先（その行の前か後ろ） */
   target: { id: string; edge: DropEdge } | null = null;
+  /**
+   * 並び方（手動以外）で並べ替えて見せているまとまりの行の上にいる（線は出さず、落とすと
+   * 「手動の並びのときに使えます」と知らせる）
+   */
+  blocked = false;
   /** 行ごとの「運ばれているか」「落とし先の印」（行は自分の id だけを観測する） */
   readonly #dragging = observable.map<string, true>();
   readonly #edges = observable.map<string, DropEdge>();
@@ -62,6 +67,7 @@ export class TaskDrag {
   clearTarget(): void {
     if (this.target) this.#edges.delete(this.target.id);
     this.target = null;
+    this.blocked = false;
   }
 
   end(): void {
@@ -122,7 +128,10 @@ export function startRowDrag(ui: ListUi, task: TaskRow, event: DragEvent): void 
   setCountImage(event, rows.length);
 }
 
-/** 行（開いた欄を含む）の上を運んでいるとき：同じ並べ替えられるまとまりなら、前か後ろに線を出す */
+/**
+ * 行（開いた欄を含む）の上を運んでいるとき：同じ並べ替えられるまとまりなら、前か後ろに線を出す。
+ * 並び方（手動以外）で並べ替えて見せているまとまりなら、線は出さずに落とせるようにする（落とすと知らせる）
+ */
 export function dragOverRow(ui: ListUi, taskId: string, event: DragEvent): void {
   const drag = taskDragOf(ui);
   const ids = drag.ids;
@@ -134,6 +143,11 @@ export function dragOverRow(ui: ListUi, taskId: string, event: DragEvent): void 
   }
   event.preventDefault();
   if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+  if (section.sorted) {
+    drag.clearTarget();
+    drag.blocked = true;
+    return;
+  }
   const rect = document.getElementById(taskRowId(taskId))?.getBoundingClientRect();
   const edge: DropEdge = rect && event.clientY < rect.top + rect.height / 2 ? "before" : "after";
   // 落としても並びが変わらない位置には線を出さない
@@ -149,15 +163,17 @@ export function dragOverRow(ui: ListUi, taskId: string, event: DragEvent): void 
   else drag.clearTarget();
 }
 
-/** 行の上で落としたとき：並べ替える */
+/** 行の上で落としたとき：並べ替える（並び方で並べ替えて見せているまとまりなら、並べ替えずに知らせる） */
 export function dropOnRow(ui: ListUi, event: DragEvent): void {
   const drag = taskDragOf(ui);
   const ids = drag.ids;
   const target = drag.target;
+  const blocked = drag.blocked;
   if (!ids) return;
   event.preventDefault();
   drag.end();
   if (target) dropRows(ui, ids, target.id, target.edge);
+  else if (blocked) ui.toaster.error(MANUAL_ORDER_ONLY_MESSAGE);
   ui.focusList();
 }
 

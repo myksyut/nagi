@@ -352,3 +352,84 @@ describe("ListUi：追加欄の下書き", () => {
     expect(ui.draftCount).toBe(1);
   });
 });
+
+describe("ListUi.revealSelected（16-修正1 R2）", () => {
+  /** 一覧（listbox）と、その中の行。aria-activedescendant で選んでいる行を指す */
+  function listWithRow(rowId: string, selected: boolean) {
+    const list = document.createElement("div");
+    if (selected) list.setAttribute("aria-activedescendant", rowId);
+    const row = document.createElement("div");
+    row.id = rowId;
+    const scroll = vi.fn();
+    row.scrollIntoView = scroll;
+    list.append(row);
+    document.body.append(list);
+    return { list, scroll };
+  }
+
+  it("一覧がそのままなら、行の動きを待ってから、その一覧の中の選んでいる行を見えるところへ動かす", async () => {
+    const ui = makeUi(await makeStore());
+    vi.useFakeTimers();
+    const { list, scroll } = listWithRow("task-a", true);
+    ui.registerListElement(list);
+    ui.revealSelected();
+    expect(scroll).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1000);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(scroll).toHaveBeenCalledWith({ block: "nearest" });
+    list.remove();
+  });
+
+  it("続けて呼んでも、測るのは最後の1回だけ", async () => {
+    const ui = makeUi(await makeStore());
+    vi.useFakeTimers();
+    const { list, scroll } = listWithRow("task-a", true);
+    ui.registerListElement(list);
+    ui.revealSelected();
+    vi.advanceTimersByTime(100);
+    ui.revealSelected();
+    vi.advanceTimersByTime(1000);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    list.remove();
+  });
+
+  it("待つあいだに画面が変わったら何もしない（新しい画面にある同じタスクの、選んでいない行を動かさない）", async () => {
+    const ui = makeUi(await makeStore());
+    vi.useFakeTimers();
+    const before = listWithRow("task-a", true);
+    ui.registerListElement(before.list);
+    ui.revealSelected();
+    // 画面が変わる：前の一覧は外れ、新しい一覧に同じタスクの行がある（こちらでは選んでいない）
+    before.list.remove();
+    const after = listWithRow("task-a", false);
+    ui.registerListElement(after.list);
+    vi.advanceTimersByTime(1000);
+    expect(before.scroll).not.toHaveBeenCalled();
+    expect(after.scroll).not.toHaveBeenCalled();
+    after.list.remove();
+  });
+
+  it("一覧の要素が同じでも、外れていたり、選んでいる行がその一覧の外にあったりしたら何もしない", async () => {
+    const ui = makeUi(await makeStore());
+    vi.useFakeTimers();
+    // 外れた一覧
+    const detached = listWithRow("task-a", true);
+    ui.registerListElement(detached.list);
+    ui.revealSelected();
+    detached.list.remove();
+    vi.advanceTimersByTime(1000);
+    expect(detached.scroll).not.toHaveBeenCalled();
+
+    // 選んでいる行（同じ id）が、一覧の外にだけある
+    const list = document.createElement("div");
+    list.setAttribute("aria-activedescendant", "task-b");
+    document.body.append(list);
+    const outside = listWithRow("task-b", false);
+    ui.registerListElement(list);
+    ui.revealSelected();
+    vi.advanceTimersByTime(1000);
+    expect(outside.scroll).not.toHaveBeenCalled();
+    list.remove();
+    outside.list.remove();
+  });
+});

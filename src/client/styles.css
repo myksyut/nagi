@@ -308,6 +308,32 @@
 }
 
 /*
+ * 優先度の印（features/priority-points）：3本の棒のうち、高は3本・中は2本・低は1本を塗り、残りは薄く出す
+ * （色だけに頼らず、形でも分かるように）。形は mask の SVG で、色は文字の色。高は琥珀、中と低は置いた場所の控えめな灰の
+ * まま（赤は使わない。締切を過ぎたときの色と紛れないように）
+ */
+@layer components {
+  .priority-mark {
+    flex: none;
+    width: 12px;
+    height: 12px;
+    background-color: currentColor;
+    mask:
+      url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Crect x='0.5' y='7' width='3' height='4' rx='1'/%3E%3Crect x='4.5' y='4' width='3' height='7' rx='1'/%3E%3Crect x='8.5' y='1' width='3' height='10' rx='1'/%3E%3C/svg%3E")
+      center / contain no-repeat;
+  }
+  .priority-mark[data-priority="high"] {
+    color: var(--list-today);
+  }
+  .priority-mark[data-priority="medium"] {
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Crect x='0.5' y='7' width='3' height='4' rx='1'/%3E%3Crect x='4.5' y='4' width='3' height='7' rx='1'/%3E%3Crect x='8.5' y='1' width='3' height='10' rx='1' fill-opacity='.3'/%3E%3C/svg%3E");
+  }
+  .priority-mark[data-priority="low"] {
+    mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Crect x='0.5' y='7' width='3' height='4' rx='1'/%3E%3Crect x='4.5' y='4' width='3' height='7' rx='1' fill-opacity='.3'/%3E%3Crect x='8.5' y='1' width='3' height='10' rx='1' fill-opacity='.3'/%3E%3C/svg%3E");
+  }
+}
+
+/*
  * 完了の光の輪（tasks/completion-ring.ts が画面に固定して置き、終わったら外す）。
  * 丸が埋まるのに合わせて広がりながら消える。動かすのは transform（scale）と opacity だけ。
  * prefers-reduced-motion のときは置かない（出ているあいだに設定が変わったら、completion-ring.ts が外し、

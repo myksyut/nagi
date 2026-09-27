@@ -3,6 +3,7 @@ import { observer } from "mobx-react-lite";
 import { AnimatePresence, m, useIsPresent } from "motion/react";
 import { memo, type ReactNode, useCallback, useEffect, useLayoutEffect, useRef } from "react";
 import {
+  type BoardPoints,
   type ProjectBoard as ProjectBoardLists,
   type TaskRow,
   type TodayBoard as TodayBoardLists,
@@ -13,6 +14,7 @@ import {
   projectAddTo,
   projectScreenKey,
 } from "@/features/projects/project-view";
+import { sortSections } from "@/features/sort/state";
 import { DURATION, LAYOUT_TRANSITION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { AddHint } from "@/tasks/add-hint";
@@ -32,7 +34,9 @@ import { type ColumnKey, moveToColumn, startCardDrag } from "./commands";
  * 一覧の状態（選択・開いているタスク・追加欄）はリストと同じ ListUi で持ち、まとまりに列（column）を付けて渡す。
  * ↑↓ は列の中、←→ で列を移る（ListUi）。x・s・t などのキーは、リストと同じ割り当てが選んでいるカードに働く。
  * カードを別の列へドラッグすると状態が変わる（commands.ts）。列の中のドラッグと ⌥↑↓ は、リストで並べ替えられる
- * まとまりの中だけで並べ替える
+ * まとまりの中だけで並べ替える。見出しの並び方（features/sort。リストと同じ）が手動以外なら、並べ替えられるまとまりの中を
+ * 優先度や工数の順に並べて見せ、⌥↑↓ と列の中のドラッグは止める（ほかの列へのドラッグは止めない）。
+ * 列の見出しに、件数の横にその列の工数の合計を出す
  */
 
 const COLUMNS: readonly { key: ColumnKey; label: string }[] = [
@@ -70,22 +74,29 @@ const TODAY_ADD_TO: AddTarget = { bucket: "today", label: "今日に追加" };
 
 export const TodayBoard = observer(function TodayBoard() {
   const store = useStore();
+  const ui = useUi();
   const view = useListView(() => ({
     key: "today",
     kind: "today",
-    sections: () => todaySections(store.lists.todayBoard),
+    sections: () => sortSections(ui, "today", todaySections(store.lists.todayBoard)),
     addTo: TODAY_ADD_TO,
     addInSection: "notStarted",
   }));
-  return <Board view={view} label="今日のボード" />;
+  return <Board view={view} label="今日のボード" points={() => store.lists.todayBoardPoints} />;
 });
 
 export const ProjectBoard = observer(function ProjectBoard({ projectId }: { projectId: string }) {
   const store = useStore();
+  const ui = useUi();
   const view = useListView(() => ({
     key: projectScreenKey(projectId),
     kind: "project",
-    sections: () => projectSections(store.lists.projectBoard(projectId)),
+    sections: () =>
+      sortSections(
+        ui,
+        projectScreenKey(projectId),
+        projectSections(store.lists.projectBoard(projectId)),
+      ),
     // リストと同じ行き先（そのプロジェクトの「あとで」。アーカイブ済みなら受信箱で、未着手の列の一番上に開く）
     get addTo(): AddTarget {
       return projectAddTo(store, projectId);
@@ -95,11 +106,28 @@ export const ProjectBoard = observer(function ProjectBoard({ projectId }: { proj
     },
   }));
   const name = store.project(projectId)?.name ?? "";
-  return <Board view={view} label={`${name}のボード`} />;
+  return (
+    <Board
+      view={view}
+      label={`${name}のボード`}
+      points={() => store.lists.projectBoardPoints(projectId)}
+    />
+  );
 });
 
-/** ボード全体（listbox）。列は listbox の中のまとまり（group）で、カードが選べる行（option） */
-const Board = observer(function Board({ view, label }: { view: ListView; label: string }) {
+/**
+ * ボード全体（listbox）。列は listbox の中のまとまり（group）で、カードが選べる行（option）。
+ * points は列ごとの工数の合計を読む（列の見出しの中でだけ読む）
+ */
+const Board = observer(function Board({
+  view,
+  label,
+  points,
+}: {
+  view: ListView;
+  label: string;
+  points: () => BoardPoints;
+}) {
   const ui = useUi();
   const sections = view.sections();
   const adding = ui.adding && ui.view === view;
@@ -153,6 +181,7 @@ const Board = observer(function Board({ view, label }: { view: ListView; label: 
           sections={sections.filter((section) => section.column === column.key)}
           view={view}
           adding={addColumn === column.key}
+          points={points}
         />
       ))}
     </div>
@@ -166,7 +195,7 @@ type Item =
   | { type: "empty"; key: string };
 
 /**
- * 1つの列：見出し（状態の印・名前・件数）と、カード。別の列から運んできたカードを落とすと、状態が変わる。
+ * 1つの列：見出し（状態の印・名前・件数・工数の合計）と、カード。別の列から運んできたカードを落とすと、状態が変わる。
  * 追加欄は、開くまとまりの一番下（まとまりを決めていなければ列の一番上）に開く
  */
 const Column = observer(function Column({
@@ -175,12 +204,14 @@ const Column = observer(function Column({
   sections,
   view,
   adding,
+  points,
 }: {
   column: ColumnKey;
   label: string;
   sections: readonly TaskSection[];
   view: ListView;
   adding: boolean;
+  points: () => BoardPoints;
 }) {
   const ui = useUi();
   const drag = taskDragOf(ui);
@@ -245,6 +276,7 @@ const Column = observer(function Column({
         <ColumnGlyph column={column} />
         {label}
         <span className="font-normal text-faint-foreground tabular-nums">{count}</span>
+        <ColumnPoints read={() => points()[column]} />
       </div>
       <AnimatePresence initial={false} mode="popLayout" presenceAffectsLayout={false}>
         {positioned(items).map(({ item, position }, index) => (
@@ -259,6 +291,16 @@ const Column = observer(function Column({
       </AnimatePresence>
     </div>
   );
+});
+
+/**
+ * 列の見出しの工数の合計（「・ 工数 8」。工数のあるカードがなければ出さない）。
+ * ここでだけ読む（工数が変わっても、描き直すのはこの小さな部品だけ）
+ */
+const ColumnPoints = observer(function ColumnPoints({ read }: { read: () => number }) {
+  const points = read();
+  if (points === 0) return null;
+  return <span className="font-normal text-faint-foreground tabular-nums">・ 工数 {points}</span>;
 });
 
 /** 列の見出しの印（未着手は空の丸、進行中は半分が紫、完了は埋まった丸）。完了の丸と同じ見た目を小さくしたもの */
@@ -369,8 +411,10 @@ function Card({ task, view }: { task: TaskRow; view: ListView }) {
       aria-hidden={present ? undefined : true}
       onDragOver={(event) => dragOverRow(ui, task.id, event)}
       onDrop={(event) => {
-        // 並べ替えの落とし先があるときだけ受ける（ないときは列へ任せる。別の列から来たカードなど）
-        if (taskDragOf(ui).target) dropOnRow(ui, event);
+        // 並べ替えの落とし先があるとき（と、並び方で並べ替えて見せている同じまとまりの上で、知らせるとき）だけ受ける
+        // （ないときは列へ任せる。別の列から来たカードなど）
+        const drag = taskDragOf(ui);
+        if (drag.target || drag.blocked) dropOnRow(ui, event);
       }}
     >
       <CardView task={task} view={view} present={present} />
