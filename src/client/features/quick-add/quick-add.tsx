@@ -6,6 +6,7 @@ import { Popover, PopoverPopup } from "@/components/ui/popover";
 import { useStore } from "@/data";
 import { formatLongDate } from "@/features/dates/labels";
 import { ProjectDot } from "@/features/projects/project-dot";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { projectColorOf } from "@/lib/project-color";
 import { cn } from "@/lib/utils";
@@ -14,6 +15,19 @@ import { undo } from "@/tasks/commands";
 import { taskDetailPopoverOf } from "@/tasks/task-detail-popover";
 import { useUi } from "@/tasks/ui-context";
 import { type QuickAddRequest, quickAddOf } from "./state";
+
+// 小さな追加欄の中のキー（ショートカットのページの「候補や欄の中」）。Enter・Esc は下の onKeyDown、
+// ←→ は行き先の切り替え（ChoiceSwitch のラジオ。Tab で来たとき）
+registerFieldKeys({
+  id: "quick-add",
+  label: "小さな追加欄（カレンダー・タイムライン）",
+  order: FIELD_SCENE_ORDER.quickAdd,
+  keys: [
+    { label: "追加して続けて打つ", keys: ["Enter"] },
+    { label: "閉じる", keys: ["Escape"] },
+    { label: "行き先（受信箱｜今日）を切り替える", keys: ["ArrowLeft", "ArrowRight"] },
+  ],
+});
 
 /**
  * 小さな追加欄（カレンダーとタイムライン。13 が作り、14 もつなぐ）。使い方は README の「小さな追加欄」。

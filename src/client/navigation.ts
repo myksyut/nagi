@@ -29,6 +29,9 @@ export const TIMELINE: ViewEntry = { key: "timeline", path: "/timeline", label: 
  */
 export const VIEWS: readonly ViewEntry[] = [CALENDAR, TIMELINE];
 
+/** サイドバーの一番下（完了ログの下）のショートカットのページ（features/shortcuts） */
+export const SHORTCUTS = { path: "/shortcuts", label: "ショートカット" } as const;
+
 export const HOME_PATH = "/today";
 
 export const PROJECT_PATH_PATTERN = "/projects/:id";

@@ -41,13 +41,23 @@ function projectSections(groups: ProjectTaskGroups): TaskSection[] {
 
 export const ProjectScreen = observer(function ProjectScreen({ id }: { id: string }) {
   const store = useStore();
+  const [, navigate] = useLocation();
   const layout = useScreenLayout(projectScreenKey(id));
   const project = liveProject(store, id);
   const title = project?.name ?? "";
+  /** この画面を開いてから、プロジェクトがあった */
+  const shown = useRef(false);
 
   useEffect(() => {
     document.title = title === "" ? "nagi" : `${title} — nagi`;
   }, [title]);
+
+  // 開いているあいだにプロジェクトがなくなったら（作ったあとの ⌘Z、保存できずに消えた作成）、今日へ移る
+  // （アーカイブと同じ扱い。消えたプロジェクトの画面を履歴に残さない）
+  useEffect(() => {
+    if (project) shown.current = true;
+    else if (shown.current) navigate(HOME_PATH, { replace: true });
+  }, [project, navigate]);
 
   if (!store.loaded) return null;
   if (!project) {

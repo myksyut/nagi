@@ -11,8 +11,8 @@ import { optionTitles, pickerListbox, setupApp } from "./test/render-app";
  * チケット11：s（進行中にする・やめる）、l・d で今日から出すと未着手に戻る、プロジェクトの色の選び直し、
  * ⌘Z が戻せなかったときの文言の出し分け（進行中の操作でも）。
  * 「小さな詳細」（task-detail-popover）は flows-task-detail-popover.test.tsx にまとめてある。
- * ⌘K・? の一覧に「進行中にする／やめる」が出ることは、keymap.list() を汎用にたどる既存のテスト
- * （features/command-palette/command-palette.test.tsx・shortcuts-dialog.test.tsx）が
+ * ⌘K・ショートカットのページに「進行中にする／やめる」が出ることは、keymap.list() を汎用にたどる既存のテスト
+ * （features/command-palette/command-palette.test.tsx・features/shortcuts/shortcuts-screen.test.tsx）が
  * task.start の登録を自動的にカバーする
  */
 

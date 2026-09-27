@@ -1,6 +1,7 @@
 import { observer } from "mobx-react-lite";
 import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import type { TaskRow } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { cn } from "@/lib/utils";
 import { useDetailSurface } from "./detail-surface";
@@ -8,6 +9,19 @@ import { detailFieldsOf } from "./extensions";
 import { LinkifiedText } from "./linkified-text";
 import type { ListView } from "./list-ui";
 import { useAutosave } from "./use-autosave";
+
+// 開いたタスクの欄の中のキー（ショートカットのページの「候補や欄の中」）。下の TitleInput・MemoEditor の onKeyDown と同じ
+// （開くとタイトルへ入るのは、キーマップの Enter。小さな詳細でも同じ）
+registerFieldKeys({
+  id: "task-detail",
+  label: "開いたタスク",
+  order: FIELD_SCENE_ORDER.taskDetail,
+  keys: [
+    { label: "タイトルを保存して閉じる", keys: ["Enter", "Escape"] },
+    { label: "メモを書く（メモの上で）", keys: ["Enter"] },
+    { label: "メモを保存して閉じる", keys: ["Escape"] },
+  ],
+});
 
 /** 開いたタスクのタイトルの入力欄の id（Enter でここにフォーカスを移す） */
 export function titleInputId(taskId: string): string {

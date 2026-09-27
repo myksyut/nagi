@@ -195,6 +195,7 @@
   --list-calendar: #a78bfa;
   --list-timeline: #34d399;
   --list-logbook: #94a3b8;
+  --list-shortcuts: #94a3b8;
   /* プロジェクトの 8 色（名前で持つ。src/shared/palette.ts の PROJECT_COLORS と同じ名前と順） */
   --project-violet: #a78bfa;
   --project-sky: #38bdf8;

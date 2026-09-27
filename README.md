@@ -26,7 +26,7 @@ components.json  # shadcn / coss ui の設定
 | --- | --- |
 | `screens/` | リストごとの画面（今日・受信箱・予定・あとで・完了ログ）。一覧の中身（まとまりと追加の行き先）を `useListView` で渡す |
 | `tasks/` | 一覧の部品と状態。選択（複数選択を含む）・開いているタスク・追加欄（`list-ui.ts`）、完了や振り分け・並べ替えの操作と「元に戻す」のトースト（`commands.ts`・`reorder.ts`）、ドラッグ（`drag.ts`）、行と開いたタスクの拡張点（`extensions.ts`） |
-| `keyboard/` | キーマップ（`keymap.ts`）。キーの割り当ては登録式で、⌘K や `?` の一覧もここから作る。キー操作の状況（`{ store, ui, navigate }`）は `useKeyContext()`（`key-context.tsx`）で受け取れる |
+| `keyboard/` | キーマップ（`keymap.ts`）。キーの割り当ては登録式で、⌘K やショートカットのページもここから作る。候補や欄の中のキーの説明（`field-keys.ts`）。キー操作の状況（`{ store, ui, navigate }`）は `useKeyContext()`（`key-context.tsx`）で受け取れる |
 | `features/` | 各機能の登録（キーの割り当て・行の右側の情報・開いたタスクの欄）。`features/<名前>/register.ts(x)` を自動で読み込むので、機能を足すときはフォルダを作るだけでよい |
 
 キーの割り当ての決まり（`registerKeyBindings`）：
@@ -34,7 +34,22 @@ components.json  # shadcn / coss ui の設定
 - 1つのキーは、1つの場面（`scope`、省略すると既定の場面）に1つの割り当てだけ。同じ場面で同じキーを別の id に割り当てると、開発とテストでは登録のときに例外になる（本番はコンソールに出し、先に登録したほうが動く）。5 と 6 が並行してキーを足すときは、`pnpm test` で重なりに気づける
 - 同じキーを場面ごとに使い分けるときだけ、別の `scope` を付け、`when` で同時に効かないようにする
 - 入力欄では1文字のキーは効かない（1文字のキーに `allowInInput` を付けると登録で例外）。ポップオーバーなど、アプリのキーを止めたい要素には `data-keymap="off"` を付ける
-- 登録した割り当ては、そのまま ⌘K（`features/command-palette`）に名前と先頭のキーで並ぶ（今使えるもの＝`when` が true のものだけ）。⌘K からは `keymap.run(id, context)` で、キーを押したときと同じ `run` を呼ぶ。`?` の一覧は `group` ごとに全部のキーを並べる
+- 登録した割り当ては、そのまま ⌘K（`features/command-palette`）に名前と先頭のキーで並ぶ（今使えるもの＝`when` が true のものだけ）。⌘K からは `keymap.run(id, context)` で、キーを押したときと同じ `run` を呼ぶ。ショートカットのページ（`/shortcuts`。`features/shortcuts`）は `group` ごとに全部のキーを並べる
+- `keys` を空にすると、キーのない操作になる（⌘K からだけ実行する。ページには「キーなし」で出る。例：`project.create`）。決まった画面だけで効くキーには `where`（効く画面の名前）を付けると、ページで操作の名前に添える
+- 候補や欄の中のキー（部品が onKeyDown や Base UI で直接扱うキー）は、キーマップではなく `registerFieldKeys`（`keyboard/field-keys.ts`）に説明だけを登録する。場面ごとに1回、キーを扱う部品と同じモジュールで呼ぶ（後から読み込むモジュールでもよい）。並び順は `FIELD_SCENE_ORDER`。部品のキーの扱いを変えたら、同じモジュールの登録も直す
+
+```ts
+registerFieldKeys({
+  id: "project-picker",
+  label: "p の候補",
+  order: FIELD_SCENE_ORDER.projectPicker,
+  keys: [
+    { label: "候補を選ぶ", keys: ["ArrowUp", "ArrowDown"] },
+    { label: "決める（「◯◯」を作成も）", keys: ["Enter"] },
+    { label: "やめる", keys: ["Escape"] },
+  ],
+});
+```
 
 タスクへの操作の決まり（7 の複数選択）：
 
@@ -44,7 +59,7 @@ components.json  # shadcn / coss ui の設定
 
 最初の表示と、後から読み込む部品（8）：
 
-- 起動に要らない部品は `defer(() => import("…"))`（`lib/deferred.ts`）で最初の JS から外し、部品の中では `useDeferred` で受け取る。今は ⌘K、`?` の一覧、完了ログの一覧、ボード、日付の入力（カレンダー）、p の候補、チェックリストの編集、border-beam、Motion の機能一式（`LazyMotion` に渡す。行などは `motion.*` ではなく `m.*` で書く）、カレンダーの画面（小さな追加欄を含む）
+- 起動に要らない部品は `defer(() => import("…"))`（`lib/deferred.ts`）で最初の JS から外し、部品の中では `useDeferred` で受け取る。今は ⌘K、ショートカットのページ、完了ログの一覧、ボード、日付の入力（カレンダー）、p の候補、チェックリストの編集、border-beam、Motion の機能一式（`LazyMotion` に渡す。行などは `motion.*` ではなく `m.*` で書く）、カレンダーの画面（小さな追加欄を含む）
 - 登録したものは、アプリの外枠が起動のあとの空いた時間にまとめて先読みする（最初のキー操作で読み込みを待たせない）。テストでは各ファイルの最初に読み込んでおく（`test/setup.ts`）
 - 後から読み込むモジュールを、起動の道筋（`main.tsx` から静的に import される側）から import しない。import すると最初の JS に戻ってしまう。`pnpm build` の出力で `index-*.js` と一緒に読まれる分を確かめる
 - 逆向きにも気を付ける：後から読み込む画面から、それを `defer` している起動側のモジュール（`lazy.tsx` など）を import しない。循環すると、起動側のモジュールが細かいチャンクに分かれて、起動に要る JS が数 KB 増える（13 で見つけた）。起動側の部品を使いたいときは props で渡す（カレンダーの見出しは `LazyCalendarScreen` が `Heading` として渡している）
@@ -151,6 +166,13 @@ quickAddOf(ui).open({ kind: "date", on: "2026-10-05" }, anchor, returnFocus);
 - カードの下の情報は、行の右側に登録された項目（`registerRowMeta`）をそのまま並べる。日付の入力と p の候補も、カード（`taskRowId` の要素）から開く。丸は `CompleteButton` なので、完了の光の輪もそのまま出る
 - ドラッグ（`commands.ts`）：列をまたぐと状態が変わる（→進行中は `startTasks`、→完了は `completeTasks`、進行中→未着手は `stopTasks`、完了→未着手は `uncompleteTasks`）。完了→進行中は `store.actions.uncompleteTasks(ids, { start: true })` で、完了を外して今日の一番下に進行中で戻すのを1つの操作にする（⌘Z 1回で戻る）。運ぶのは、つかんだカードと同じ列の選んでいるカード（完了のカードも運べる）。列の中は、リストで並べ替えられるまとまりの中だけで並べ替える。完了のカードは、サイドバーの今日・あとで・予定には落とせない（`useTaskDropTarget(onDrop, { openOnly: true })`。プロジェクトへは p と同じく落とせる）
 - 追加欄は、今日は未着手の列の一番下、プロジェクトは未着手の列の「あとで」の一番下（アーカイブ済みなら未着手の列の一番上）に開く
+
+プロジェクトの作成とショートカットのページ（17）：
+
+- サイドバーの「プロジェクト」の見出しの右の ＋ と、⌘K の「プロジェクトを作成」は、キーのない割り当て `project.create` を呼び、一覧の一番下に名前の欄を開く（`features/projects/create-field.tsx`）。作るのはデータ層の `createProject(name)` で、戻り値の `ids[0]` のプロジェクトの画面を開き、一覧が描かれたら（`ui.view` が変わったら）一覧へフォーカスを移す。同じ名前は p の候補と同じ `normalizeName` で、`store.lists.projects`（アーカイブ済み・削除済みを除く）と比べる
+- プロジェクトの画面は、開いているあいだにプロジェクトがなくなったら（作成の ⌘Z、保存できずに消えた作成）、今日へ移る（履歴は置き換える）
+- ショートカットのページ（`features/shortcuts`）の部品は後から読み込む（`lazy.tsx` が見出しを先に出す）。ページが出ているあいだは、場面 `shortcuts` の Esc と `?` で前の画面に戻る。戻る先は、アプリの外枠が画面を移るたびに `shortcutsPageOf(ui).noteLocation(path)` で知らせている（直接開いたときは今日）
+- キーマップと候補や欄の中のキーの登録は MobX に知らせるので、開いているページにも、後から読み込むモジュールの登録（カレンダーの [ ] など）がそのまま出る
 
 オフラインと失敗のとき（8）：
 

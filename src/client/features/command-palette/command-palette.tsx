@@ -16,6 +16,7 @@ import {
 } from "@/components/ui/command";
 import { Kbd } from "@/components/ui/kbd";
 import type { TaskRow } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { useKeyContext } from "@/keyboard/key-context";
 import { type KeyContext, keymap } from "@/keyboard/keymap";
 import { isComposingKey } from "@/keyboard/keys";
@@ -29,6 +30,19 @@ import {
   paletteGroups,
 } from "./palette-items";
 import { locationOf } from "./search";
+
+// ⌘K の中のキー（ショートカットのページの「候補や欄の中」）。↑↓・Enter・Esc は Base UI の Autocomplete が扱い、
+// ⌘K でもう一度閉じるのは下の CommandInput の onKeyDown
+registerFieldKeys({
+  id: "palette",
+  label: "⌘K",
+  order: FIELD_SCENE_ORDER.palette,
+  keys: [
+    { label: "候補を選ぶ", keys: ["ArrowUp", "ArrowDown"] },
+    { label: "実行する・開く", keys: ["Enter"] },
+    { label: "閉じる", keys: ["Escape", "Mod+k"] },
+  ],
+});
 
 /**
  * ⌘K：タスクの検索（完了ログも含む）、リストやプロジェクトへの移動、選んでいるタスクへの操作を、名前で探して実行する。

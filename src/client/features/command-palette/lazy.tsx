@@ -7,7 +7,7 @@ import { useUi } from "@/tasks/ui-context";
 import { type Overlays, overlaysOf } from "./overlays";
 
 /**
- * ⌘K と `?` の一覧は、起動に要らないので後から読み込む（Base UI の Autocomplete と Dialog を含む）。
+ * ⌘K は、起動に要らないので後から読み込む（Base UI の Autocomplete を含む）。
  * ふだんは起動のあとの空いた時間に先読みしてあるので、開くときに待たない。
  * 先読みの前に開かれたら、届くまでは待ちの欄（WaitingInput）がキーを受け止める（打った文字は届いたら ⌘K の検索欄へ移す）。
  * 読み込めなかったときは、待ちの欄に「読み込めませんでした・もう一度」を出す（開き直したときも読み直す）。
@@ -15,7 +15,6 @@ import { type Overlays, overlaysOf } from "./overlays";
  */
 
 const palette = defer(() => import("./command-palette"));
-const shortcuts = defer(() => import("./shortcuts-dialog"));
 
 /** 待ちの欄を Esc で閉じたとき、開く前の場所へフォーカスを戻す（なければ一覧へ） */
 function returnFocus(overlays: Overlays, ui: ListUi): void {
@@ -50,27 +49,6 @@ export const LazyCommandPalette = observer(function LazyCommandPalette() {
       failed={failed}
       onRetry={retry}
       className="fixed inset-x-0 top-[10vh] mx-auto w-[calc(100%-2rem)] max-w-xl rounded-2xl px-3 py-2"
-    />
-  );
-});
-
-export const LazyShortcutsDialog = observer(function LazyShortcutsDialog() {
-  const ui = useUi();
-  const overlays = overlaysOf(ui);
-  const open = overlays.shortcuts;
-  const { module, failed, retry } = useDeferred(shortcuts, open);
-  if (module) return <module.ShortcutsDialog />;
-  if (!open) return null;
-  return (
-    <WaitingInput
-      label="ショートカット"
-      onCancel={() => {
-        overlays.closeShortcuts();
-        ui.focusList();
-      }}
-      failed={failed}
-      onRetry={retry}
-      className="fixed inset-x-0 top-[10vh] mx-auto w-[calc(100%-2rem)] max-w-md rounded-2xl px-3 py-2"
     />
   );
 });

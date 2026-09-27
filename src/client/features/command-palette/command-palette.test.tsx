@@ -55,8 +55,10 @@ async function expectRunnableFromPalette(
     try {
       await openPalette(user);
       const item = findItemByExactLabel(binding.label);
-      const expectedKey = formatKey(binding.keys[0] ?? "");
-      expect(within(item).getByText(expectedKey)).toBeInTheDocument();
+      // キーのない操作（プロジェクトを作成）は、キーを出さない
+      const key = binding.keys[0];
+      if (key === undefined) expect(item.querySelector("kbd")).toBeNull();
+      else expect(within(item).getByText(formatKey(key))).toBeInTheDocument();
 
       await user.click(item);
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
