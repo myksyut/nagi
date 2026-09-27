@@ -163,7 +163,10 @@ describe("開いて戻るのを繰り返す", () => {
     const user = userEvent.setup();
     const { location } = await open("/calendar");
     await screen.findByRole("button", { name: "次の月" });
-    const month = document.querySelector("h1")?.textContent;
+    // 見ている年月（見出しの下の「2026年9月」。h1 はいつも「カレンダー」なので、月が動いても変わらない）
+    const shownMonth = () => screen.getByText(/^\d{4}年\d{1,2}月$/).textContent;
+    const month = shownMonth();
+    expect(month).toMatch(/^\d{4}年\d{1,2}月$/);
 
     await user.keyboard("?");
     await findPage();
@@ -174,7 +177,7 @@ describe("開いて戻るのを繰り返す", () => {
     await screen.findByRole("button", { name: "次の月" });
     expect(location.history).toEqual(["/calendar", "/calendar"]);
     // 見ている月は動いていない（カレンダーの見ている月は、画面を移っても残る）
-    expect(document.querySelector("h1")?.textContent).toBe(month);
+    expect(shownMonth()).toBe(month);
   });
 
   // 17-修正1 の 7：戻り先のプロジェクトがもうないときは、今日へ移る

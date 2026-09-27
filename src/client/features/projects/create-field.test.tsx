@@ -1,10 +1,13 @@
 import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it } from "vitest";
-import type { AppStore } from "@/data";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { AppStore } from "@/data";
+import { createMemoryLocalDb } from "@/data/local-db";
+import { ListUi } from "@/tasks/list-ui";
 import { FakeServer } from "@/test/fake-server";
 import { makeProject } from "@/test/fixtures";
 import { optionTitles, setupApp } from "@/test/render-app";
+import { projectCreatorOf, submitProjectName } from "./create-field";
 
 /**
  * 17：サイドバーの ＋ と ⌘K からプロジェクトを作る（タスクがなくても作れる）。
@@ -255,11 +258,203 @@ describe("保存できなかったとき", () => {
     await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
     await user.type(nameField(), "打ちかけ");
 
-    cleanup();
+    reload();
     await open("/today", server);
     await screen.findByRole("listbox", { name: "今日" });
     await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
     expect(nameField()).toHaveValue("打ちかけ");
+  });
+});
+
+/** 画面を読み込み直す（画面を離れる知らせ pagehide を出してから、画面を消す。ストアと画面は open で作り直す） */
+function reload() {
+  act(() => {
+    window.dispatchEvent(new Event("pagehide"));
+  });
+  cleanup();
+}
+
+/** 画面を描かない、もう1つのタブ（同じサーバー・同じ localStorage）。名前の欄は ProjectCreator を直接動かす */
+async function otherTab(server: FakeServer) {
+  const store = new AppStore({
+    fetch: server.fetch,
+    openLocalDb: async () => createMemoryLocalDb(),
+  });
+  stores.push(store);
+  await store.start();
+  const ui = new ListUi(store);
+  const context = { store, ui, navigate: vi.fn() };
+  const creator = projectCreatorOf(ui);
+  return {
+    store,
+    creator,
+    /** ＋ で開き、name を打って Enter（空なら何もしない） */
+    create(name: string) {
+      act(() => {
+        creator.show();
+        creator.setName(name);
+        submitProjectName(context);
+      });
+    },
+    /** ＋ で開き、name を打って Esc（空の欄なら、外を押して閉じるのと同じ） */
+    cancel(name = "") {
+      act(() => {
+        creator.show();
+        creator.setName(name);
+        creator.close();
+      });
+    },
+  };
+}
+
+describe("ほかのタブ（17-修正2 の R1）", () => {
+  it("ほかのタブで空の欄を閉じても（Esc・外のクリック）、こちらで打っている名前は消えず、読み込み直すと欄に入る", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    await open("/today", server);
+    const b = await otherTab(server);
+    await screen.findByRole("listbox", { name: "今日" });
+
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "タブAで残す名前");
+    b.cancel();
+    b.cancel("タブBでやめた名前");
+    expect(nameField()).toHaveValue("タブAで残す名前");
+
+    reload();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("タブAで残す名前");
+  });
+
+  it("ほかのタブで別の名前を作っても、こちらの名前は消えない。こちらで作ったら、読み込み直しても欄は空", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    await open("/today", server);
+    const b = await otherTab(server);
+    await screen.findByRole("listbox", { name: "今日" });
+    const create = () => user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+
+    await create();
+    await user.type(nameField(), "Aの名前");
+    b.create("Bの名前");
+    await act(async () => {
+      await b.store.idle();
+    });
+    expect(nameField()).toHaveValue("Aの名前");
+
+    // ほかのタブが作ったあとに読み込み直しても、こちらの名前は残っている
+    reload();
+    const { store } = await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await create();
+    expect(nameField()).toHaveValue("Aの名前");
+
+    await user.keyboard("{Enter}");
+    await act(async () => {
+      await store.idle();
+      await store.sync();
+    });
+    expect(store.lists.projects.map((project) => project.name).sort()).toEqual([
+      "Aの名前",
+      "Bの名前",
+    ]);
+
+    // こちらで作ったら、読み込み直しても欄は空
+    reload();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await create();
+    expect(nameField()).toHaveValue("");
+  });
+
+  it("控えの列から欄に入れた名前は、ほかのタブが別の名前を作る・やめるでも消えず、読み込み直しても入る", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const { store } = await open("/today", server);
+    const b = await otherTab(server);
+    await screen.findByRole("listbox", { name: "今日" });
+    const create = () => user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+
+    server.fail("/api/mutate", 400);
+    await create();
+    await user.type(nameField(), "断られたA{Enter}");
+    await act(async () => {
+      await store.idle();
+    });
+    await create();
+    expect(nameField()).toHaveValue("断られたA");
+
+    b.cancel("Bでやめた");
+    b.create("Bで作った");
+    await act(async () => {
+      await b.store.idle();
+    });
+    expect(nameField()).toHaveValue("断られたA");
+
+    reload();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await create();
+    expect(nameField()).toHaveValue("断られたA");
+    expect(screen.queryByText(/ほかに/)).toBeNull();
+  });
+
+  it("ログインが切れた（401）ときは、欄に打っている途中の名前も控えの列へ移り、ログインし直すと入る", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const { store, location } = await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "打っている途中");
+
+    server.fail("/api/mutate", 401);
+    act(() => {
+      store.actions.addTask({ title: "401 のきっかけ", bucket: "inbox" });
+    });
+    await act(async () => {
+      await store.idle();
+    });
+    await waitFor(() => expect(location.history?.at(-1)).toBe("/login"));
+
+    cleanup();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("打っている途中");
+  });
+
+  it("ほかのタブが控えの列に足したら、「ほかに N件」の数が合う（storage の知らせ）", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    await open("/today", server);
+    const b = await otherTab(server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "打っている途中");
+
+    server.fail("/api/mutate", 400);
+    b.create("Bで断られた");
+    await act(async () => {
+      await b.store.idle();
+    });
+    // ほかのタブの書き込みは、このタブには storage の知らせで届く（同じ window では出ないので、ここで出す）
+    act(() => {
+      window.dispatchEvent(
+        new StorageEvent("storage", {
+          key: "nagi:draft:project-names",
+          newValue: localStorage.getItem("nagi:draft:project-names"),
+          storageArea: localStorage,
+        }),
+      );
+    });
+    expect(screen.getByText(/ほかに 1件/)).toBeInTheDocument();
+    expect(nameField()).toHaveValue("打っている途中");
+
+    await user.keyboard("{Enter}");
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("Bで断られた");
   });
 });
 

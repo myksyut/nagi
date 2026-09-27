@@ -3,8 +3,8 @@
  * - 追加欄の下書き（オフラインで追加できなかった文字も、閉じても残る）
  * - 保存できずに戻ってきた追加の文字の残り（「ほかに下書き N件」）
  * - 保存できなかったタイトルとメモの文字（次にそのタスクを開くと欄に戻る）
- * - サイドバーのプロジェクトの名前の欄に打っている名前と、保存できなかったプロジェクトの作成の名前
- *   （次に名前の欄を開くと、先頭から入る。features/projects/create-field.tsx）
+ * - サイドバーのプロジェクトの名前の控えの列（保存できなかった作成の名前と、画面を離れるときに欄に打っていた名前。
+ *   次に名前の欄を開くと、古い順に入る。features/projects/create-field.tsx）。どのタブからも同じ1つの列を使う
  *
  * タブが2つあっても、互いの分を消さないようにする：
  * - タイトルとメモは、項目ごとに別のキーにする
@@ -19,7 +19,6 @@ const PREFIX = "nagi:draft:";
 const ADD_DRAFT_KEY = `${PREFIX}add`;
 const ADD_QUEUE_KEY = `${PREFIX}add-queue`;
 const UNSAVED_PREFIX = `${PREFIX}unsaved:`;
-const PROJECT_NAME_KEY = `${PREFIX}project-name`;
 const PROJECT_NAMES_KEY = `${PREFIX}project-names`;
 
 function defaultStorage(): Storage | null {
@@ -47,6 +46,7 @@ export type DraftChange =
   | { kind: "add"; value: string }
   | { kind: "add-queue"; value: string[] }
   | { kind: "unsaved"; key: string; value: string | null }
+  | { kind: "project-names"; value: string[] }
   | { kind: "cleared" };
 
 export class DraftStorage {
@@ -113,17 +113,9 @@ export class DraftStorage {
     return { taken, rest };
   }
 
-  // --- プロジェクトの名前の欄 -----------------------------------------------------------------
+  // --- プロジェクトの名前の控えの列 -----------------------------------------------------------
 
-  loadProjectNameDraft(): string {
-    return this.#read(PROJECT_NAME_KEY) ?? "";
-  }
-
-  saveProjectNameDraft(name: string): boolean {
-    return this.#write(PROJECT_NAME_KEY, name === "" ? null : name);
-  }
-
-  /** 保存できなかったプロジェクトの作成の名前（まだ欄に入れていない分。古い順） */
+  /** 控えの列（まだ欄に入れていない名前。古い順） */
   loadProjectNames(): string[] {
     return parseQueue(this.#read(PROJECT_NAMES_KEY));
   }
@@ -186,7 +178,9 @@ export class DraftStorage {
       if (key === null) listener({ kind: "cleared" });
       else if (key === ADD_DRAFT_KEY) listener({ kind: "add", value: newValue ?? "" });
       else if (key === ADD_QUEUE_KEY) listener({ kind: "add-queue", value: parseQueue(newValue) });
-      else if (key.startsWith(UNSAVED_PREFIX)) {
+      else if (key === PROJECT_NAMES_KEY) {
+        listener({ kind: "project-names", value: parseQueue(newValue) });
+      } else if (key.startsWith(UNSAVED_PREFIX)) {
         listener({ kind: "unsaved", key: key.slice(UNSAVED_PREFIX.length), value: newValue });
       }
     };

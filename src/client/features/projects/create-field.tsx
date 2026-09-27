@@ -24,9 +24,11 @@ import { projectScreenKey } from "./project-view";
  *   同じ名前（p の候補と同じ比べ方。アーカイブ済み・削除済みは比べない）があれば、作らずにそのプロジェクトを開く
  * - Esc で閉じる。何も打たずに外を押しても閉じる。打った名前があるまま外を押したときは欄を残す
  * - 変換を確定する Enter では作らない。オフラインなどで受け付けられなかったら、打った名前を残して開いたままにする
- * - 打った名前は黙って消さない（ProjectCreator）：欄に打っている名前は下書きとして残し（再読み込みでも消えない）、
- *   送ったあとに保存できなかった作成（保存の失敗・ログインが切れた・版が古い）の名前は、すべて控えの列に残して、
- *   次に欄を開いたときに古い順に入れる。打っている途中の名前は上書きしない
+ * - 打った名前は黙って消さない（ProjectCreator）：送ったあとに保存できなかった作成（保存の失敗・ログインが切れた・
+ *   版が古い）の名前は、すべて控えの列（localStorage。どのタブからも同じ1つ）に残し、次に欄を開いたときに古い順に入れる。
+ *   欄に打っている途中の名前は、そのタブのものとしてメモリに持ち、画面を離れるとき（閉じる・読み込み直す）と、
+ *   ログインが切れた・版が古いときに控えの列へ移す（タイトルとメモの persistEditing と同じ考え方）。
+ *   ほかのタブの Esc や作成は、自分の欄の名前にしか触らないので、こちらの名前を消さない。打っている途中の名前は上書きしない
  * 作成はデータ層の createProject（⌘Z で取り消せる。トーストは出さない。取り消したときにそのプロジェクトの画面を
  * 開いていれば、プロジェクトの画面が今日へ移る）
  */
@@ -36,7 +38,9 @@ export const PROJECT_CREATE_BINDING_ID = "project.create";
 
 /**
  * 名前の欄の開閉と、打った名前。一覧の状態（ListUi）ごとに1つ。
- * 打った名前と、保存できずに戻ってきた名前の控えの列は、一覧の下書きと同じ置き場（ui.drafts。localStorage）に残す。
+ * 控えの列は、一覧の下書きと同じ置き場（ui.drafts。localStorage）に置き、足す・取るときは毎回最新を読む
+ * （ほかのタブが足した・取った分を消さない）。欄に打っている名前はこのタブのメモリだけに持ち、localStorage の
+ * 共有の場所には書かない（書くと、ほかのタブが空の欄を閉じる・別の名前で作るだけで消えたり上書きされたりするため）。
  * ストアの知らせ（保存の失敗・ログインが切れた・版が古い）で捨てられた作成は、何件あってもすべて控えの列へ入れる
  */
 export class ProjectCreator {
@@ -50,8 +54,6 @@ export class ProjectCreator {
 
   constructor(store: AppStore, drafts: DraftStorage) {
     this.#drafts = drafts;
-    // 前に打っていた名前と控えの列を戻す（再読み込み・ログインのし直し・新しいバージョン）
-    this.name = drafts.loadProjectNameDraft();
     this.returnedCount = drafts.loadProjectNames().length;
     makeObservable(this, {
       open: observable,
@@ -61,6 +63,8 @@ export class ProjectCreator {
       show: action,
       close: action,
       setName: action,
+      stash: action,
+      syncReturned: action,
     });
     store.subscribe((notice) => this.#onNotice(notice));
   }
@@ -72,15 +76,30 @@ export class ProjectCreator {
     this.#fillFromReturned();
   }
 
-  /** 閉じる（作れたとき・Esc・空のまま外を押したとき。打った名前も消す） */
+  /** 閉じる（作れたとき・Esc・空のまま外を押したとき。このタブの欄の名前も消す。ほかのタブの名前と控えの列には触らない） */
   close(): void {
     this.open = false;
-    this.setName("");
+    this.name = "";
   }
 
   setName(name: string): void {
     this.name = name;
-    this.#drafts.saveProjectNameDraft(name);
+  }
+
+  /**
+   * 欄に打っている名前を控えの列の後ろへ移して、欄を閉じる（画面を離れるとき・ログインが切れた・版が古いとき）。
+   * 次にどのタブで欄を開いても、その名前が入る
+   */
+  stash(): void {
+    if (this.name.trim() !== "") {
+      this.returnedCount = this.#drafts.appendProjectNames([this.name]).length;
+    }
+    this.close();
+  }
+
+  /** ほかのタブが控えの列を変えた（足した・取った・すべて消えた） */
+  syncReturned(names: readonly string[]): void {
+    this.returnedCount = names.length;
   }
 
   /** 欄が空なら、控えの列の先頭を入れる（ほかのタブと合わせた最新の列から取る） */
@@ -91,7 +110,11 @@ export class ProjectCreator {
     if (taken !== undefined) this.setName(taken);
   }
 
-  /** 捨てられた作成の名前を、すべて控えの列へ。開いていて空の欄には、すぐに先頭を入れる */
+  /**
+   * 捨てられた作成の名前を、すべて控えの列へ。開いていて空の欄には、すぐに先頭を入れる。
+   * ログインが切れた・版が古いときは、この画面ではもう作れない（ログイン画面へ移る・読み込み直す）ので、
+   * 欄に打っている名前も控えの列へ移す
+   */
   #onNotice(notice: Notice): void {
     if (notice.type === "offline-blocked") return;
     const names = notice.discarded.flatMap((operation) =>
@@ -99,10 +122,10 @@ export class ProjectCreator {
         mutation.type === "project.create" ? [mutation.project.name] : [],
       ),
     );
-    if (names.length === 0) return;
     runInAction(() => {
-      this.returnedCount = this.#drafts.appendProjectNames(names).length;
-      if (this.open) this.#fillFromReturned();
+      if (names.length > 0) this.returnedCount = this.#drafts.appendProjectNames(names).length;
+      if (notice.type !== "save-failed") this.stash();
+      else if (names.length > 0 && this.open) this.#fillFromReturned();
     });
   }
 }
@@ -192,10 +215,26 @@ export function CreateProjectButton() {
   );
 }
 
-/** プロジェクトの一覧の一番下に開く名前の欄（開いているときだけ描く） */
+/**
+ * プロジェクトの一覧の一番下に開く名前の欄（開いているときだけ描く）。
+ * サイドバーにいつも置き、画面を離れるとき（pagehide）に打っている名前を控えの列へ移す。
+ * ほかのタブが控えの列を変えたら、「ほかに N件」の数を合わせる
+ */
 export const ProjectCreateField = observer(function ProjectCreateField() {
   const ui = useUi();
   const creator = projectCreatorOf(ui);
+  useEffect(() => {
+    const stash = () => creator.stash();
+    window.addEventListener("pagehide", stash);
+    const stop = ui.drafts.subscribe((change) => {
+      if (change.kind === "project-names") creator.syncReturned(change.value);
+      else if (change.kind === "cleared") creator.syncReturned([]);
+    });
+    return () => {
+      window.removeEventListener("pagehide", stash);
+      stop();
+    };
+  }, [creator, ui]);
   if (!creator.open) return null;
   return (
     <li>
