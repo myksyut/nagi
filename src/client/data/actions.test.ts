@@ -109,6 +109,61 @@ describe("uncompleteTasks", () => {
   });
 });
 
+describe("uncompleteTasks({ start: true })（12：ボードで完了→進行中に落としたとき）", () => {
+  it("完了を外して進行中にするのを1つの操作にする。今日の一番下、startedAt が付き completedAt は null", () => {
+    const { replica, actions, performed } = setup(() => new Date("2026-01-15T05:00:00.000Z"));
+    const todayRank = rankAfter(null);
+    const inToday = makeTask({ bucket: "today", rank: todayRank });
+    const completed = makeTask({
+      bucket: "later",
+      completedAt: "2026-01-14T00:00:00.000Z",
+    });
+    replica.replaceConfirmed([inToday, completed].map((row) => ({ kind: "task" as const, row })));
+
+    const result = actions.uncompleteTasks([completed.id], { start: true });
+
+    expect(result.ok).toBe(true);
+    // 1つの操作（mutations は1回のまとまり）
+    expect(performed).toHaveLength(1);
+    const mutation = performed[0]?.mutations[0];
+    expect(mutation).toMatchObject({
+      type: "task.update",
+      id: completed.id,
+      changes: {
+        completedAt: null,
+        bucket: "today",
+        startedAt: expect.any(String),
+      },
+    });
+    const changes = mutation?.type === "task.update" ? mutation.changes : undefined;
+    expect(typeof changes?.rank === "string" && changes.rank > todayRank).toBe(true);
+  });
+
+  it("start を付けなければ、これまでどおり startedAt は付かない", () => {
+    const { replica, actions, performed } = setup();
+    const completed = makeTask({ bucket: "later", completedAt: "2026-01-14T00:00:00.000Z" });
+    replica.replaceConfirmed([{ kind: "task", row: completed }]);
+
+    actions.uncompleteTasks([completed.id]);
+
+    const mutation = performed[0]?.mutations[0];
+    const changes = mutation?.type === "task.update" ? mutation.changes : undefined;
+    // 元から startedAt は null なので、変えない（key が入らない）
+    expect(changes && "startedAt" in changes).toBe(false);
+  });
+
+  it("完了していない行は対象にならない（start を付けても noop）", () => {
+    const { replica, actions, performed } = setup();
+    const open = makeTask({ bucket: "today" });
+    replica.replaceConfirmed([{ kind: "task", row: open }]);
+
+    const result = actions.uncompleteTasks([open.id], { start: true });
+
+    expect(result).toEqual({ ok: false, reason: "noop" });
+    expect(performed).toHaveLength(0);
+  });
+});
+
 describe("startTasks（10：進行中にする）", () => {
   it("今日以外にあるタスクは、今日の一番上へ移り、渡した順で上から並ぶ。すでに今日にあるタスクは位置を変えない", () => {
     const { replica, actions, performed } = setup();
