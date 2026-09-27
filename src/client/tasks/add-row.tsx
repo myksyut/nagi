@@ -1,9 +1,21 @@
 import { observer } from "mobx-react-lite";
 import { useEffect, useId, useRef, useState } from "react";
 import { BeamLine } from "@/components/beam-line";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import type { ListView } from "./list-ui";
 import { useUi } from "./ui-context";
+
+// 追加欄の中のキー（ショートカットのページの「候補や欄の中」）。下の onKeyDown と同じ
+registerFieldKeys({
+  id: "add-row",
+  label: "追加欄",
+  order: FIELD_SCENE_ORDER.addRow,
+  keys: [
+    { label: "追加して続けて打つ", keys: ["Enter"] },
+    { label: "閉じる（最後に追加したタスクを選ぶ）", keys: ["Escape"] },
+  ],
+});
 
 /**
  * 追加欄。新しいタスクが入る位置に開き、行き先を小さく出す。

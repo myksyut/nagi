@@ -2,6 +2,7 @@ import { observer } from "mobx-react-lite";
 import { type KeyboardEvent, useRef } from "react";
 import { Popover, PopoverPopup } from "@/components/ui/popover";
 import type { ProjectRow } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import {
   PROJECT_COLOR_LABELS,
   PROJECT_COLORS,
@@ -11,6 +12,19 @@ import {
 import { cn } from "@/lib/utils";
 import { useUi } from "@/tasks/ui-context";
 import { ProjectDot } from "./project-dot";
+
+// 色の候補の中のキー（ショートカットのページの「候補や欄の中」）。←→↑↓ は下の onKeyDown、色はボタンなので
+// Enter と Space で押すと決まる。Esc は Base UI の Popover が閉じる（onOpenChange の escape-key）
+registerFieldKeys({
+  id: "project-color",
+  label: "プロジェクトの色の候補",
+  order: FIELD_SCENE_ORDER.projectColor,
+  keys: [
+    { label: "色を選ぶ", keys: ["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"] },
+    { label: "決める", keys: ["Enter", " "] },
+    { label: "閉じる", keys: ["Escape"] },
+  ],
+});
 
 /**
  * プロジェクトの色の選び直し（プロジェクトの画面の見出しの色の点を押すと開く）。パレットの 8 色を小さく並べ、

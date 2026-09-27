@@ -2,12 +2,11 @@ import { action, makeObservable, observable } from "mobx";
 import type { ListUi } from "@/tasks/list-ui";
 
 /**
- * ⌘K（検索とコマンド）と `?`（ショートカット一覧）の開閉。一覧の状態（ListUi）ごとに1つ。
- * 部品（command-palette.tsx・shortcuts-dialog.tsx）とは分けて持つ（8 で部品を後から読み込めるように）
+ * ⌘K（検索とコマンド）の開閉。一覧の状態（ListUi）ごとに1つ。
+ * 部品（command-palette.tsx）とは分けて持つ（8 で部品を後から読み込めるように）
  */
 export class Overlays {
   palette = false;
-  shortcuts = false;
   /**
    * ⌘K で選んだコマンド。⌘K が外れた直後に呼ぶ（閉じる途中のダイアログにフォーカスを取られないように）。
    * これがあるあいだは、閉じたときに元の場所へフォーカスを戻さない
@@ -19,18 +18,14 @@ export class Overlays {
   constructor() {
     makeObservable(this, {
       palette: observable,
-      shortcuts: observable,
       openPalette: action,
       closePalette: action,
       runFromPalette: action,
-      openShortcuts: action,
-      closeShortcuts: action,
     });
   }
 
   openPalette(): void {
     if (!this.palette) this.returnFocus = document.activeElement;
-    this.shortcuts = false;
     this.palette = true;
   }
 
@@ -49,15 +44,6 @@ export class Overlays {
     const run = this.pendingRun;
     this.pendingRun = null;
     return run;
-  }
-
-  openShortcuts(): void {
-    this.palette = false;
-    this.shortcuts = true;
-  }
-
-  closeShortcuts(): void {
-    this.shortcuts = false;
   }
 }
 

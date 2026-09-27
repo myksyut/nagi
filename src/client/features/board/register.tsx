@@ -17,6 +17,7 @@ export const BOARD_KEY_BINDINGS: readonly KeyBinding[] = [
     label: "リスト／ボードの切り替え",
     group: "リスト",
     keys: ["v"],
+    where: "今日・プロジェクト",
     when: ({ ui }) => screenLayoutsOf(ui).screen !== null,
     run: ({ ui }) => {
       const layouts = screenLayoutsOf(ui);
@@ -28,6 +29,7 @@ export const BOARD_KEY_BINDINGS: readonly KeyBinding[] = [
     label: "左の列へ",
     group: "移動",
     keys: ["ArrowLeft"],
+    where: "ボード",
     repeat: true,
     scope: BOARD_SCOPE,
     when: ({ ui }) => ui.columns.length > 0,
@@ -41,6 +43,7 @@ export const BOARD_KEY_BINDINGS: readonly KeyBinding[] = [
     label: "右の列へ",
     group: "移動",
     keys: ["ArrowRight"],
+    where: "ボード",
     repeat: true,
     scope: BOARD_SCOPE,
     when: ({ ui }) => ui.columns.length > 0,

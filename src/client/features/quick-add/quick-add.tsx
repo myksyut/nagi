@@ -6,6 +6,7 @@ import { Popover, PopoverPopup } from "@/components/ui/popover";
 import { useStore } from "@/data";
 import { formatLongDate } from "@/features/dates/labels";
 import { ProjectDot } from "@/features/projects/project-dot";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { isComposingKey } from "@/keyboard/keys";
 import { projectColorOf } from "@/lib/project-color";
 import { cn } from "@/lib/utils";
@@ -13,10 +14,23 @@ import { ADD_BUTTON_ELEMENT_ID } from "@/shell/add-button";
 import { undo } from "@/tasks/commands";
 import { taskDetailPopoverOf } from "@/tasks/task-detail-popover";
 import { useUi } from "@/tasks/ui-context";
-import { type QuickAddRequest, quickAddOf } from "./state";
+import { QUICK_ADD_SCREENS, type QuickAddRequest, quickAddOf } from "./state";
+
+// 小さな追加欄の中のキー（ショートカットのページの「候補や欄の中」）。Enter・Esc は下の onKeyDown、
+// ←→ は行き先の切り替え（ChoiceSwitch のラジオ。Tab で来たとき）
+registerFieldKeys({
+  id: "quick-add",
+  label: `小さな追加欄（${QUICK_ADD_SCREENS}）`,
+  order: FIELD_SCENE_ORDER.quickAdd,
+  keys: [
+    { label: "追加して続けて打つ", keys: ["Enter"] },
+    { label: "閉じる", keys: ["Escape"] },
+    { label: "行き先（受信箱｜今日）を切り替える", keys: ["ArrowLeft", "ArrowRight"] },
+  ],
+});
 
 /**
- * 小さな追加欄（カレンダーとタイムライン。13 が作り、14 もつなぐ）。使い方は README の「小さな追加欄」。
+ * 小さな追加欄（カレンダーとタイムライン。13 が作り、14 もつなぐ。17 でショートカットのページにも置いた）。使い方は README の「小さな追加欄」。
  * - 右下の「＋」と n：「＋」の上に開き、行き先を「受信箱｜今日」から選ぶ（開くたびに受信箱から）
  * - カレンダーの日のマスの「＋」：そのマスの下に開き、その日の予定として追加する（今日か過去の日なら今日へ）
  * どちらも、タイトルを打って Enter で追加し、開いたまま続けて追加できる。Esc で閉じて、開いた要素へフォーカスを戻す。
@@ -254,8 +268,11 @@ function ChoiceSwitch({ value, onChange }: { value: Choice; onChange: (value: Ch
               checked ? "bg-accent text-foreground" : "hover:text-foreground",
             )}
             onMouseDown={(event) => event.preventDefault()}
-            // 押したときはラジオへフォーカスを移さずに切り替える（入力欄で続けて打てるように）
+            // 押したときはラジオへフォーカスを移さずに切り替える（入力欄で続けて打てるように）。
+            // ラジオ自身のクリック（キーボードの ←→・Space でブラウザが送る）は止めない。止めると、ブラウザが
+            // DOM の checked を元に戻し、読み上げに出る行き先と実際の行き先が食い違う
             onClick={(event) => {
+              if (event.target instanceof HTMLInputElement) return;
               event.preventDefault();
               onChange(option.value);
             }}

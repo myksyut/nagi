@@ -6,6 +6,7 @@ import { Calendar } from "@/components/ui/calendar";
 import { Kbd } from "@/components/ui/kbd";
 import { Popover, PopoverPopup } from "@/components/ui/popover";
 import { type TaskRow, useStore } from "@/data";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { keymap } from "@/keyboard/keymap";
 import { formatKey, isComposingKey } from "@/keyboard/keys";
 import { cn } from "@/lib/utils";
@@ -29,6 +30,40 @@ import { formatLongDate } from "./labels";
  * カレンダー（DayPicker と date-fns）を含むので、このモジュールは後から読み込む（開閉の状態は date-entry.tsx）。
  * 出るときは 100ms で押した場所から広がり、消えるときだけ 150ms でフェードする
  */
+
+// 入力欄の中のキー（ショートカットのページの「候補や欄の中」）。下の DateEntryPanel の onKeyDown と同じ
+registerFieldKeys({
+  id: "date-entry",
+  label: "日付の入力（d・⇧D）",
+  order: FIELD_SCENE_ORDER.dateEntry,
+  keys: [
+    { label: "決める", keys: ["Enter"] },
+    { label: "締切を外す（欄を空にして）", keys: ["Enter"] },
+    { label: "やめる", keys: ["Escape"] },
+  ],
+});
+
+// 日付の入力のカレンダーの中のキー（日にフォーカスがあるとき）。移動は DayPicker（react-day-picker 10）の
+// handleDayKeyDown の決まりどおり。日はボタンなので、Enter と Space で押すと、その日で決める（下の onSelect）
+registerFieldKeys({
+  id: "date-calendar",
+  label: "日付の入力のカレンダー（日にフォーカスがあるとき）",
+  order: FIELD_SCENE_ORDER.dateCalendar,
+  keys: [
+    { label: "前の日・次の日へ", keys: ["ArrowLeft", "ArrowRight"] },
+    { label: "前の週・次の週へ", keys: ["ArrowUp", "ArrowDown"] },
+    {
+      label: "前の月・次の月へ",
+      keys: ["Shift+ArrowLeft", "Shift+ArrowRight", "PageUp", "PageDown"],
+    },
+    {
+      label: "前の年・次の年へ",
+      keys: ["Shift+ArrowUp", "Shift+ArrowDown", "Shift+PageUp", "Shift+PageDown"],
+    },
+    { label: "週の始め・終わりへ", keys: ["Home", "End"] },
+    { label: "その日に決める", keys: ["Enter", " "] },
+  ],
+});
 
 // --- 日付と Date（カレンダーはその端末の時間帯の Date で扱う） --------------------------------
 

@@ -20,6 +20,7 @@ import { scheduleTasks, setDeadline } from "@/features/dates/commands";
 import { daysBetween, formatShortDate } from "@/features/dates/labels";
 import { ProjectDot } from "@/features/projects/project-dot";
 import { QuickAddHost } from "@/features/quick-add/quick-add";
+import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { projectColorOf, projectColorVar } from "@/lib/project-color";
 import { prefersReducedMotion } from "@/lib/reduced-motion";
 import { cn } from "@/lib/utils";
@@ -45,6 +46,18 @@ import {
   timelineRange,
 } from "./timeline-model";
 import { timelineNav } from "./timeline-nav";
+
+// 棒と◆の上のキー（ショートカットのページの「候補や欄の中」）。棒と◆はボタンなので、Enter と Space で押すと
+// 小さな詳細が開く。押しているあいだ（ドラッグの途中）の Esc は、下の pointerHandlers の onKeyDown がやめる
+registerFieldKeys({
+  id: "timeline-bar",
+  label: "タイムラインの棒と◆",
+  order: FIELD_SCENE_ORDER.timelineBar,
+  keys: [
+    { label: "小さな詳細を開く（棒か◆にフォーカスがあるとき）", keys: ["Enter", " "] },
+    { label: "ドラッグをやめる（押しているあいだ）", keys: ["Escape"] },
+  ],
+});
 
 /**
  * タイムライン（後から読み込む画面）。横に日付（1 週前から 8 週先）、縦にプロジェクトごとのまとまりとタスク。

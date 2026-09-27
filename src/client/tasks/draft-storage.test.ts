@@ -1,4 +1,4 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { DraftStorage } from "./draft-storage";
 
 /**
@@ -8,6 +8,7 @@ import { DraftStorage } from "./draft-storage";
 
 afterEach(() => {
   localStorage.clear();
+  vi.restoreAllMocks();
 });
 
 describe("追加欄の下書き（nagi:draft:add）", () => {
@@ -107,5 +108,191 @@ describe("localStorage が使えないとき（プライベートブラウズな
     expect(() => storage.saveAddDraft("なにか")).not.toThrow();
     expect(storage.loadAddDraft()).toBe("なにか");
     expect(storage.persisted).toBe(false);
+  });
+});
+
+// --- プロジェクトの名前の控えの列（17-修正3 の R1-b） ------------------------------------------
+
+/** 2つのタブが共有する localStorage の代わり（中身は1つ） */
+class SharedStorage {
+  readonly items = new Map<string, string>();
+}
+
+/**
+ * 1つのタブから見た localStorage。interruptAt 回目の読み書きのあとに、interrupt（ほかのタブの操作）を1回だけ挟む。
+ * 1つの操作（足す・取る）の途中のどこでほかのタブが割り込んでも、名前が消えないことを確かめるため
+ */
+class TabStorage implements Storage {
+  #calls = 0;
+  interruptAt = 0;
+  interrupt: (() => void) | null = null;
+
+  constructor(readonly shared: SharedStorage) {}
+
+  #touch(): void {
+    this.#calls += 1;
+    const run = this.interrupt;
+    if (run && this.#calls === this.interruptAt) {
+      this.interrupt = null;
+      run();
+    }
+  }
+
+  /** 割り込みを仕掛ける（数え直す） */
+  arm(at: number, run: () => void): void {
+    this.#calls = 0;
+    this.interruptAt = at;
+    this.interrupt = run;
+  }
+
+  /** A の操作が、割り込みの回数より前に終わったときは、終わったあとに B の操作をする */
+  flush(): void {
+    const run = this.interrupt;
+    this.interrupt = null;
+    run?.();
+  }
+
+  get length(): number {
+    const { size } = this.shared.items;
+    this.#touch();
+    return size;
+  }
+
+  key(index: number): string | null {
+    const key = [...this.shared.items.keys()][index] ?? null;
+    this.#touch();
+    return key;
+  }
+
+  getItem(key: string): string | null {
+    const value = this.shared.items.get(key) ?? null;
+    this.#touch();
+    return value;
+  }
+
+  setItem(key: string, value: string): void {
+    this.shared.items.set(key, value);
+    this.#touch();
+  }
+
+  removeItem(key: string): void {
+    this.shared.items.delete(key);
+    this.#touch();
+  }
+
+  clear(): void {
+    this.shared.items.clear();
+  }
+}
+
+function twoTabs() {
+  // 足すたびに時刻が進むようにする（同じミリ秒に2つのタブが足したときの順は決まらないため。
+  // そのときも名前は消えないが、「古いほうを取る」を確かめるには順が決まっている必要がある）
+  let clock = Date.now();
+  vi.spyOn(Date, "now").mockImplementation(() => ++clock);
+  const shared = new SharedStorage();
+  const storageA = new TabStorage(shared);
+  const storageB = new TabStorage(shared);
+  return {
+    storageA,
+    a: new DraftStorage(storageA),
+    b: new DraftStorage(storageB),
+    names: () => new DraftStorage(new TabStorage(shared)).loadProjectNames(),
+  };
+}
+
+/** A の操作の途中の、読み書きの n 回目ごとに B の操作を挟んで、すべての割り込み方を試す */
+const SPLIT_POINTS = Array.from({ length: 12 }, (_, i) => i + 1);
+
+describe("プロジェクトの名前の控えの列：ほかのタブが途中で割り込んでも、足した名前は消えない", () => {
+  it("名前を1件ずつ別のキーに置き、古い順に読める。取ると一番古いものが出る", () => {
+    const { a, names } = twoTabs();
+    a.appendProjectNames(["一つ目", "二つ目"]);
+    a.appendProjectNames(["三つ目"]);
+    expect(names()).toEqual(["一つ目", "二つ目", "三つ目"]);
+    expect(a.takeProjectName()).toEqual({ taken: "一つ目", remaining: 2 });
+    expect(names()).toEqual(["二つ目", "三つ目"]);
+  });
+
+  it.each(SPLIT_POINTS)(
+    "A と B が同時に足す（A の %i 回目の読み書きのあとに B）：両方残る",
+    (at) => {
+      const { storageA, a, b, names } = twoTabs();
+      storageA.arm(at, () => b.appendProjectNames(["B の名前"]));
+      a.appendProjectNames(["A の名前"]);
+      storageA.flush();
+      expect(names().sort()).toEqual(["A の名前", "B の名前"]);
+    },
+  );
+
+  it.each(SPLIT_POINTS)(
+    "A が取るあいだに B が足す（A の %i 回目のあと）：A は古い名前を取り、B の名前は残る",
+    (at) => {
+      const { storageA, a, b, names } = twoTabs();
+      a.appendProjectNames(["saved A"]);
+      storageA.arm(at, () => b.appendProjectNames(["saved B"]));
+      const { taken } = a.takeProjectName();
+      storageA.flush();
+      expect(taken).toBe("saved A");
+      expect(names()).toEqual(["saved B"]);
+    },
+  );
+
+  it.each(SPLIT_POINTS)(
+    "A と B が同時に取る（A の %i 回目のあとに B）：同じ名前が2つのタブに出ることはあるが、名前は消えない",
+    (at) => {
+      const { storageA, a, b, names } = twoTabs();
+      a.appendProjectNames(["saved A", "saved B"]);
+      let takenByB: string | undefined;
+      storageA.arm(at, () => {
+        takenByB = b.takeProjectName().taken;
+      });
+      const takenByA = a.takeProjectName().taken;
+      storageA.flush();
+      const seen = new Set([takenByA, takenByB, ...names()]);
+      expect(seen.has("saved A")).toBe(true);
+      expect(seen.has("saved B")).toBe(true);
+    },
+  );
+
+  it("交互に足す・取るをくり返しても（毎回、途中で割り込む）、足した名前はどれも、どちらかのタブに出たか列に残る", () => {
+    const { storageA, a, b, names } = twoTabs();
+    const added = new Set<string>();
+    const taken = new Set<string>();
+    for (let i = 0; i < 30; i++) {
+      const at = (i % 6) + 1;
+      if (i % 3 === 0) {
+        storageA.arm(at, () => {
+          const name = `B${i}`;
+          added.add(name);
+          b.appendProjectNames([name]);
+        });
+        const name = `A${i}`;
+        added.add(name);
+        a.appendProjectNames([name]);
+        storageA.flush();
+      } else if (i % 3 === 1) {
+        storageA.arm(at, () => {
+          const name = b.takeProjectName().taken;
+          if (name !== undefined) taken.add(name);
+        });
+        const name = a.takeProjectName().taken;
+        if (name !== undefined) taken.add(name);
+        storageA.flush();
+      } else {
+        storageA.arm(at, () => {
+          const name = `B${i}`;
+          added.add(name);
+          b.appendProjectNames([name]);
+        });
+        const name = a.takeProjectName().taken;
+        if (name !== undefined) taken.add(name);
+        storageA.flush();
+      }
+    }
+    const remaining = new Set(names());
+    for (const name of added) {
+      expect(taken.has(name) || remaining.has(name), name).toBe(true);
+    }
   });
 });

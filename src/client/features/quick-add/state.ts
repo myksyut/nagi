@@ -128,17 +128,21 @@ export function quickAddOf(ui: ListUi): QuickAddState {
   return state;
 }
 
+/** 小さな追加欄を置いている画面（QuickAddHost を置く画面を足したら、ここも直す） */
+export const QUICK_ADD_SCREENS = "カレンダー・タイムライン・ショートカット";
+
 /**
  * 小さな追加欄の n。一覧の追加欄（features/core の `task.add`。一覧の画面があるときだけ効く）が使えず、
- * 小さな追加欄を描ける画面（QuickAddHost を置いたカレンダー・タイムライン）が出ているときだけ効く。
+ * 小さな追加欄を描ける画面（QuickAddHost を置いたカレンダー・タイムライン・ショートカットのページ）が出ているときだけ効く。
  * 右下の「＋」も、`task.add` が使えないときはこれを呼ぶ（shell/add-button.tsx）
  */
 registerKeyBindings({
   id: QUICK_ADD_BINDING_ID,
-  // `?` の一覧で一覧の画面の「追加」と並ぶので、どこで効くかを添える
-  label: "追加（カレンダー・タイムライン）",
+  label: "追加",
   group: "タスク",
   keys: ["n"],
+  // ショートカットのページで一覧の画面の「追加」と並ぶので、どこで効くかを添える
+  where: QUICK_ADD_SCREENS,
   // 一覧の画面の n（task.add）とは同時に効かない（こちらは一覧の画面がないときだけ）
   scope: "quick-add",
   when: ({ ui }) => ui.view === null && quickAddOf(ui).available,

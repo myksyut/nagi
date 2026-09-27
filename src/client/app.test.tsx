@@ -28,8 +28,11 @@ const VIEWS = [
   { path: "/timeline", label: "タイムライン" },
 ] as const;
 
+/** 一番下の完了ログの下のショートカットのページ（17） */
+const SHORTCUTS = { path: "/shortcuts", label: "ショートカット" } as const;
+
 /** サイドバーのリンクの並び（プロジェクトがないとき） */
-const SIDEBAR_LINKS = [...LISTS.slice(0, 4), ...VIEWS, ...LISTS.slice(4)];
+const SIDEBAR_LINKS = [...LISTS.slice(0, 4), ...VIEWS, ...LISTS.slice(4), SHORTCUTS];
 
 function renderAt(path: string) {
   const location = memoryLocation({ path, record: true });

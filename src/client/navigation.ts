@@ -29,10 +29,24 @@ export const TIMELINE: ViewEntry = { key: "timeline", path: "/timeline", label: 
  */
 export const VIEWS: readonly ViewEntry[] = [CALENDAR, TIMELINE];
 
+/** サイドバーの一番下（完了ログの下）のショートカットのページ（features/shortcuts） */
+export const SHORTCUTS = { path: "/shortcuts", label: "ショートカット" } as const;
+
 export const HOME_PATH = "/today";
 
 export const PROJECT_PATH_PATTERN = "/projects/:id";
 
 export function projectPath(id: string): string {
   return `/projects/${encodeURIComponent(id)}`;
+}
+
+/** プロジェクトの画面の URL なら、そのプロジェクトの id（ほかの画面なら undefined） */
+export function projectIdOfPath(path: string): string | undefined {
+  const match = /^\/projects\/([^/]+)$/.exec(path);
+  if (!match?.[1]) return undefined;
+  try {
+    return decodeURIComponent(match[1]);
+  } catch {
+    return undefined;
+  }
 }

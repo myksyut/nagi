@@ -5,7 +5,8 @@ import { type ReactNode, useEffect, useMemo, useState } from "react";
 import { useLocation } from "wouter";
 import { useStore } from "@/data";
 import "@/features";
-import { LazyCommandPalette, LazyShortcutsDialog } from "@/features/command-palette/lazy";
+import { LazyCommandPalette } from "@/features/command-palette/lazy";
+import { shortcutsPageOf } from "@/features/shortcuts/state";
 import { KeyContextProvider } from "@/keyboard/key-context";
 import type { KeyContext } from "@/keyboard/keymap";
 import { useKeymap } from "@/keyboard/use-keymap";
@@ -21,17 +22,18 @@ import { StatusBar } from "./status-bar";
 
 /**
  * 左にサイドバー、右にリスト、右下に「＋」。形と色は index.html の外枠の CSS とそろえる。
- * 一覧の状態（選択・開いているタスク・追加欄）、キーの割り当て、トースト、⌘K と `?`、上部の帯（オフライン・新しいバージョン）もここで持つ。
+ * 一覧の状態（選択・開いているタスク・追加欄）、キーの割り当て、トースト、⌘K、上部の帯（オフライン・新しいバージョン）もここで持つ。
  * キー操作の状況（`{ store, ui, navigate }`）は React の context として出す（⌘K からもキーと同じ run を呼ぶ）。
- * ⌘K・`?`・完了ログ・カレンダー・p の候補などは後から読み込む部品で、起動のあとの空いた時間に先読みする。
+ * ⌘K・ショートカットのページ・完了ログ・カレンダー・p の候補などは後から読み込む部品で、起動のあとの空いた時間に先読みする。
+ * 画面を移るたびに、ショートカットのページへ今の画面を知らせる（Esc と `?` で戻る先）。
  * 右の枠の幅の上限（max-w-3xl）は、画面の一番外の要素に data-wide-view を付けると外れる（カレンダー・タイムライン）
  */
 export function AppShell({ children }: { children: ReactNode }) {
   const store = useStore();
   const [ui] = useState(() => new ListUi(store));
-  const [, navigate] = useLocation();
+  const [location, navigate] = useLocation();
   const keyContext = useMemo<KeyContext>(
-    () => ({ store, ui, navigate: (path) => navigate(path) }),
+    () => ({ store, ui, navigate: (path, options) => navigate(path, options) }),
     [store, ui, navigate],
   );
 
@@ -41,6 +43,7 @@ export function AppShell({ children }: { children: ReactNode }) {
   useEffect(() => followReducedMotion(), []);
   useEffect(() => startDeferredLoading(), []);
   useKeymap(keyContext);
+  useEffect(() => shortcutsPageOf(ui).noteLocation(location), [ui, location]);
   // ページを離れるとき（閉じる・読み込み直す）に、まだ送っていないタイトルとメモを下書きへ書く
   useEffect(() => {
     const persist = () => ui.persistEditing();
@@ -66,7 +69,6 @@ export function AppShell({ children }: { children: ReactNode }) {
               <AddButton />
             </EditingLock>
             <LazyCommandPalette />
-            <LazyShortcutsDialog />
           </ToastHost>
         </LazyMotion>
       </KeyContextProvider>
