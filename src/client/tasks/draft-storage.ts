@@ -8,6 +8,9 @@
  *
  * タブが2つあっても、互いの分を消さないようにする：
  * - タイトルとメモは、項目ごとに別のキーにする
+ * - プロジェクトの名前の控えの列は、名前を1件ずつ別のキー（`<時刻>-<番号>-<ランダム>` の順に並ぶ）に置く。
+ *   足すのは1回の setItem、取るのは一番古いキーを読んで removeItem なので、ほかのタブが同時に足した名前を消さない
+ *   （同時に取ると、同じ名前が2つのタブに出ることはある。同じ名前のプロジェクトは作らずに開くので害は小さい）
  * - 追加欄の下書きと戻ってきた追加の残りは、どのタブからも同じ1つを使う。書くときは、そのときの最新を読んでから
  *   足す・取る（古い中身で上書きしない）。ほかのタブが書いたら storage の知らせで追う（subscribe）
  *
@@ -19,7 +22,7 @@ const PREFIX = "nagi:draft:";
 const ADD_DRAFT_KEY = `${PREFIX}add`;
 const ADD_QUEUE_KEY = `${PREFIX}add-queue`;
 const UNSAVED_PREFIX = `${PREFIX}unsaved:`;
-const PROJECT_NAMES_KEY = `${PREFIX}project-names`;
+const PROJECT_NAME_PREFIX = `${PREFIX}project-names:`;
 
 function defaultStorage(): Storage | null {
   try {
@@ -46,7 +49,8 @@ export type DraftChange =
   | { kind: "add"; value: string }
   | { kind: "add-queue"; value: string[] }
   | { kind: "unsaved"; key: string; value: string | null }
-  | { kind: "project-names"; value: string[] }
+  /** プロジェクトの名前の控えの列が変わった（数は loadProjectNames で読み直す） */
+  | { kind: "project-names" }
   | { kind: "cleared" };
 
 export class DraftStorage {
@@ -57,6 +61,8 @@ export class DraftStorage {
   readonly #stale = new Set<string>();
   /** 残すべき中身が、控えにしかないキー */
   readonly #unpersisted = new Set<string>();
+  /** プロジェクトの名前の控えのキーの番号（同じミリ秒に足した名前の順を保つ） */
+  #projectNameSeq = 0;
 
   constructor(storage: Storage | null = defaultStorage()) {
     this.#storage = storage;
@@ -117,23 +123,62 @@ export class DraftStorage {
 
   /** 控えの列（まだ欄に入れていない名前。古い順） */
   loadProjectNames(): string[] {
-    return parseQueue(this.#read(PROJECT_NAMES_KEY));
+    return this.#projectNameEntries().map(([, name]) => name);
   }
 
-  /** 最新の残りの後ろに足す（ほかのタブが足した分を消さない）。足したあとの残りを返す */
-  appendProjectNames(names: readonly string[]): string[] {
-    const next = [...this.loadProjectNames(), ...names];
-    if (names.length > 0) this.#write(PROJECT_NAMES_KEY, JSON.stringify(next));
-    return next;
-  }
-
-  /** 最新の残りから先頭を1つ取る。取ったもの（なければ undefined）と、取ったあとの残りを返す */
-  takeProjectName(): { taken: string | undefined; rest: string[] } {
-    const [taken, ...rest] = this.loadProjectNames();
-    if (taken !== undefined) {
-      this.#write(PROJECT_NAMES_KEY, rest.length === 0 ? null : JSON.stringify(rest));
+  /**
+   * 列の後ろに足す（1件ずつ別のキーに1回の setItem で書く。ほかのタブが同時に足した・取った名前を消さない）。
+   * 足したあとの列の数を返す
+   */
+  appendProjectNames(names: readonly string[]): number {
+    const time = String(Date.now()).padStart(15, "0");
+    const random = Math.random().toString(36).slice(2, 10).padEnd(8, "0");
+    for (const name of names) {
+      this.#projectNameSeq += 1;
+      const seq = String(this.#projectNameSeq).padStart(6, "0");
+      this.#write(`${PROJECT_NAME_PREFIX}${time}-${seq}-${random}`, name);
     }
-    return { taken, rest };
+    return this.#projectNameEntries().length;
+  }
+
+  /**
+   * 一番古い名前を1つ取る（そのキーを読んで removeItem）。読むまでにほかのタブが取っていたら、次に古いものを取る。
+   * 取ったもの（なければ undefined）と、取ったあとの列の数を返す
+   */
+  takeProjectName(): { taken: string | undefined; remaining: number } {
+    for (const [key] of this.#projectNameEntries()) {
+      const name = this.#read(key);
+      if (name === null) continue;
+      this.#write(key, null);
+      return { taken: name, remaining: this.#projectNameEntries().length };
+    }
+    return { taken: undefined, remaining: 0 };
+  }
+
+  /** 控えの列のキーと名前（キーの順＝足した順） */
+  #projectNameEntries(): [string, string][] {
+    const entries = new Map<string, string>();
+    const storage = this.#storage;
+    if (storage) {
+      try {
+        const keys: string[] = [];
+        for (let i = 0; i < storage.length; i++) {
+          const key = storage.key(i);
+          if (key?.startsWith(PROJECT_NAME_PREFIX) && !this.#stale.has(key)) keys.push(key);
+        }
+        for (const key of keys) {
+          const value = storage.getItem(key);
+          if (value !== null) entries.set(key, value);
+        }
+      } catch {
+        // 読めた分だけ
+      }
+    }
+    // 書けなかった（消せなかった）キーは、メモリの控えが新しい
+    for (const [key, value] of this.#memory) {
+      if (key.startsWith(PROJECT_NAME_PREFIX)) entries.set(key, value);
+    }
+    return [...entries].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
   }
 
   // --- 保存できなかったタイトルとメモ -------------------------------------------------------
@@ -178,9 +223,8 @@ export class DraftStorage {
       if (key === null) listener({ kind: "cleared" });
       else if (key === ADD_DRAFT_KEY) listener({ kind: "add", value: newValue ?? "" });
       else if (key === ADD_QUEUE_KEY) listener({ kind: "add-queue", value: parseQueue(newValue) });
-      else if (key === PROJECT_NAMES_KEY) {
-        listener({ kind: "project-names", value: parseQueue(newValue) });
-      } else if (key.startsWith(UNSAVED_PREFIX)) {
+      else if (key.startsWith(PROJECT_NAME_PREFIX)) listener({ kind: "project-names" });
+      else if (key.startsWith(UNSAVED_PREFIX)) {
         listener({ kind: "unsaved", key: key.slice(UNSAVED_PREFIX.length), value: newValue });
       }
     };

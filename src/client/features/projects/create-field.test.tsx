@@ -1,8 +1,12 @@
-import { act, cleanup, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { AppStore } from "@/data";
+import { Router } from "wouter";
+import { memoryLocation } from "wouter/memory-location";
+import { App } from "@/app";
+import { AppStore, StoreProvider } from "@/data";
 import { createMemoryLocalDb } from "@/data/local-db";
+import { DraftStorage } from "@/tasks/draft-storage";
 import { ListUi } from "@/tasks/list-ui";
 import { FakeServer } from "@/test/fake-server";
 import { makeProject } from "@/test/fixtures";
@@ -16,9 +20,18 @@ import { projectCreatorOf, submitProjectName } from "./create-field";
  */
 
 const stores: AppStore[] = [];
+/** 画面を描かないタブの ProjectCreator を止める */
+const stops: (() => void)[] = [];
 afterEach(() => {
+  for (const stop of stops.splice(0)) stop();
   for (const store of stores.splice(0)) store.dispose();
+  vi.unstubAllGlobals();
 });
+
+/** 控えの列（localStorage）の中身 */
+function returnedNames(): string[] {
+  return new DraftStorage().loadProjectNames();
+}
 
 async function open(path: string, server = new FakeServer()) {
   const setup = await setupApp(path, server);
@@ -285,6 +298,8 @@ async function otherTab(server: FakeServer) {
   const ui = new ListUi(store);
   const context = { store, ui, navigate: vi.fn() };
   const creator = projectCreatorOf(ui);
+  // 描いた画面では名前の欄の部品が動かす（ProjectCreateField）。ここでは直接動かす
+  stops.push(creator.start());
   return {
     store,
     creator,
@@ -440,11 +455,15 @@ describe("ほかのタブ（17-修正2 の R1）", () => {
       await b.store.idle();
     });
     // ほかのタブの書き込みは、このタブには storage の知らせで届く（同じ window では出ないので、ここで出す）
+    const key = Object.keys(localStorage).find((name) =>
+      name.startsWith("nagi:draft:project-names:"),
+    );
+    expect(key).toBeDefined();
     act(() => {
       window.dispatchEvent(
         new StorageEvent("storage", {
-          key: "nagi:draft:project-names",
-          newValue: localStorage.getItem("nagi:draft:project-names"),
+          key,
+          newValue: key === undefined ? null : localStorage.getItem(key),
           storageArea: localStorage,
         }),
       );
@@ -455,6 +474,102 @@ describe("ほかのタブ（17-修正2 の R1）", () => {
     await user.keyboard("{Enter}");
     await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
     expect(nameField()).toHaveValue("Bで断られた");
+  });
+});
+
+describe("名前の欄がなくなるとき（17-修正3 の R1-a・R1-c）", () => {
+  it("名前を打っている途中に ⌘K でログアウトしても、ログインし直すと欄に名前が入っている", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const { location } = await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    // ログアウトの POST /auth/logout だけを受ける（ストアは server.fetch を使う）
+    vi.stubGlobal(
+      "fetch",
+      vi.fn(async () => new Response(null, { status: 204 })),
+    );
+
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "ログアウト前の名前");
+    await user.keyboard("{Meta>}k{/Meta}");
+    await user.type(
+      await screen.findByRole("combobox", { name: "検索とコマンド" }),
+      "ログアウト{Enter}",
+    );
+    await waitFor(() => expect(location.history?.at(-1)).toBe("/login"));
+    expect(returnedNames()).toEqual(["ログアウト前の名前"]);
+
+    cleanup();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("ログアウト前の名前");
+    expect(returnedNames()).toEqual([]);
+  });
+
+  it("画面を離れて（pagehide）控えへ移したあとに名前の欄がなくなっても、二重に積まない", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "1回だけ");
+
+    reload();
+    expect(returnedNames()).toEqual(["1回だけ"]);
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("1回だけ");
+    expect(screen.queryByText(/ほかに/)).toBeNull();
+  });
+
+  it("ログインが切れて（401）控えへ移したあとに名前の欄がなくなっても、二重に積まない", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const { store, location } = await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "401でも1回だけ");
+
+    server.fail("/api/mutate", 401);
+    act(() => {
+      store.actions.addTask({ title: "401 のきっかけ", bucket: "inbox" });
+    });
+    await act(async () => {
+      await store.idle();
+    });
+    await waitFor(() => expect(location.history?.at(-1)).toBe("/login"));
+    // ログイン画面へ移って名前の欄はもうない
+    expect(screen.queryByRole("button", { name: "プロジェクトを作成" })).toBeNull();
+    expect(returnedNames()).toEqual(["401でも1回だけ"]);
+  });
+
+  it("同じストアで画面を作り直してから1件が断られても、控えには1つだけ入る", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const { store } = await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+
+    // 同じストアのまま画面を作り直す（ログアウトしてログインし直した、などと同じ）
+    cleanup();
+    const location = memoryLocation({ path: "/today", record: true });
+    render(
+      <StoreProvider store={store}>
+        <Router hook={location.hook} searchHook={location.searchHook}>
+          <App />
+        </Router>
+      </StoreProvider>,
+    );
+    await screen.findByRole("listbox", { name: "今日" });
+
+    server.fail("/api/mutate", 400);
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), "1件だけ断られる{Enter}");
+    await act(async () => {
+      await store.idle();
+    });
+    expect(returnedNames()).toEqual(["1件だけ断られる"]);
   });
 });
 

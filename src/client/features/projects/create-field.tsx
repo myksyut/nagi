@@ -26,8 +26,9 @@ import { projectScreenKey } from "./project-view";
  * - 変換を確定する Enter では作らない。オフラインなどで受け付けられなかったら、打った名前を残して開いたままにする
  * - 打った名前は黙って消さない（ProjectCreator）：送ったあとに保存できなかった作成（保存の失敗・ログインが切れた・
  *   版が古い）の名前は、すべて控えの列（localStorage。どのタブからも同じ1つ）に残し、次に欄を開いたときに古い順に入れる。
- *   欄に打っている途中の名前は、そのタブのものとしてメモリに持ち、画面を離れるとき（閉じる・読み込み直す）と、
- *   ログインが切れた・版が古いときに控えの列へ移す（タイトルとメモの persistEditing と同じ考え方）。
+ *   欄に打っている途中の名前は、そのタブのものとしてメモリに持ち、画面を離れるとき（閉じる・読み込み直す）、
+ *   ログインが切れた・版が古いとき、名前の欄を持つ部品がなくなるとき（⌘K のログアウトなど、アプリの中でログイン画面へ
+ *   移るとき）に控えの列へ移す（タイトルとメモの persistEditing と同じ考え方）。
  *   ほかのタブの Esc や作成は、自分の欄の名前にしか触らないので、こちらの名前を消さない。打っている途中の名前は上書きしない
  * 作成はデータ層の createProject（⌘Z で取り消せる。トーストは出さない。取り消したときにそのプロジェクトの画面を
  * 開いていれば、プロジェクトの画面が今日へ移る）
@@ -38,10 +39,12 @@ export const PROJECT_CREATE_BINDING_ID = "project.create";
 
 /**
  * 名前の欄の開閉と、打った名前。一覧の状態（ListUi）ごとに1つ。
- * 控えの列は、一覧の下書きと同じ置き場（ui.drafts。localStorage）に置き、足す・取るときは毎回最新を読む
- * （ほかのタブが足した・取った分を消さない）。欄に打っている名前はこのタブのメモリだけに持ち、localStorage の
- * 共有の場所には書かない（書くと、ほかのタブが空の欄を閉じる・別の名前で作るだけで消えたり上書きされたりするため）。
- * ストアの知らせ（保存の失敗・ログインが切れた・版が古い）で捨てられた作成は、何件あってもすべて控えの列へ入れる
+ * 控えの列は、一覧の下書きと同じ置き場（ui.drafts。localStorage）に、名前を1件ずつ別のキーで置く
+ * （ほかのタブが同時に足した・取った名前を消さない。draft-storage.ts）。欄に打っている名前はこのタブのメモリだけに持ち、
+ * localStorage の共有の場所には書かない（書くと、ほかのタブが空の欄を閉じる・別の名前で作るだけで消えたり
+ * 上書きされたりするため）。ストアの知らせ（保存の失敗・ログインが切れた・版が古い）で捨てられた作成は、
+ * 何件あってもすべて控えの列へ入れる。知らせ・pagehide・ほかのタブの変更を受けるのは start から止めるまで
+ * （名前の欄を持つ部品の寿命。止めるときに打っている名前を控えへ移す）
  */
 export class ProjectCreator {
   open = false;
@@ -50,9 +53,11 @@ export class ProjectCreator {
   focusRequest = 0;
   /** 控えの列の残り（まだ欄に入れていない、保存できなかった名前）の数 */
   returnedCount = 0;
+  readonly #store: AppStore;
   readonly #drafts: DraftStorage;
 
   constructor(store: AppStore, drafts: DraftStorage) {
+    this.#store = store;
     this.#drafts = drafts;
     this.returnedCount = drafts.loadProjectNames().length;
     makeObservable(this, {
@@ -66,7 +71,27 @@ export class ProjectCreator {
       stash: action,
       syncReturned: action,
     });
-    store.subscribe((notice) => this.#onNotice(notice));
+  }
+
+  /**
+   * 受け始める：ストアの知らせ、画面を離れるとき（pagehide）、ほかのタブの控えの列の変更。
+   * 戻り値を呼ぶと、打っている名前を控えへ移してから止める（名前の欄を持つ部品がなくなるとき。
+   * ⌘K のログアウトのように pagehide の出ない移動でも名前を失わないように）。
+   * 先に pagehide や 401・409 で移していれば欄は空なので、二重には積まない
+   */
+  start(win: Window = window): () => void {
+    const stopNotices = this.#store.subscribe((notice) => this.#onNotice(notice));
+    const stash = () => this.stash();
+    win.addEventListener("pagehide", stash);
+    const stopDrafts = this.#drafts.subscribe((change) => {
+      if (change.kind === "project-names" || change.kind === "cleared") this.syncReturned();
+    }, win);
+    return () => {
+      this.stash();
+      stopNotices();
+      win.removeEventListener("pagehide", stash);
+      stopDrafts();
+    };
   }
 
   /** 開く。欄が空なら、控えの列の先頭を入れる */
@@ -92,21 +117,21 @@ export class ProjectCreator {
    */
   stash(): void {
     if (this.name.trim() !== "") {
-      this.returnedCount = this.#drafts.appendProjectNames([this.name]).length;
+      this.returnedCount = this.#drafts.appendProjectNames([this.name]);
     }
     this.close();
   }
 
-  /** ほかのタブが控えの列を変えた（足した・取った・すべて消えた） */
-  syncReturned(names: readonly string[]): void {
-    this.returnedCount = names.length;
+  /** ほかのタブが控えの列を変えた（足した・取った・すべて消えた）。数を読み直す */
+  syncReturned(): void {
+    this.returnedCount = this.#drafts.loadProjectNames().length;
   }
 
-  /** 欄が空なら、控えの列の先頭を入れる（ほかのタブと合わせた最新の列から取る） */
+  /** 欄が空なら、控えの列の一番古い名前を入れる（ほかのタブと合わせた最新の列から取る） */
   #fillFromReturned(): void {
     if (this.name.trim() !== "") return;
-    const { taken, rest } = this.#drafts.takeProjectName();
-    this.returnedCount = rest.length;
+    const { taken, remaining } = this.#drafts.takeProjectName();
+    this.returnedCount = remaining;
     if (taken !== undefined) this.setName(taken);
   }
 
@@ -123,7 +148,7 @@ export class ProjectCreator {
       ),
     );
     runInAction(() => {
-      if (names.length > 0) this.returnedCount = this.#drafts.appendProjectNames(names).length;
+      if (names.length > 0) this.returnedCount = this.#drafts.appendProjectNames(names);
       if (notice.type !== "save-failed") this.stash();
       else if (names.length > 0 && this.open) this.#fillFromReturned();
     });
@@ -217,24 +242,13 @@ export function CreateProjectButton() {
 
 /**
  * プロジェクトの一覧の一番下に開く名前の欄（開いているときだけ描く）。
- * サイドバーにいつも置き、画面を離れるとき（pagehide）に打っている名前を控えの列へ移す。
- * ほかのタブが控えの列を変えたら、「ほかに N件」の数を合わせる
+ * サイドバーにいつも置き、置いているあいだだけ ProjectCreator を動かす（start）。なくなるとき（⌘K のログアウトで
+ * ログイン画面へ移るなど）は、打っている名前を控えの列へ移して止める
  */
 export const ProjectCreateField = observer(function ProjectCreateField() {
   const ui = useUi();
   const creator = projectCreatorOf(ui);
-  useEffect(() => {
-    const stash = () => creator.stash();
-    window.addEventListener("pagehide", stash);
-    const stop = ui.drafts.subscribe((change) => {
-      if (change.kind === "project-names") creator.syncReturned(change.value);
-      else if (change.kind === "cleared") creator.syncReturned([]);
-    });
-    return () => {
-      window.removeEventListener("pagehide", stash);
-      stop();
-    };
-  }, [creator, ui]);
+  useEffect(() => creator.start(), [creator]);
   if (!creator.open) return null;
   return (
     <li>
