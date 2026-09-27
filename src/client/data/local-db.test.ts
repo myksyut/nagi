@@ -1,8 +1,10 @@
+import type { Task } from "@shared/model";
 import { when } from "mobx";
 import { afterEach, describe, expect, it } from "vitest";
 import { FakeServer } from "../test/fake-server";
 import { makeTask } from "../test/fixtures";
 import { LOCAL_DB_VERSION, openLocalDb } from "./local-db";
+import { sortTasks } from "./sort";
 import { AppStore } from "./store";
 
 /** 6. IndexedDB */
@@ -78,6 +80,52 @@ describe("IndexedDB：保存形式の版の切り替え", () => {
     expect(requests[0]?.body).toEqual({ cursor: 0, baseCursor: 0 });
     // 取り直した結果、最終的にはデータが見える
     expect(v2Store.task("0199a000-0000-7000-8000-000000000001")?.title).toBe("A");
+  });
+
+  it("★ 前の版（2）の控えは捨てて全件を取り直す。控えの行に priority・points の項目がなく seq も同じでも、取り直した行には入り、新しい版の控えに保存される", async () => {
+    const name = uniqueName();
+    const server = new FakeServer();
+    const marked = server.putTask(
+      makeTask({ title: "印あり", bucket: "today", rank: "a1", priority: "high", points: 5 }),
+    );
+    const plain = server.putTask(makeTask({ title: "印なし", bucket: "today", rank: "a0" }));
+
+    // 2 番目の版の画面が保存した控え：サーバーと同じ seq の行だが、priority・points の項目がない。
+    // カーソルもサーバーの最新まで進んでいる（差分では何も届かない）
+    const withoutFields = ({ priority: _priority, points: _points, ...rest }: Task) => rest;
+    const v2 = await openLocalDb({ name, version: 2 });
+    await v2.replaceAll(
+      [marked, plain].map((row) => ({ kind: "task" as const, row: withoutFields(row) as Task })),
+      server.seq,
+    );
+    v2.close();
+
+    const store = makeStore(server, name);
+    await store.start();
+
+    // 控えを捨てたので、カーソル 0 から取り直す
+    expect(server.requestsTo("/api/sync")[0]?.body).toEqual({ cursor: 0, baseCursor: 0 });
+    expect(store.task(marked.id)).toMatchObject({ title: "印あり", priority: "high", points: 5 });
+    // 項目のない（undefined の）行ではなく、空（null）の行になる
+    expect(store.task(plain.id)?.peek()).toHaveProperty("priority", null);
+    expect(store.task(plain.id)?.peek()).toHaveProperty("points", null);
+    // 優先度で並べても、優先度のないタスクは最後
+    expect(sortTasks(store.lists.today, "priority").map((row) => row.id)).toEqual([
+      marked.id,
+      plain.id,
+    ]);
+    expect(store.lists.todayPoints).toBe(5);
+
+    // 取り直した行は新しい版の控えに入っている：次に開くタブは、同期の前から項目のある行で描ける
+    const release = server.hold("/api/sync");
+    const second = makeStore(server, name);
+    const started = second.start();
+    await when(() => second.loaded);
+    expect(second.synced).toBe(false);
+    expect(second.task(marked.id)).toMatchObject({ priority: "high", points: 5 });
+    expect(second.task(plain.id)?.peek()).toHaveProperty("priority", null);
+    release();
+    await started;
   });
 
   it("LOCAL_DB_VERSION は現在 3 である（回帰の目印。2 で startedAt と color、3 で priority と points を足した）", () => {
