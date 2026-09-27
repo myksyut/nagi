@@ -147,6 +147,122 @@ describe("moveTasks", () => {
   });
 });
 
+describe("reorderTasks（7：⌥↑↓・ドラッグ）", () => {
+  it("動かした行の rank だけを書き換える（ほかの行の rank は送らない）", () => {
+    const { replica, actions, performed } = setup();
+    const a = makeTask({ title: "A", bucket: "today", rank: "a0" });
+    const b = makeTask({ title: "B", bucket: "today", rank: "a1" });
+    const c = makeTask({ title: "C", bucket: "today", rank: "a2" });
+    replica.replaceConfirmed([a, b, c].map((row) => ({ kind: "task" as const, row })));
+
+    // A を B の後ろへ（B, A, C の並びにする）
+    const result = actions.reorderTasks([{ ids: [a.id], after: b.id, before: c.id }]);
+
+    expect(result.ok).toBe(true);
+    expect(performed).toHaveLength(1);
+    const mutations = performed[0]?.mutations ?? [];
+    expect(mutations).toHaveLength(1);
+    expect(mutations[0]).toMatchObject({ type: "task.update", id: a.id });
+    const changes = mutations[0]?.type === "task.update" ? mutations[0].changes : undefined;
+    expect(Object.keys(changes ?? {})).toEqual(["rank"]);
+    expect(typeof changes?.rank).toBe("string");
+    expect(changes?.rank !== a.rank).toBe(true);
+    // B・C の rank はそのまま（送っていない）
+    expect(b.rank).toBe("a1");
+    expect(c.rank).toBe("a2");
+  });
+
+  it("新しい rank は、見えていない完了済み・削除済みの行の rank とも重ならない", () => {
+    const { replica, actions, performed } = setup();
+    // 見えている並びは [A, B, C]（rank 順）。完了済みの行が A と B のあいだに隠れている
+    const a = makeTask({ title: "A", bucket: "today", rank: "a0" });
+    const completed = makeTask({
+      title: "完了済み",
+      bucket: "today",
+      rank: "a1",
+      completedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const b = makeTask({ title: "B", bucket: "today", rank: "a2" });
+    const c = makeTask({ title: "C", bucket: "today", rank: "a3" });
+    const deleted = makeTask({
+      title: "削除済み",
+      bucket: "today",
+      rank: "a4",
+      deletedAt: "2026-01-01T00:00:00.000Z",
+    });
+    replica.replaceConfirmed(
+      [a, completed, b, c, deleted].map((row) => ({ kind: "task" as const, row })),
+    );
+
+    // C を A のすぐ後ろ（見えている A と B のあいだ）へ動かす
+    const result = actions.reorderTasks([{ ids: [c.id], after: a.id, before: b.id }]);
+
+    expect(result.ok).toBe(true);
+    const changes =
+      performed[0]?.mutations[0]?.type === "task.update"
+        ? performed[0].mutations[0].changes
+        : undefined;
+    const newRank = changes?.rank as string;
+    // 隠れている完了済みの行（a1）と重ならず、その手前に収まる
+    expect(newRank > a.rank && newRank < completed.rank).toBe(true);
+    expect(newRank).not.toBe(deleted.rank);
+  });
+
+  it("同じ置き場でない行・完了済みの行が混ざっていたら invalid", () => {
+    const { replica, actions, performed } = setup();
+    const inToday = makeTask({ bucket: "today", rank: "a0" });
+    const inLater = makeTask({ bucket: "later", rank: "a0" });
+    const completed = makeTask({
+      bucket: "today",
+      rank: "a1",
+      completedAt: "2026-01-01T00:00:00.000Z",
+    });
+    replica.replaceConfirmed(
+      [inToday, inLater, completed].map((row) => ({ kind: "task" as const, row })),
+    );
+
+    const acrossBuckets = actions.reorderTasks([
+      { ids: [inToday.id, inLater.id], after: null, before: null },
+    ]);
+    expect(acrossBuckets).toEqual({ ok: false, reason: "invalid" });
+
+    const includesCompleted = actions.reorderTasks([
+      { ids: [inToday.id, completed.id], after: null, before: null },
+    ]);
+    expect(includesCompleted).toEqual({ ok: false, reason: "invalid" });
+
+    expect(performed).toHaveLength(0);
+  });
+
+  it("両端が null（after も before も無い）の置き場は invalid", () => {
+    const { replica, actions, performed } = setup();
+    const a = makeTask({ bucket: "today", rank: "a0" });
+    replica.replaceConfirmed([{ kind: "task", row: a }]);
+
+    const result = actions.reorderTasks([{ ids: [a.id], after: null, before: null }]);
+    expect(result).toEqual({ ok: false, reason: "invalid" });
+    expect(performed).toHaveLength(0);
+  });
+
+  it("複数の置き場所を1回の操作でまとめて送る（1つの操作として戻せる）", () => {
+    const { replica, actions, performed } = setup();
+    const a = makeTask({ title: "A", bucket: "today", rank: "a0" });
+    const b = makeTask({ title: "B", bucket: "today", rank: "a1" });
+    const c = makeTask({ title: "C", bucket: "today", rank: "a2" });
+    const d = makeTask({ title: "D", bucket: "today", rank: "a3" });
+    replica.replaceConfirmed([a, b, c, d].map((row) => ({ kind: "task" as const, row })));
+
+    const result = actions.reorderTasks([
+      { ids: [b.id], after: null, before: a.id },
+      { ids: [d.id], after: a.id, before: c.id },
+    ]);
+
+    expect(result.ok).toBe(true);
+    expect(performed).toHaveLength(1);
+    expect(performed[0]?.mutations).toHaveLength(2);
+  });
+});
+
 describe("setDeadline", () => {
   it("あとで・予定のタスクに今日以前の締切を付けると、今日の到着位置へ移り、到着の印が付く", () => {
     const { replica, actions, performed, day } = setup();
