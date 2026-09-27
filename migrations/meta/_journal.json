@@ -15,6 +15,13 @@
       "when": 1790452790253,
       "tag": "0001_sync_tables",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1790491724245,
+      "tag": "0002_status_color",
+      "breakpoints": true
     }
   ]
 }

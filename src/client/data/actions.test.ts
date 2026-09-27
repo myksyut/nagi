@@ -109,6 +109,254 @@ describe("uncompleteTasks", () => {
   });
 });
 
+describe("startTasks（10：進行中にする）", () => {
+  it("今日以外にあるタスクは、今日の一番上へ移り、渡した順で上から並ぶ。すでに今日にあるタスクは位置を変えない", () => {
+    const { replica, actions, performed } = setup();
+    const inToday = makeTask({ bucket: "today", rank: "a1" });
+    const fromLater = makeTask({ bucket: "later", rank: "a0" });
+    const fromInbox = makeTask({ bucket: "inbox", rank: "a2" });
+    replica.replaceConfirmed(
+      [inToday, fromLater, fromInbox].map((row) => ({ kind: "task" as const, row })),
+    );
+
+    const result = actions.startTasks([inToday.id, fromLater.id, fromInbox.id]);
+
+    expect(result.ok).toBe(true);
+    expect(performed).toHaveLength(1);
+    const mutations = performed[0]?.mutations ?? [];
+    expect(mutations).toHaveLength(3);
+
+    const byId = new Map(mutations.map((m) => [m.type === "task.update" ? m.id : "", m]));
+    const inTodayChange = byId.get(inToday.id);
+    expect(inTodayChange).toMatchObject({
+      type: "task.update",
+      changes: { startedAt: expect.any(String) },
+    });
+    // 今日にあったタスクは bucket・rank を送らない（位置を変えない）
+    const inTodayChanges =
+      inTodayChange?.type === "task.update" ? Object.keys(inTodayChange.changes) : [];
+    expect(inTodayChanges).toEqual(["startedAt"]);
+
+    const laterChange = byId.get(fromLater.id);
+    const inboxChange = byId.get(fromInbox.id);
+    expect(laterChange).toMatchObject({ type: "task.update", changes: { bucket: "today" } });
+    expect(inboxChange).toMatchObject({ type: "task.update", changes: { bucket: "today" } });
+    const laterRank =
+      laterChange?.type === "task.update" ? (laterChange.changes.rank as string) : undefined;
+    const inboxRank =
+      inboxChange?.type === "task.update" ? (inboxChange.changes.rank as string) : undefined;
+    // どちらも既存の今日のタスク（m0）より前（一番上へ）。渡した順（later → inbox）で上から並ぶ
+    expect(laterRank !== undefined && laterRank < inToday.rank).toBe(true);
+    expect(inboxRank !== undefined && inboxRank < inToday.rank).toBe(true);
+    expect(laterRank !== undefined && inboxRank !== undefined && laterRank < inboxRank).toBe(true);
+  });
+
+  it("予定にあったタスクを進行中にすると、同じ操作で scheduledOn が null になる", () => {
+    const { replica, actions, performed } = setup();
+    const scheduled = makeTask({ bucket: "scheduled", scheduledOn: "2026-02-01" });
+    replica.replaceConfirmed([{ kind: "task", row: scheduled }]);
+
+    actions.startTasks([scheduled.id]);
+
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "task.update",
+      changes: { bucket: "today", scheduledOn: null },
+    });
+  });
+
+  it("完了済み・削除済み・すでに進行中のタスクは対象外。対象がなければ noop", () => {
+    const { replica, actions, performed } = setup();
+    const completed = makeTask({ bucket: "today", completedAt: "2026-01-01T00:00:00.000Z" });
+    const deleted = makeTask({ bucket: "today", deletedAt: "2026-01-01T00:00:00.000Z" });
+    const alreadyStarted = makeTask({ bucket: "today", startedAt: "2026-01-01T00:00:00.000Z" });
+    replica.replaceConfirmed(
+      [completed, deleted, alreadyStarted].map((row) => ({ kind: "task" as const, row })),
+    );
+
+    const result = actions.startTasks([completed.id, deleted.id, alreadyStarted.id]);
+
+    expect(result).toEqual({ ok: false, reason: "noop" });
+    expect(performed).toHaveLength(0);
+  });
+});
+
+describe("stopTasks（10：未着手に戻す）", () => {
+  it("進行中の未完了だけが対象。startedAt を消すだけで、bucket・rank は送らない", () => {
+    const { replica, actions, performed } = setup();
+    const started = makeTask({
+      bucket: "today",
+      rank: "a0",
+      startedAt: "2026-01-01T00:00:00.000Z",
+    });
+    replica.replaceConfirmed([{ kind: "task", row: started }]);
+
+    const result = actions.stopTasks([started.id]);
+
+    expect(result.ok).toBe(true);
+    const mutation = performed[0]?.mutations[0];
+    expect(mutation).toMatchObject({
+      type: "task.update",
+      id: started.id,
+      changes: { startedAt: null },
+    });
+    const changes = mutation?.type === "task.update" ? mutation.changes : undefined;
+    expect(Object.keys(changes ?? {})).toEqual(["startedAt"]);
+  });
+
+  it("未着手・完了済み・削除済みのタスクは対象外。対象がなければ noop", () => {
+    const { replica, actions, performed } = setup();
+    const notStarted = makeTask({ bucket: "today" });
+    const completed = makeTask({
+      bucket: "today",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-01T00:00:00.000Z",
+    });
+    const deleted = makeTask({
+      bucket: "today",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      deletedAt: "2026-01-01T00:00:00.000Z",
+    });
+    replica.replaceConfirmed(
+      [notStarted, completed, deleted].map((row) => ({ kind: "task" as const, row })),
+    );
+
+    const result = actions.stopTasks([notStarted.id, completed.id, deleted.id]);
+
+    expect(result).toEqual({ ok: false, reason: "noop" });
+    expect(performed).toHaveLength(0);
+  });
+});
+
+describe("moveTasks：進行中のタスクを今日から出す", () => {
+  it("同じ操作で startedAt が null になる", () => {
+    const { replica, actions, performed } = setup();
+    const started = makeTask({ bucket: "today", startedAt: "2026-01-01T00:00:00.000Z" });
+    replica.replaceConfirmed([{ kind: "task", row: started }]);
+
+    actions.moveTasks([started.id], { bucket: "later" });
+
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "task.update",
+      changes: { bucket: "later", startedAt: null },
+    });
+  });
+
+  it("進行中でないタスクを今日から出しても startedAt は送らない", () => {
+    const { replica, actions, performed } = setup();
+    const notStarted = makeTask({ bucket: "today" });
+    replica.replaceConfirmed([{ kind: "task", row: notStarted }]);
+
+    actions.moveTasks([notStarted.id], { bucket: "later" });
+
+    const changes =
+      performed[0]?.mutations[0]?.type === "task.update"
+        ? performed[0].mutations[0].changes
+        : undefined;
+    expect(changes).not.toHaveProperty("startedAt");
+  });
+});
+
+describe("completeTasks：進行中のまま完了しても startedAt は残す", () => {
+  it("changes に startedAt を含めない（消さない）", () => {
+    const { replica, actions, performed } = setup();
+    const started = makeTask({ bucket: "today", startedAt: "2026-01-01T00:00:00.000Z" });
+    replica.replaceConfirmed([{ kind: "task", row: started }]);
+
+    actions.completeTasks([started.id]);
+
+    const changes =
+      performed[0]?.mutations[0]?.type === "task.update"
+        ? performed[0].mutations[0].changes
+        : undefined;
+    expect(Object.keys(changes ?? {})).toEqual(["completedAt"]);
+  });
+});
+
+describe("uncompleteTasks：進行中のまま完了していても、あとから外すと startedAt も消す", () => {
+  it("completedAt と startedAt を両方 null にする", () => {
+    const { replica, actions, performed } = setup();
+    // 完了していたときの bucket は today のまま変わらないが、startedAt は消える
+    const completedWhileStarted = makeTask({
+      bucket: "today",
+      startedAt: "2026-01-01T00:00:00.000Z",
+      completedAt: "2026-01-02T00:00:00.000Z",
+    });
+    replica.replaceConfirmed([{ kind: "task", row: completedWhileStarted }]);
+
+    actions.uncompleteTasks([completedWhileStarted.id]);
+
+    const mutation = performed[0]?.mutations[0];
+    expect(mutation).toMatchObject({
+      type: "task.update",
+      changes: { completedAt: null, startedAt: null },
+    });
+    // bucket はもともと today なので、changes には含まれない（変わらない項目は送らない）
+    const changes = mutation?.type === "task.update" ? mutation.changes : undefined;
+    expect(changes).not.toHaveProperty("bucket");
+  });
+
+  it("今日以外で完了していたタスクを外すと、bucket も today に変わり、startedAt も消える", () => {
+    const { replica, actions, performed } = setup();
+    const completedFromLater = makeTask({
+      bucket: "later",
+      startedAt: null,
+      completedAt: "2026-01-02T00:00:00.000Z",
+    });
+    replica.replaceConfirmed([{ kind: "task", row: completedFromLater }]);
+
+    actions.uncompleteTasks([completedFromLater.id]);
+
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "task.update",
+      changes: { completedAt: null, bucket: "today" },
+    });
+  });
+});
+
+describe("normalizeTaskChanges（進行中と今日の対応）", () => {
+  it("今日の外で明示的に startedAt を入れようとすると null（invalid）", () => {
+    const task = makeTask({ bucket: "later" });
+    expect(normalizeTaskChanges(task, { startedAt: "2026-01-01T00:00:00.000Z" })).toBeNull();
+  });
+
+  it("進行中のタスクの bucket を今日の外へ変えると、自動で startedAt: null が足される", () => {
+    const task = makeTask({ bucket: "today", startedAt: "2026-01-01T00:00:00.000Z" });
+    expect(normalizeTaskChanges(task, { bucket: "later" })).toEqual({
+      bucket: "later",
+      startedAt: null,
+    });
+  });
+
+  it("bucket を今日の外へ変えるのと同時に startedAt: null を送るのは、そのまま通る", () => {
+    const task = makeTask({ bucket: "today", startedAt: "2026-01-01T00:00:00.000Z" });
+    expect(normalizeTaskChanges(task, { bucket: "later", startedAt: null })).toEqual({
+      bucket: "later",
+      startedAt: null,
+    });
+  });
+
+  it("10-修正1：進行中のタスクに、今と同じ startedAt を明示して bucket を今日の外へ変えると invalid（黙って未着手への移動にしない）", () => {
+    const startedAt = "2026-01-01T00:00:00.000Z";
+    const task = makeTask({ bucket: "today", startedAt });
+    expect(normalizeTaskChanges(task, { bucket: "later", startedAt })).toBeNull();
+    // 予定へ移すときも同じ
+    expect(
+      normalizeTaskChanges(task, { bucket: "scheduled", scheduledOn: "2026-02-01", startedAt }),
+    ).toBeNull();
+    // 進行中を保つつもりで、別の時刻を明示しても invalid
+    expect(
+      normalizeTaskChanges(task, { bucket: "inbox", startedAt: "2026-01-02T00:00:00.000Z" }),
+    ).toBeNull();
+  });
+
+  it("bucket が today のままなら startedAt をそのまま渡す", () => {
+    const task = makeTask({ bucket: "today" });
+    expect(normalizeTaskChanges(task, { startedAt: "2026-01-01T00:00:00.000Z" })).toEqual({
+      startedAt: "2026-01-01T00:00:00.000Z",
+    });
+  });
+});
+
 describe("moveTasks", () => {
   it("予定へ移すとき、日付が今日か過去なら今日に入る（実際に scheduledOn が変わる場合、changes に含まれる）", () => {
     const { replica, actions, performed, day } = setup();
@@ -435,6 +683,7 @@ describe("createProject / updateProject", () => {
     const project = {
       id: "proj-1",
       name: "P",
+      color: null,
       archivedAt: null,
       createdAt: "2026-01-01T00:00:00.000Z",
       updatedAt: "2026-01-01T00:00:00.000Z",
@@ -448,6 +697,36 @@ describe("createProject / updateProject", () => {
     ]);
     const result = actions.updateProject("proj-1", { archivedAt: "2026-01-05T00:00:00.000Z" });
     expect(result).toEqual({ ok: false, reason: "has-open-tasks" });
+  });
+
+  it("10-修正1：作るときに色を入れない（color は空。表示は作成順の色に任せる）", () => {
+    const { replica, actions, performed } = setup();
+    actions.createProject("1つ目");
+    const archived = makeProject({ archivedAt: "2026-01-01T00:00:00.000Z" });
+    replica.replaceConfirmed([{ kind: "project", row: archived }]);
+    actions.createProject("2つ目");
+
+    for (const { mutations } of performed) {
+      const mutation = mutations[0];
+      if (mutation?.type !== "project.create") throw new Error("project.create ではありません");
+      expect(mutation.project.color ?? null).toBeNull();
+    }
+    expect(performed).toHaveLength(2);
+  });
+
+  it("updateProject で色を変えられる", () => {
+    const { replica, actions, performed } = setup();
+    const project = makeProject({ color: "violet" });
+    replica.replaceConfirmed([{ kind: "project", row: project }]);
+
+    const result = actions.updateProject(project.id, { color: "amber" });
+
+    expect(result.ok).toBe(true);
+    expect(performed[0]?.mutations[0]).toMatchObject({
+      type: "project.update",
+      id: project.id,
+      changes: { color: "amber" },
+    });
   });
 });
 

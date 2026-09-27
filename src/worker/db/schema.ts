@@ -2,6 +2,7 @@ import { sql } from "drizzle-orm";
 import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
 // drizzle-kit もこのファイルを読むので、パスの別名（@shared）は使わない
 import { BUCKETS, type ChecklistItem } from "../../shared/model";
+import { PROJECT_COLORS } from "../../shared/palette";
 
 /** ログインのセッション。id はセッションのトークンの SHA-256（16進）。トークンそのものは保存しない */
 export const sessions = sqliteTable("sessions", {
@@ -30,6 +31,8 @@ export const tasks = sqliteTable(
     arrivedOn: text("arrived_on"),
     checklist: text("checklist", { mode: "json" }).$type<ChecklistItem[]>().notNull().default([]),
     completedAt: text("completed_at"),
+    /** 2 番目の版で追加（migrations/0002）。入っているときは bucket が today */
+    startedAt: text("started_at"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
@@ -43,6 +46,8 @@ export const tasks = sqliteTable(
     check("tasks_bucket_check", sql`bucket IN ('inbox', 'today', 'scheduled', 'later')`),
     // bucket が scheduled のときだけ scheduled_on が入る
     check("tasks_scheduled_on_check", sql`(bucket = 'scheduled') = (scheduled_on IS NOT NULL)`),
+    // started_at が入っているなら bucket は today（進行中のタスクは必ず今日にある）
+    check("tasks_started_at_check", sql`started_at IS NULL OR bucket = 'today'`),
   ],
 );
 
@@ -52,6 +57,11 @@ export const projects = sqliteTable(
   {
     id: text("id").primaryKey(),
     name: text("name").notNull(),
+    /**
+     * 2 番目の版で追加（migrations/0002）。パレットの色の名前（src/shared/palette.ts）。
+     * 名前の検証は API（zod）で行い、D1 には CHECK を付けない（パレットに名前を足すときに表を作り直さずに済むように）
+     */
+    color: text("color", { enum: PROJECT_COLORS }),
     archivedAt: text("archived_at"),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),

@@ -2,6 +2,7 @@ import type { InvalidRequestReason } from "@shared/api";
 import {
   isOpenTask,
   isScheduleConsistent,
+  isStartConsistent,
   type Project,
   type SyncRow,
   sameChecklist,
@@ -22,7 +23,7 @@ export type MutateOutcome =
 /** 検証に使うタスクの項目 */
 type TaskFacts = Pick<
   Task,
-  "bucket" | "scheduledOn" | "projectId" | "checklist" | "completedAt" | "deletedAt"
+  "bucket" | "scheduledOn" | "projectId" | "checklist" | "completedAt" | "startedAt" | "deletedAt"
 >;
 type ProjectFacts = { archivedAt: string | null; deletedAt: string | null };
 
@@ -119,6 +120,7 @@ async function loadFacts(db: Db, batch: ParsedMutationBatch) {
     // JSON に読み替えずに、入っている文字列のまま読む
     checklistText: sql<string>`${tasks.checklist}`,
     completedAt: tasks.completedAt,
+    startedAt: tasks.startedAt,
     deletedAt: tasks.deletedAt,
   };
   const [targetTasks, openTasks, projectRows] = await Promise.all([
@@ -192,6 +194,7 @@ function planWrites(
           projectId: task.projectId,
           checklist: task.checklist,
           completedAt: null,
+          startedAt: null,
           deletedAt: null,
         };
         if (!isScheduleConsistent(facts)) throw new Rejection("schedule_mismatch", index);
@@ -218,6 +221,8 @@ function planWrites(
         }
         const next = overlay(current, changes);
         if (!isScheduleConsistent(next)) throw new Rejection("schedule_mismatch", index);
+        // 進行中のタスクは必ず今日にある（D1 の CHECK 制約 tasks_started_at_check と二重に守る）
+        if (!isStartConsistent(next)) throw new Rejection("started_outside_today", index);
         if (next.projectId !== null && next.projectId !== current.projectId) {
           assertAttachable(next.projectId, index);
         }
