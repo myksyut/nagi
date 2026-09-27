@@ -308,7 +308,7 @@ function DragHandle({ controls }: { controls: DragControls }) {
   return (
     <span
       aria-hidden="true"
-      className="absolute top-1/2 -left-4.5 grid size-4 -translate-y-1/2 cursor-grab touch-none place-items-center text-muted-foreground/60 opacity-0 active:cursor-grabbing group-hover/item:opacity-100"
+      className="absolute top-1/2 -left-4 grid size-4 -translate-y-1/2 cursor-grab touch-none place-items-center text-muted-foreground/60 opacity-0 active:cursor-grabbing group-hover/item:opacity-100"
       onPointerDown={(event) => {
         event.preventDefault();
         controls.start(event);

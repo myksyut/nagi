@@ -1,4 +1,4 @@
-import { action, makeObservable, observable } from "mobx";
+import { action, makeObservable, observable, reaction } from "mobx";
 import { observer } from "mobx-react-lite";
 import { useState } from "react";
 import {
@@ -62,7 +62,11 @@ export function pickerItems(
   return items;
 }
 
-/** 候補を開いているタスクと、広げる元。一覧の状態（ListUi）ごとに1つ */
+/**
+ * 候補を開いているタスクと、広げる元。一覧の状態（ListUi）ごとに1つ。
+ * 画面が変わったときと、そのタスクが一覧からなくなったとき（同期・ほかのタブ）は閉じる
+ * （候補の部品は行と一緒に消えるので、閉じたことを自分では知らせられない）
+ */
 export class ProjectPicker {
   taskId: string | null = null;
   /** 広げる元の要素（開いたタスクのボタン）。null なら行から広げる */
@@ -70,8 +74,18 @@ export class ProjectPicker {
   /** 行ごとの「候補を開いているか」（行は自分の id だけを観測する） */
   readonly #openFlags = observable.map<string, true>();
 
-  constructor() {
+  constructor(ui: ListUi) {
     makeObservable(this, { taskId: observable, open: action, close: action });
+    reaction(
+      () => ui.view,
+      () => this.close(),
+    );
+    reaction(
+      () => this.taskId !== null && !ui.rows.some((row) => row.id === this.taskId),
+      (gone) => {
+        if (gone) this.close();
+      },
+    );
   }
 
   isOpenFor(taskId: string): boolean {
@@ -97,7 +111,7 @@ const pickers = new WeakMap<ListUi, ProjectPicker>();
 export function projectPickerOf(ui: ListUi): ProjectPicker {
   let picker = pickers.get(ui);
   if (!picker) {
-    picker = new ProjectPicker();
+    picker = new ProjectPicker(ui);
     pickers.set(ui, picker);
   }
   return picker;
