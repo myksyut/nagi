@@ -288,12 +288,34 @@ export class TaskActions {
 
   // --- プロジェクト -----------------------------------------------------------------------
 
-  /** プロジェクトを作る。ids[0] が作ったプロジェクトの id */
-  createProject(name: string): OperationResult {
+  /**
+   * プロジェクトを作る。ids[0] が作ったプロジェクトの id。
+   * assignTo を渡すと、同じ操作でそのタスクに付ける（p の「「◯◯」を作成」。作成と付けるのを1回で戻せる）
+   */
+  createProject(name: string, assignTo: readonly string[] = []): OperationResult {
     if (!isNonBlank(name)) return { ok: false, reason: "invalid" };
-    return this.#perform("project.create", [
-      { type: "project.create", project: { id: this.#newId(), name } },
-    ]);
+    const id = this.#newId();
+    const mutations: Mutation[] = [{ type: "project.create", project: { id, name: name.trim() } }];
+    for (const task of this.#rows(assignTo)) {
+      if (task.deletedAt === null) {
+        mutations.push({ type: "task.update", id: task.id, changes: { projectId: id } });
+      }
+    }
+    return this.#perform("project.create", mutations);
+  }
+
+  /** タスクにプロジェクトを付ける・外す（null）。アーカイブ済み・削除済みのプロジェクトは付けられない */
+  setProject(ids: readonly string[], projectId: string | null): OperationResult {
+    if (projectId !== null) {
+      const project = this.#replica.project(projectId)?.peek();
+      if (!project || project.archivedAt !== null || project.deletedAt !== null) {
+        return { ok: false, reason: "invalid" };
+      }
+    }
+    const updates = this.#rows(ids)
+      .filter((task) => task.deletedAt === null)
+      .map((task) => ({ id: task.id, changes: { projectId } }));
+    return this.#updateMany("task.update", updates);
   }
 
   /** 名前の変更・アーカイブ。未完了のタスクが残っているとアーカイブできない */
@@ -307,7 +329,9 @@ export class TaskActions {
       return { ok: false, reason: "has-open-tasks" };
     }
     const next: Record<string, unknown> = {};
-    for (const [key, value] of Object.entries(changes)) {
+    const trimmed =
+      changes.name === undefined ? changes : { ...changes, name: changes.name.trim() };
+    for (const [key, value] of Object.entries(trimmed)) {
       if (value !== undefined && current[key as keyof Project] !== value) next[key] = value;
     }
     if (Object.keys(next).length === 0) return { ok: false, reason: "noop" };

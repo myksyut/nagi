@@ -1,9 +1,9 @@
 import type { ComponentType } from "react";
 import { Redirect, Route, Switch } from "wouter";
+import { ProjectScreen } from "./features/projects/project-screen";
 import { BUCKET_LISTS, HOME_PATH, type ListKey, LOGBOOK, PROJECT_PATH_PATTERN } from "./navigation";
 import { InboxScreen } from "./screens/inbox-screen";
 import { LaterScreen } from "./screens/later-screen";
-import { ListScreen } from "./screens/list-screen";
 import { LogbookScreen } from "./screens/logbook-screen";
 import { LoginScreen } from "./screens/login-screen";
 import { TodayScreen } from "./screens/today-screen";
@@ -32,9 +32,9 @@ export function App() {
             {[...BUCKET_LISTS, LOGBOOK].map((list) => (
               <Route key={list.key} path={list.path} component={SCREENS[list.key]} />
             ))}
-            {/* プロジェクトの画面は 6 で作る */}
+            {/* プロジェクトごとに一覧の状態を分けるので、プロジェクトが変わったら作り直す */}
             <Route path={PROJECT_PATH_PATTERN}>
-              <ListScreen title="プロジェクト" />
+              {(params) => <ProjectScreen key={params.id} id={params.id} />}
             </Route>
             {/* `/` と未知の URL は今日へ */}
             <Route>
