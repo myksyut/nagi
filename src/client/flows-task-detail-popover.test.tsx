@@ -1,15 +1,19 @@
 import "./features";
 import { act, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { domMax, LazyMotion } from "motion/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { AppStore, StoreProvider } from "./data";
 import { createMemoryLocalDb } from "./data/local-db";
-import { ListUi } from "./tasks/list-ui";
+import type { KeyContext } from "./keyboard/keymap";
+import { useKeymap } from "./keyboard/use-keymap";
+import { ListUi, type ListView } from "./tasks/list-ui";
 import { TaskDetailPopoverHost, taskDetailPopoverOf } from "./tasks/task-detail-popover";
+import { TaskList } from "./tasks/task-list";
 import { ToastHost } from "./tasks/toast-host";
 import { UiProvider } from "./tasks/ui-context";
 import { FakeServer } from "./test/fake-server";
-import { makeProject, makeTask } from "./test/fixtures";
+import { makeProject, makeTask, nextId } from "./test/fixtures";
 
 /**
  * チケット11：小さな詳細（task-detail-popover.tsx）。この時点ではどの画面にもつながっていないので、
@@ -292,5 +296,192 @@ describe("いつやる・締切・プロジェクト", () => {
     expect(screen.queryByRole("textbox", { name: "予定の日付" })).toBeNull();
     expect(screen.getByRole("dialog", { name: "「B」の詳細" })).toBeInTheDocument();
     expect(store.task(task.id)?.bucket).toBe("scheduled");
+  });
+});
+
+// --- 11-修正1 --------------------------------------------------------------------------------
+
+/**
+ * 同じタスクを一覧（開いた欄つき）と小さな詳細の両方に描く土台。一覧の画面と同じく、キーマップも効かせる
+ * （一覧の側で選んでいる行へのキーが、小さな詳細の中から効かないことを確かめるため）
+ */
+async function setupListAndPopover(server: FakeServer, popoverTaskId: string) {
+  const store = new AppStore({
+    fetch: server.fetch,
+    openLocalDb: async () => createMemoryLocalDb(),
+  });
+  await store.start();
+  await act(async () => {
+    await store.sync();
+  });
+  const ui = new ListUi(store);
+  const stop = ui.start();
+  harnesses.push({ store, ui, stop });
+  const view: ListView = {
+    key: "today",
+    kind: "today",
+    sections: () => [{ key: "open", rows: store.lists.today, reorderable: true }],
+    addTo: { bucket: "today", label: "今日に追加" },
+  };
+  const keyContext: KeyContext = { store, ui, navigate: () => {} };
+
+  function Keys() {
+    useKeymap(keyContext);
+    return null;
+  }
+
+  render(
+    <StoreProvider store={store}>
+      <UiProvider ui={ui}>
+        <LazyMotion features={domMax}>
+          <ToastHost toaster={ui.toaster}>
+            <Keys />
+            <TaskList view={view} label="今日" />
+            <button
+              type="button"
+              onClick={(event) => taskDetailPopoverOf(ui).open(popoverTaskId, event.currentTarget)}
+            >
+              開く
+            </button>
+            <TaskDetailPopoverHost />
+          </ToastHost>
+        </LazyMotion>
+      </UiProvider>
+    </StoreProvider>,
+  );
+  act(() => ui.setView(view));
+  return { store, ui };
+}
+
+function duplicateIds(): string[] {
+  const seen = new Set<string>();
+  const duplicates = new Set<string>();
+  for (const element of document.querySelectorAll("[id]")) {
+    if (seen.has(element.id)) duplicates.add(element.id);
+    seen.add(element.id);
+  }
+  return [...duplicates];
+}
+
+describe("11-修正1：一覧と小さな詳細に同じタスクを出したとき", () => {
+  it("要素の id が重ならず、小さな詳細のチェックリストの ↑↓・削除でフォーカスが小さな詳細の中にとどまる", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({
+        title: "B",
+        bucket: "today",
+        checklist: [
+          { id: nextId(), title: "A", done: false },
+          { id: nextId(), title: "項目B", done: false },
+        ],
+      }),
+    );
+    const { ui } = await setupListAndPopover(server, task.id);
+    const user = userEvent.setup();
+
+    // 一覧の側でもタスクを開いておく（チェックリストの欄が一覧にも出る）
+    act(() => ui.open(task.id));
+    expect(screen.getByRole("group", { name: "「B」の詳細" })).toBeInTheDocument();
+
+    await user.click(screen.getByRole("button", { name: "開く" }));
+    const dialog = await screen.findByRole("dialog", { name: "「B」の詳細" });
+    expect(duplicateIds()).toEqual([]);
+
+    const items = within(dialog).getAllByRole("textbox", { name: "項目" });
+    await user.click(items[0] as HTMLElement);
+    await user.keyboard("{ArrowDown}");
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(
+      within(dialog).getAllByRole("textbox", { name: "項目" })[1],
+    );
+
+    // さらに下は「項目を追加」の欄（小さな詳細の中のもの）
+    await user.keyboard("{ArrowDown}");
+    expect(document.activeElement).toBe(
+      within(dialog).getByRole("textbox", { name: "項目を追加" }),
+    );
+
+    // 空にした項目で ⌫ を押して消すと、隣の項目（小さな詳細の中のもの）へ移る
+    const second = within(dialog).getAllByRole("textbox", { name: "項目" })[1] as HTMLElement;
+    await user.click(second);
+    await user.clear(second);
+    await user.keyboard("{Backspace}");
+    await waitFor(() =>
+      expect(within(dialog).getAllByRole("textbox", { name: "項目" })).toHaveLength(1),
+    );
+    expect(dialog.contains(document.activeElement)).toBe(true);
+    expect(document.activeElement).toBe(within(dialog).getByRole("textbox", { name: "項目" }));
+  });
+});
+
+describe("11-修正1：小さな詳細の中でキーボードだけで完了できる", () => {
+  it("Tab で丸に移り、Enter で完了・もう一度 Enter で完了を外せる。x は背後の一覧で選んでいる行に効かない", async () => {
+    const server = new FakeServer();
+    const selected = server.putTask(makeTask({ title: "一覧の行", bucket: "today", rank: "a0" }));
+    const task = server.putTask(makeTask({ title: "B", bucket: "later" }));
+    const { store, ui } = await setupListAndPopover(server, task.id);
+    const user = userEvent.setup();
+
+    act(() => ui.select(selected.id));
+    await user.click(screen.getByRole("button", { name: "開く" }));
+    const dialog = await screen.findByRole("dialog", { name: "「B」の詳細" });
+
+    // 小さな詳細の中で x を押しても、一覧で選んでいる行は完了にならない
+    await user.keyboard("x");
+    expect(store.task(selected.id)?.completedAt).toBeNull();
+
+    await user.tab();
+    const circle = within(dialog).getByRole("button", { name: "「B」を完了にする" });
+    expect(document.activeElement).toBe(circle);
+
+    await user.keyboard("{Enter}");
+    expect(store.task(task.id)?.completedAt).not.toBeNull();
+    const done = within(dialog).getByRole("button", { name: "「B」の完了を外す" });
+    expect(done).toHaveAttribute("aria-pressed", "true");
+
+    done.focus();
+    await user.keyboard("{Enter}");
+    expect(store.task(task.id)?.completedAt).toBeNull();
+    expect(within(dialog).getByRole("button", { name: "「B」を完了にする" })).toBeInTheDocument();
+  });
+
+  it("一覧の行の丸は、これまでどおり Tab では止まらない", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(makeTask({ title: "B", bucket: "today" }));
+    await setupListAndPopover(server, task.id);
+    expect(screen.getByRole("button", { name: "「B」を完了にする" })).toHaveAttribute(
+      "tabindex",
+      "-1",
+    );
+  });
+});
+
+describe("11-修正1：小さな詳細では効かないキーを案内しない", () => {
+  it("状態のボタンと日付の入力の下のボタンに、キーの案内を出さない（一覧の開いた欄では出す）", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(makeTask({ title: "B", bucket: "today" }));
+    const { ui } = await setupListAndPopover(server, task.id);
+    const user = userEvent.setup();
+
+    // 一覧の開いた欄の状態のボタンは s を案内する
+    act(() => ui.open(task.id));
+    const listDetail = screen.getByRole("group", { name: "「B」の詳細" });
+    expect(within(listDetail).getByRole("button", { name: "状態：未着手" })).toHaveAttribute(
+      "title",
+      "進行中にする（S）",
+    );
+    act(() => ui.close());
+
+    await user.click(screen.getByRole("button", { name: "開く" }));
+    const dialog = await screen.findByRole("dialog", { name: "「B」の詳細" });
+    expect(within(dialog).getByRole("button", { name: "状態：未着手" })).toHaveAttribute(
+      "title",
+      "進行中にする",
+    );
+
+    await user.click(within(dialog).getByRole("button", { name: /^いつやる/ }));
+    const panel = await screen.findByRole("dialog", { name: "日付を決めて予定へ" });
+    expect(within(panel).getByRole("button", { name: "あとで" })).toBeInTheDocument();
+    expect(panel.querySelector("kbd")).toBeNull();
   });
 });

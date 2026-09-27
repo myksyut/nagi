@@ -1,7 +1,7 @@
 import { MAX_MUTATIONS_PER_BATCH } from "@shared/mutations";
 import { runInAction } from "mobx";
 import type { OperationFailure, OperationResult, TaskRow } from "@/data";
-import { playCompletionRings } from "./completion-ring";
+import { playCompletionRingAt, playCompletionRings } from "./completion-ring";
 import type { ListUi } from "./list-ui";
 import { planDrop, planStep } from "./reorder";
 
@@ -129,8 +129,18 @@ export function toastSubject(
   return left.length === 1 ? `「${ui.store.task(id)?.title ?? ""}」` : `${left.length}件`;
 }
 
+/** 完了の操作の追加の指定 */
+export type CompleteOptions = {
+  /** 光の輪を出す丸（小さな詳細の丸）。省くと、完了にしたタスクの一覧の行の丸から出す */
+  ringFrom?: Element;
+};
+
 /** 完了。今日以外のリストで完了したら「完了しました・元に戻す」。2件以上なら今日でも「3件を完了しました」 */
-export function completeTasks(ui: ListUi, ids: readonly string[]): OperationResult {
+export function completeTasks(
+  ui: ListUi,
+  ids: readonly string[],
+  { ringFrom }: CompleteOptions = {},
+): OperationResult {
   const result = runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.completeTasks(ids),
@@ -144,7 +154,10 @@ export function completeTasks(ui: ListUi, ids: readonly string[]): OperationResu
   });
   // 丸から光の輪が広がる（受け付けられたときだけ。prefers-reduced-motion では出さない）。
   // 受け付けた直後は React がまだ描き直していないので、丸は元の位置にある
-  if (result.ok) playCompletionRings(ids);
+  if (result.ok) {
+    if (ringFrom) playCompletionRingAt(ringFrom);
+    else playCompletionRings(ids);
+  }
   return result;
 }
 
@@ -161,10 +174,14 @@ export function uncompleteTasks(ui: ListUi, ids: readonly string[]): OperationRe
 }
 
 /** x と丸：未完了のものがあれば完了、すべて完了済みなら完了を外す */
-export function toggleComplete(ui: ListUi, ids: readonly string[]): OperationResult {
+export function toggleComplete(
+  ui: ListUi,
+  ids: readonly string[],
+  options?: CompleteOptions,
+): OperationResult {
   const rows = rowsOf(ui, ids);
   const open = rows.filter((row) => row.completedAt === null).map((row) => row.id);
-  if (open.length > 0) return completeTasks(ui, open);
+  if (open.length > 0) return completeTasks(ui, open, options);
   return uncompleteTasks(
     ui,
     rows.map((row) => row.id),

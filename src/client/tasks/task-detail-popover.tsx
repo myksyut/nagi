@@ -1,6 +1,6 @@
 import { action, makeObservable, observableRef, reaction } from "mobx";
 import { observer } from "mobx-react-lite";
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useId, useMemo, useRef } from "react";
 import { Popover, PopoverPopup } from "@/components/ui/popover";
 import type { TaskRow } from "@/data";
 import { toggleComplete } from "./commands";
@@ -25,7 +25,9 @@ import { useUi } from "./ui-context";
  *
  * 決まり：
  * - 開いているのは一度に1つ。別のタスクを open すると入れ替わる
- * - 中にいるあいだはアプリの1文字のキーを止める（`data-keymap="off"`。選んでいる行へ x などが効かないように）
+ * - 中にいるあいだはアプリの1文字のキーを止める（`data-keymap="off"`。選んでいる行へ x などが効かないように）。
+ *   そのかわり完了の丸は Tab で止まり、Enter・Space で押せる。欄にはキーの案内を出さない
+ * - 中の要素の id は詳細ごとの接頭辞で分ける（DetailSurface の idScope。同じタスクの一覧の行と重ならないように）
  * - 欄から開く日付の入力と p の候補は、小さな詳細の中に描く（extensions.ts の registerDetachedHost）
  * - タスクが削除されたら（ほかのタブを含む）閉じる。新しいバージョンへ読み込み直すとき（editingLocked）も閉じる
  * - 出るときは 100ms で押した場所から広がり、消えるときだけ 150ms でフェードする
@@ -147,11 +149,6 @@ function focusAnchor(anchor: Element): void {
   if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus();
 }
 
-/** 小さな詳細のタイトルの入力欄の id（同じタスクのリストの行の入力欄と重ならないように分ける） */
-export function popoverTitleInputId(taskId: string): string {
-  return `task-detail-popover-title-${taskId}`;
-}
-
 const TaskDetailPopup = observer(function TaskDetailPopup({
   request,
   task,
@@ -167,16 +164,19 @@ const TaskDetailPopup = observer(function TaskDetailPopup({
   const ui = useUi();
   const state = taskDetailPopoverOf(ui);
   const body = useRef<HTMLDivElement>(null);
+  // 中の要素の id の接頭辞（同じタスクの一覧の行・開いた欄と id が重ならないように、詳細ごとに分ける）
+  const idScope = `detail${useId().replace(/[^a-zA-Z0-9_-]/g, "")}-`;
   // 入力欄の Esc・タイトルの Enter でも、ここで閉じて押した要素へ戻る
   const surface = useMemo<DetailSurface>(
     () => ({
       detached: true,
+      idScope,
       close: () => {
         state.close(request.id);
         focusAnchor(request.anchor);
       },
     }),
-    [state, request],
+    [state, request, idScope],
   );
   const done = task.completedAt !== null;
 
@@ -200,7 +200,7 @@ const TaskDetailPopup = observer(function TaskDetailPopup({
         aria-label={`「${task.title}」の詳細`}
         // 中ではアプリの1文字のキーを止める（選んでいる行へ x などが効かないように）
         data-keymap="off"
-        // 開いたら枠そのものにフォーカスを置く（Tab でタイトルへ。打った文字でいきなりタイトルを変えないように）
+        // 開いたら枠そのものにフォーカスを置く（Tab で丸・タイトルへ。打った文字でいきなりタイトルを変えないように）
         initialFocus={body}
         finalFocus={false}
         // 出るときは 100ms で押した場所から広がり、消えるときだけ 150ms でフェードする（消えるあいだはクリックを受けない）
@@ -209,14 +209,17 @@ const TaskDetailPopup = observer(function TaskDetailPopup({
         <DetailSurfaceProvider value={surface}>
           <div ref={body} tabIndex={-1} className="flex flex-col gap-3 outline-none">
             <div className="flex items-center gap-3 text-sm">
+              {/* 中では x が効かないので、丸は Tab で止まり Enter・Space で押せる。光の輪は押した丸から出す */}
               <CompleteButton
                 taskId={task.id}
+                id={`${idScope}complete-${task.id}`}
+                focusable
                 done={done}
                 inProgress={task.isInProgress}
                 title={task.title}
-                onToggle={() => toggleComplete(ui, [task.id])}
+                onToggle={(button) => toggleComplete(ui, [task.id], { ringFrom: button })}
               />
-              <TitleInput task={task} id={popoverTitleInputId(task.id)} />
+              <TitleInput task={task} id={`${idScope}title-${task.id}`} />
             </div>
             <TaskDetailFields task={task} view={view} />
           </div>

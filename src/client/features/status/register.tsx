@@ -3,6 +3,7 @@ import { type KeyContext, keymap, registerKeyBindings } from "@/keyboard/keymap"
 import { formatKey } from "@/keyboard/keys";
 import { cn } from "@/lib/utils";
 import { openRowsOf, selectionForOperation } from "@/tasks/commands";
+import { useDetailSurface } from "@/tasks/detail-surface";
 import { DETAIL_ORDER, type DetailFieldProps, registerDetailField } from "@/tasks/extensions";
 import { chipClassName } from "@/tasks/task-detail";
 import { useUi } from "@/tasks/ui-context";
@@ -51,10 +52,12 @@ function keyHint(): string {
 
 /**
  * 開いたタスクの一番下の列の先頭：状態（未着手・進行中）。押すと切り替わる（s と同じ）。
- * 今日以外のタスクを進行中にすると、今日の一番上へ移る。完了したタスクには出さない（いつやるの欄が「完了」と出す）
+ * 今日以外のタスクを進行中にすると、今日の一番上へ移る。完了したタスクには出さない（いつやるの欄が「完了」と出す）。
+ * 小さな詳細の中では s が効かない（data-keymap="off"）ので、キーの案内を出さない
  */
 const StatusChip = observer(function StatusChip({ task }: DetailFieldProps) {
   const ui = useUi();
+  const { detached } = useDetailSurface();
   const status = task.status;
   if (status === "completed") return null;
   const inProgress = status === "in-progress";
@@ -63,7 +66,7 @@ const StatusChip = observer(function StatusChip({ task }: DetailFieldProps) {
     <button
       type="button"
       aria-label={`状態：${label}`}
-      title={`${inProgress ? "未着手に戻す" : "進行中にする"}${keyHint()}`}
+      title={`${inProgress ? "未着手に戻す" : "進行中にする"}${detached ? "" : keyHint()}`}
       data-status={status}
       className={cn(
         chipClassName,

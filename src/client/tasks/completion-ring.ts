@@ -42,6 +42,18 @@ export function playCompletionRings(ids: readonly string[], doc: Document = docu
   }
 }
 
+/**
+ * 押した丸そのものから、光の輪を出す（小さな詳細の丸。一覧の行と同じタスクを出していても、押した側から出す）。
+ * 丸が画面に見えていなければ出さない
+ */
+export function playCompletionRingAt(button: Element, doc: Document = document): void {
+  if (prefersReducedMotion() || !button.isConnected) return;
+  const rect = button.getBoundingClientRect();
+  const viewHeight = doc.defaultView?.innerHeight ?? 0;
+  if (rect.bottom < 0 || rect.top > viewHeight) return;
+  spawnRing(doc, rect);
+}
+
 /** 出ている輪（設定が reduced motion に変わったら、まとめて外す） */
 const liveRings = new Set<HTMLElement>();
 let stopWatching: (() => void) | null = null;

@@ -12,6 +12,11 @@ export type DetailSurface = {
   close: () => void;
   /** 小さな詳細の中か */
   detached: boolean;
+  /**
+   * 欄の中の要素の id に付ける接頭辞。一覧の中は ""（これまでどおりの id）、小さな詳細は詳細ごとに別の値。
+   * 同じタスクが一覧と小さな詳細の両方に出ても id が重ならず、id で探すフォーカスの移し先が相手の側へ飛ばないように
+   */
+  idScope: string;
 };
 
 const DetailSurfaceContext = createContext<DetailSurface | null>(null);
@@ -36,6 +41,7 @@ export function useDetailSurface(): DetailSurface {
         ui.focusList();
       },
       detached: false,
+      idScope: "",
     }
   );
 }

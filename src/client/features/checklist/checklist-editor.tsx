@@ -51,12 +51,14 @@ const SETTLE_TRANSITION = { bounceStiffness: 1000, bounceDamping: 64 } as const;
 /** 打つのが止まってから保存するまでの時間（タイトルとメモと同じ） */
 const AUTOSAVE_DELAY_MS = 500;
 
-export function checklistItemInputId(taskId: string, itemId: string): string {
-  return `checklist-${taskId}-${itemId}`;
+/** 項目の欄の id。scope は欄のいる場所の接頭辞（useDetailSurface().idScope。一覧の中は ""） */
+export function checklistItemInputId(taskId: string, itemId: string, scope = ""): string {
+  return `${scope}checklist-${taskId}-${itemId}`;
 }
 
-export function checklistAddInputId(taskId: string): string {
-  return `checklist-${taskId}-add`;
+/** 「項目を追加」の欄の id */
+export function checklistAddInputId(taskId: string, scope = ""): string {
+  return `${scope}checklist-${taskId}-add`;
 }
 
 function newItemId(): string {
@@ -86,6 +88,8 @@ function focusField(id: string, caret: "start" | "end" = "end"): void {
 
 export const ChecklistEditor = observer(function ChecklistEditor({ task }: { task: TaskRow }) {
   const ui = useUi();
+  // 同じタスクが一覧と小さな詳細の両方に出ても、欄の id（フォーカスの移し先）が重ならないように
+  const { idScope } = useDetailSurface();
   const drafts = checklistDraftsOf(ui.store);
   const items = task.checklist;
   /** ドラッグしているあいだの並び（離したときに送る） */
@@ -107,8 +111,8 @@ export const ChecklistEditor = observer(function ChecklistEditor({ task }: { tas
 
   const current = () => task.peek().checklist;
   const shown = dragOrder ? orderItems(items, dragOrder) : items;
-  const inputOf = (itemId: string) => checklistItemInputId(task.id, itemId);
-  const addInput = checklistAddInputId(task.id);
+  const inputOf = (itemId: string) => checklistItemInputId(task.id, itemId, idScope);
+  const addInput = checklistAddInputId(task.id, idScope);
 
   const toggle = (itemId: string) => performChecklist(ui, task, toggleItem(current(), itemId));
 
