@@ -107,8 +107,9 @@ import { TaskDetailPopoverHost, taskDetailPopoverOf } from "@/tasks/task-detail-
 - 6 か、サイドバーの「カレンダー」で開く。画面（`calendar-screen.tsx`）・状態と [ ] のキー（`state.ts`）・中身の計算（`model.ts`）は後から読み込み、起動側には 6 の割り当て（`register.ts`）と、読み込みを待つ枠（`lazy.tsx`）だけを置く
 - マスの中身は `model.ts` の `entriesByDate`：締切の◆（受信箱・今日・予定・あとでの未完了のタスクの締切の日）が先、そのあとにタスク（今日のマスに今日のタスク、予定の日付のマスに予定のタスク）。予定の日付・締切・プロジェクトは `row.field(key)` で項目ごとに観測する。日ごとの中身は、その日の中身が変わったときだけ知らせる（`CalendarModel.entriesOn`）
 - マスに出すのは 3 行まで（超えたら 2 行と「ほか N 件」。押すとその日の一覧）
-- ドラッグは、タスクなら `scheduleTasks`、◆なら `setDeadline`（`features/dates/commands.ts`）を呼ぶだけ。タスクは `taskDragOf(ui)` にも載せるので、サイドバーの今日・あとで・プロジェクトにも落とせる
-- 小さな詳細を開いた要素がマスから消えたら（日付を変えて別のマスへ移ったなど）、同じもの（タスクか◆）の新しい要素から開き直す（`useFollowDetailAnchor`。表の中の要素の `data-calendar-entry`・`data-calendar-task` で探す）。どこにもなければ閉じる。月を替えたら閉じる
+- ドラッグは、タスクなら `scheduleTasks`、◆なら `setDeadline`（`features/dates/commands.ts`）を呼ぶだけ。タスクは `taskDragOf(ui)` にも載せるので、サイドバーの今日・あとで・プロジェクトにも落とせる。ドラッグの状態（カレンダーの分と `taskDragOf` の分）は、どこへ落としても・やめても `document` の `drop`・`dragend`（念のため次の `pointerdown`）で終える（`useEndDragAnywhere`）。サイドバーへ落とすと元のチップがマスから消え、その `onDragEnd` が届かないことがあるため
+- 小さな詳細は、開いたもの（タスクか◆か。`CalendarState.detail`）の今の場所から、表が描き直されるたびに付く先を決め直す（`useFollowDetailAnchor` と `model.ts` の `locateEntry`）。マスに出ていればその要素、「ほか N 件」に隠れていればその日の「ほか N 件」（「ほか N 件」の一覧から開いたときもここ）、表のどこにもなければ（完了・削除・絞り込みの外・表の外の日）閉じる。付いていた要素が残っていても、タスクが移っていれば決め直す。月を替えたら閉じる
+- 絞り込んでいたプロジェクトがアーカイブ・削除されたら、状態も「すべて」に戻す（あとでアーカイブを解除しても戻らない）
 
 小さな追加欄（13 が作り、14 もつなぐ。`features/quick-add`）：
 
@@ -128,7 +129,7 @@ quickAddOf(ui).open({ kind: "date", on: "2026-10-05" }, anchor, returnFocus);
 ```
 
 - 右下の「＋」（`shell/add-button.tsx`）は、一覧の追加欄（`task.add`）が使えないときに、小さな追加欄の割り当て（`quickAdd.open`、同じ n、場面 `quick-add`）を呼ぶ。割り当ては `features/quick-add/state.ts` が読み込まれたときに登録する
-- Enter で追加して開いたまま続けられ、Esc で閉じる。打った文字は一覧の追加欄と同じ下書き（`ui.addDraft`）に残る（オフライン・保存できずに戻ってきたときも）。追加しても画面に出ないことがある（受信箱など）ので、追加したら「受信箱に追加しました・元に戻す」を出す
+- Enter で追加して開いたまま続けられ、Esc で閉じる（n と「＋」で開いたときは、開く前にフォーカスのあった要素へ戻る。なければ「＋」。日のマスの「＋」で開いたときはその「＋」へ）。「＋」をもう一度押すと閉じて、「＋」にフォーカスを置く。打った文字は一覧の追加欄と同じ下書き（`ui.addDraft`）に残る（オフライン・保存できずに戻ってきたときも）。追加しても画面に出ないことがある（受信箱など）ので、追加したら「受信箱に追加しました・元に戻す」を出す
 - 予定への追加は `store.actions.addTask({ title, bucket: "scheduled", on })`（1つの操作。今日か過去なら今日の一番下へ。⌘Z 1回で消える）
 - 開いたら小さな詳細は閉じる。中ではアプリの1文字のキーを止める（`data-keymap="off"`）
 
