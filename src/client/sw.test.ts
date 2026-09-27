@@ -148,7 +148,8 @@ describe("fetch：offline.html の控えが消えていたら入れ直す", () =
     cacheMatch.mockResolvedValueOnce(undefined);
     await open();
     expect(cacheAdd).toHaveBeenCalledTimes(1);
-    expect(new URL((cacheAdd.mock.calls[0]?.[0] as Request).url).pathname).toBe("/offline.html");
+    const added = cacheAdd.mock.calls[0]?.[0];
+    expect(added && new URL(added.url).pathname).toBe("/offline.html");
 
     cacheMatch.mockResolvedValueOnce(new Response("<p>オフラインです</p>"));
     await open();
