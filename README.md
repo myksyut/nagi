@@ -93,6 +93,13 @@ import { TaskDetailPopoverHost, taskDetailPopoverOf } from "@/tasks/task-detail-
 - 欄の中の要素の id には `useDetailSurface().idScope`（一覧の中は ""、小さな詳細は詳細ごとの接頭辞）を付ける。同じタスクが一覧と小さな詳細の両方に出ても id が重ならず、id で探すフォーカスの移し先が相手の側へ飛ばないように。欄に id を持つ要素を足すときも同じようにする
 - 小さな詳細のモジュールは Base UI の Popover を使う。起動の道筋から import せず、後から読み込む画面（カレンダー・タイムライン）から使う
 
+タイムライン（14。`features/timeline`）：
+
+- 画面（`timeline-screen.tsx`）は後から読み込む（`lazy.tsx` の `LazyTimelineScreen` をルートに置く）。7 で開き、タイムラインが開いているあいだだけ [ ] で1週ずつ前後へスクロールする（場面 `timeline`。口は `timeline-nav.ts`）
+- 並びの計算は `timeline-model.ts`（範囲は 1 週前から 8 週先。やる日は、予定は予定の日付、今日のタスクは今日。予定の日付・締切・プロジェクトは行ごとに `field()` で読む）。棒のドラッグの日数の決め方は `timeline-drag.ts`（1日 = `DAY_WIDTH` px。棒が裏返らないように、左端は締切まで、右端はやる日までで止める）
+- 棒の左端は `scheduleTasks`、右端と◆は `setDeadline`、真ん中はデータ層の `store.actions.shiftTaskDates(ids, days)`（やる日と締切を同じ日数ずらす1つの操作。d と ⇧D を続けてかけたときと同じ決まりで、⌘Z 1回で戻る）
+- 小さな詳細は、押した棒か◆から開く。押した要素が消えたら（まとまりが変わった・離れた◆が棒に付いた）、同じタスクの棒から開き直し、タスクがタイムラインから出たら閉じる
+
 オフラインと失敗のとき（8）：
 
 - オフラインのあいだは上部に細い帯を出し、オフラインで操作を止めたら帯の色を少し強める（`shell/status-bar.tsx`）。画面の版が古い（409）ときも同じ帯で「新しいバージョンがあります」と出して読み込み直す

@@ -1,0 +1,623 @@
+import { observer } from "mobx-react-lite";
+import {
+  type ButtonHTMLAttributes,
+  type CSSProperties,
+  memo,
+  type MouseEvent as ReactMouseEvent,
+  type PointerEvent as ReactPointerEvent,
+  type Ref,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useState,
+} from "react";
+import { useStore } from "@/data";
+import { addDays } from "@/data/logical-day";
+import { scheduleTasks, setDeadline } from "@/features/dates/commands";
+import { daysBetween, formatShortDate } from "@/features/dates/labels";
+import { ProjectDot } from "@/features/projects/project-dot";
+import { projectColorOf, projectColorVar } from "@/lib/project-color";
+import { prefersReducedMotion } from "@/lib/reduced-motion";
+import { cn } from "@/lib/utils";
+import { TaskDetailPopoverHost, taskDetailPopoverOf } from "@/tasks/task-detail-popover";
+import { useUi } from "@/tasks/ui-context";
+import { shiftTaskDates } from "./commands";
+import { ProjectFilterButton } from "./project-filter";
+import { clampDragDays, type DragDates, type DragEdge, draggedDates } from "./timeline-drag";
+import { TimelineHeading } from "./timeline-heading";
+import {
+  shapeOf,
+  type TimelineGroup,
+  type TimelineItem,
+  type TimelineModel,
+  type TimelineRange,
+  timelineModelOf,
+  timelineRange,
+} from "./timeline-model";
+import { timelineNav } from "./timeline-nav";
+
+/**
+ * タイムライン（後から読み込む画面）。横に日付（1 週前から 8 週先）、縦にプロジェクトごとのまとまりとタスク。
+ * 横にスクロールでき、今日の位置に縦の光の線。左の名前の列と上の日付の行は、スクロールしても残る。
+ * - 棒か◆を押すと、その場に小さな詳細が開く（Enter でも）
+ * - 棒をドラッグすると、日単位でぴったり止まる（左端でやる日、右端で締切、真ん中で両方。timeline-drag.ts）。
+ *   動かしているあいだは、送る先の日付の形で描く。離すと送り、⌘Z 1回で戻る。Esc でやめる
+ * - 「今日」で今日の位置へ、[ ] で1週ずつ前後へスクロールする
+ * - 上の絞り込みで、プロジェクトを選べる
+ */
+
+/** 1日の幅（px）。ドラッグの日数もこの幅で決める */
+export const DAY_WIDTH = 36;
+/** 左の名前の列の幅（px） */
+const NAME_WIDTH = 208;
+/** 棒の左右の余白（px。隣の日の棒とくっつかないように） */
+const BAR_INSET = 3;
+/** これより動かしたらドラッグ（それまでは押しただけ）とみなす（px） */
+const DRAG_THRESHOLD = 4;
+/** 今日へスクロールしたとき、今日より前に見せる日数 */
+const LEAD_DAYS = 3;
+
+const WEEKDAYS = ["日", "月", "火", "水", "木", "金", "土"] as const;
+
+function weekdayOf(date: string): number {
+  return new Date(
+    Date.UTC(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, Number(date.slice(8, 10))),
+  ).getUTCDay();
+}
+
+/** 範囲の最初の日から date までの距離（px） */
+function xOf(range: TimelineRange, date: string): number {
+  return daysBetween(range.start, date) * DAY_WIDTH;
+}
+
+export const TimelineScreen = observer(function TimelineScreen() {
+  const store = useStore();
+  const model = timelineModelOf(store);
+  return (
+    <div data-wide-view="">
+      <TimelineHeading
+        actions={
+          <div className="flex flex-none items-center gap-2">
+            <button
+              type="button"
+              className="rounded-lg border border-border bg-secondary px-2.5 py-1 font-medium text-[12.5px] text-sidebar-foreground outline-none hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
+              onClick={() => timelineNav.scroller?.scrollToToday()}
+            >
+              今日
+            </button>
+            <ProjectFilterButton model={model} />
+          </div>
+        }
+      />
+      {store.loaded && <TimelineGrid model={model} />}
+      <TaskDetailPopoverHost />
+    </div>
+  );
+});
+
+/** 表と、横のスクロール（「今日」と [ ]）。棒の要素はタスクごとに覚えておき、小さな詳細を開き直すときに使う */
+const TimelineGrid = observer(function TimelineGrid({ model }: { model: TimelineModel }) {
+  const store = useStore();
+  const ui = useUi();
+  const today = store.today;
+  const range = timelineRange(today);
+  const groups = model.groups;
+  const scrollRef = useRef<HTMLElement>(null);
+  const [anchors] = useState(() => new Map<string, HTMLElement>());
+
+  // 今日の位置へ（最初は動きなしで）。[ ] と「今日」のボタンは、画面が開いているあいだだけ効く
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (!element) return;
+    const scrollTo = (left: number, smooth: boolean) => {
+      if (smooth && !prefersReducedMotion() && typeof element.scrollTo === "function") {
+        element.scrollTo({ left, behavior: "smooth" });
+      } else {
+        element.scrollLeft = left;
+      }
+    };
+    const toToday = (smooth: boolean) => {
+      const current = store.today;
+      const index = daysBetween(timelineRange(current).start, current);
+      scrollTo(Math.max(0, index - LEAD_DAYS) * DAY_WIDTH, smooth);
+    };
+    toToday(false);
+    return timelineNav.attach({
+      scrollToToday: () => toToday(true),
+      scrollWeeks: (delta) => scrollTo(element.scrollLeft + delta * 7 * DAY_WIDTH, true),
+    });
+  }, [store]);
+
+  // 小さな詳細の押した要素が画面から消えたら（まとまりが変わった・離れた◆が棒に付いたなど）、
+  // 同じタスクの棒から開き直す。タスクがタイムラインから出たら閉じる
+  useLayoutEffect(() => {
+    const popover = taskDetailPopoverOf(ui);
+    const request = popover.request;
+    if (!request || request.anchor.isConnected) return;
+    const next = anchors.get(request.taskId);
+    if (next?.isConnected) popover.open(request.taskId, next);
+    else popover.dismiss();
+  });
+
+  return (
+    <section
+      ref={scrollRef}
+      aria-label="タイムライン"
+      className="relative mt-6.5 max-h-[calc(100dvh-15rem)] overflow-auto overscroll-x-contain rounded-xl border border-border bg-background"
+      style={{ "--day-w": `${DAY_WIDTH}px`, "--name-w": `${NAME_WIDTH}px` } as CSSProperties}
+    >
+      <div className="relative" style={{ width: NAME_WIDTH + range.days * DAY_WIDTH }}>
+        <TimelineAxis start={range.start} days={range.days} today={today} />
+        <div className="relative">
+          <DayBackdrop start={range.start} days={range.days} today={today} />
+          {groups.length === 0 ? (
+            <p className="sticky left-0 w-[calc(var(--name-w)+22rem)] px-6.5 py-10 text-muted-foreground text-sm">
+              {model.filter.kind === "all"
+                ? "予定・今日・締切のあるタスクが、ここに並びます"
+                : "タイムラインに出すタスクはありません"}
+            </p>
+          ) : (
+            groups.map((group) => (
+              <TimelineGroupView
+                key={group.key}
+                group={group}
+                range={range}
+                today={today}
+                anchors={anchors}
+              />
+            ))
+          )}
+          {/* 下の余白。左の名前の列は、ここも地の色で塞ぐ（横にスクロールした日の列の地が、名前の列の下からのぞかないように） */}
+          <div aria-hidden="true" className="flex h-3">
+            <div className="sticky left-0 z-20 w-(--name-w) flex-none bg-background" />
+          </div>
+        </div>
+      </div>
+    </section>
+  );
+});
+
+/** 上の日付の行（縦のスクロールでも残る）。月の初めと範囲の最初の日は「10/1」、ほかは日だけ。今日は明るく */
+const TimelineAxis = memo(function TimelineAxis({
+  start,
+  days,
+  today,
+}: {
+  start: string;
+  days: number;
+  today: string;
+}) {
+  return (
+    <div
+      aria-hidden="true"
+      className="sticky top-0 z-30 flex h-10 bg-background shadow-[inset_0_-1px_0_var(--border)]"
+    >
+      <div className="sticky left-0 z-10 w-(--name-w) flex-none bg-background shadow-[inset_0_-1px_0_var(--border)]" />
+      {Array.from({ length: days }, (_, i) => {
+        const date = addDays(start, i);
+        const day = Number(date.slice(8, 10));
+        const label = i === 0 || day === 1 ? `${Number(date.slice(5, 7))}/${day}` : String(day);
+        const isToday = date === today;
+        return (
+          <div
+            key={date}
+            data-date={date}
+            className={cn(
+              "flex w-(--day-w) flex-none flex-col items-center justify-center text-[10.5px] text-faint-foreground leading-tight tabular-nums",
+              isToday && "font-semibold text-foreground",
+            )}
+          >
+            <span>{label}</span>
+            <span className={cn("text-[9.5px]", !isToday && "opacity-75")}>
+              {isToday ? "今日" : WEEKDAYS[weekdayOf(date)]}
+            </span>
+          </div>
+        );
+      })}
+    </div>
+  );
+});
+
+/** 日の列の地（週末をわずかに明るく、週の区切りに細い線）と、今日の位置の縦の光の線 */
+const DayBackdrop = memo(function DayBackdrop({
+  start,
+  days,
+  today,
+}: {
+  start: string;
+  days: number;
+  today: string;
+}) {
+  const todayIndex = daysBetween(start, today);
+  return (
+    <div
+      aria-hidden="true"
+      className="pointer-events-none absolute inset-y-0"
+      style={{ left: NAME_WIDTH, width: days * DAY_WIDTH }}
+    >
+      {Array.from({ length: days }, (_, i) => {
+        const weekday = weekdayOf(addDays(start, i));
+        if (weekday !== 0 && weekday !== 6 && weekday !== 1) return null;
+        return (
+          <div
+            // biome-ignore lint/suspicious/noArrayIndexKey: 日の列は範囲の最初からの位置で決まる
+            key={i}
+            className={cn(
+              "absolute inset-y-0",
+              weekday === 1 ? "border-border/60 border-l" : "bg-muted/50",
+            )}
+            style={{ left: i * DAY_WIDTH, width: weekday === 1 ? 0 : DAY_WIDTH }}
+          />
+        );
+      })}
+      <div
+        data-today-line=""
+        className="absolute inset-y-0 w-0.5 -translate-x-1/2 bg-primary-text opacity-85 shadow-[0_0_12px_var(--primary-text)]"
+        style={{ left: todayIndex * DAY_WIDTH + DAY_WIDTH / 2 }}
+      />
+    </div>
+  );
+});
+
+/** プロジェクトごとのまとまり：色の見出しと、その下の行 */
+const TimelineGroupView = observer(function TimelineGroupView({
+  group,
+  range,
+  today,
+  anchors,
+}: {
+  group: TimelineGroup;
+  range: TimelineRange;
+  today: string;
+  anchors: Map<string, HTMLElement>;
+}) {
+  const store = useStore();
+  const { projectId } = group;
+  const project = projectId === null ? undefined : store.project(projectId);
+  const color = projectId === null ? null : projectColorOf(store, projectId);
+  const name = project?.name ?? "プロジェクトなし";
+  return (
+    // biome-ignore lint/a11y/useSemanticElements: プロジェクトのまとまり（見出しとその下の行）を名前で読み上げる
+    <div role="group" aria-label={name}>
+      <div className="flex h-8">
+        <div className="sticky left-0 z-20 flex h-full w-(--name-w) flex-none items-center gap-2 bg-background px-3 pt-2 font-semibold text-[12.5px] text-foreground">
+          {color === null ? (
+            <span
+              aria-hidden="true"
+              className="size-2 flex-none rounded-full border border-faint-foreground"
+            />
+          ) : (
+            <ProjectDot color={color} className="size-2" />
+          )}
+          <span className="truncate">{name}</span>
+        </div>
+      </div>
+      {group.items.map((item) => (
+        <TimelineRowView
+          key={item.task.id}
+          item={item}
+          range={range}
+          today={today}
+          anchors={anchors}
+          color={color === null ? "var(--muted-foreground)" : projectColorVar(color)}
+        />
+      ))}
+    </div>
+  );
+});
+
+/** 1行：左に名前（進行中なら丸の半分が紫の印）、右に棒か◆ */
+const TimelineRowView = observer(function TimelineRowView({
+  item,
+  range,
+  today,
+  anchors,
+  color,
+}: {
+  item: TimelineItem;
+  range: TimelineRange;
+  today: string;
+  anchors: Map<string, HTMLElement>;
+  color: string;
+}) {
+  const { task } = item;
+  return (
+    <div className="relative flex h-8 items-center" data-timeline-row={task.id}>
+      <div className="sticky left-0 z-20 flex h-full w-(--name-w) flex-none items-center gap-1.5 bg-background pr-3 pl-6.5 text-[13px] text-sidebar-foreground">
+        {task.isInProgress && (
+          <span
+            role="img"
+            aria-label="進行中"
+            className="status-in-progress size-2.5 flex-none rounded-full border-[1.4px]"
+          />
+        )}
+        <span className="truncate">{task.title}</span>
+      </div>
+      <div className="relative h-full flex-1">
+        <TimelineMarks item={item} range={range} today={today} anchors={anchors} color={color} />
+      </div>
+    </div>
+  );
+});
+
+type DragState = {
+  edge: DragEdge;
+  pointerId: number;
+  originX: number;
+  days: number;
+  moved: boolean;
+};
+
+/**
+ * 1行の棒と◆。押すと小さな詳細が開き、ドラッグで日付を変える。
+ * 動かしているあいだは、離したときに送る先の日付の形（今日より前のやる日は今日）で描く
+ */
+const TimelineMarks = observer(function TimelineMarks({
+  item,
+  range,
+  today,
+  anchors,
+  color,
+}: {
+  item: TimelineItem;
+  range: TimelineRange;
+  today: string;
+  anchors: Map<string, HTMLElement>;
+  color: string;
+}) {
+  const ui = useUi();
+  const { task } = item;
+  const dates: DragDates = { doOn: item.doOn, deadlineOn: item.deadlineOn };
+  const [preview, setPreview] = useState<{ edge: DragEdge; days: number } | null>(null);
+  const drag = useRef<DragState | null>(null);
+  // ドラッグのあとのクリックでは、小さな詳細を開かない
+  const suppressClick = useRef(false);
+  const shown = preview ? draggedDates(preview.edge, dates, preview.days, today) : dates;
+  const shape = shapeOf(shown.doOn, shown.deadlineOn) ?? item.shape;
+  const open = taskDetailPopoverOf(ui).isOpen(task.id);
+
+  const cancel = () => {
+    drag.current = null;
+    setPreview(null);
+  };
+
+  // 動かしているあいだの Esc でやめる（アプリのキーより先に受ける）
+  const dragging = preview !== null;
+  useEffect(() => {
+    if (!dragging) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== "Escape") return;
+      event.preventDefault();
+      event.stopPropagation();
+      drag.current = null;
+      setPreview(null);
+      // 離したときのクリックで、小さな詳細を開かない
+      suppressClick.current = true;
+    };
+    window.addEventListener("keydown", onKeyDown, true);
+    return () => window.removeEventListener("keydown", onKeyDown, true);
+  }, [dragging]);
+
+  const commit = (edge: DragEdge, days: number) => {
+    if (days === 0) return;
+    const next = draggedDates(edge, dates, days, today);
+    switch (edge) {
+      case "start":
+        if (next.doOn !== null && next.doOn !== dates.doOn) scheduleTasks(ui, [task.id], next.doOn);
+        return;
+      case "end":
+      case "deadline":
+        if (next.deadlineOn !== dates.deadlineOn) setDeadline(ui, [task.id], next.deadlineOn);
+        return;
+      case "move":
+        shiftTaskDates(ui, [task.id], days);
+        return;
+    }
+  };
+
+  /** 棒と◆のポインタの受け口。edge を渡さなければ、押した場所（data-edge）で決める */
+  const pointerHandlers = (fixedEdge?: DragEdge) => ({
+    onPointerDown: (event: ReactPointerEvent<HTMLElement>) => {
+      suppressClick.current = false;
+      if (event.button !== 0 || drag.current) return;
+      const target = event.target instanceof Element ? event.target : null;
+      const edge =
+        fixedEdge ??
+        (target?.closest("[data-edge]")?.getAttribute("data-edge") as DragEdge | null) ??
+        "move";
+      try {
+        event.currentTarget.setPointerCapture(event.pointerId);
+      } catch {
+        // 押したままのポインタでなければ（合成したイベントなど）、捕まえずに続ける
+      }
+      drag.current = {
+        edge,
+        pointerId: event.pointerId,
+        originX: event.clientX,
+        days: 0,
+        moved: false,
+      };
+    },
+    onPointerMove: (event: ReactPointerEvent<HTMLElement>) => {
+      const state = drag.current;
+      if (!state || state.pointerId !== event.pointerId) return;
+      const dx = event.clientX - state.originX;
+      if (!state.moved) {
+        if (Math.abs(dx) < DRAG_THRESHOLD) return;
+        state.moved = true;
+      }
+      const days = clampDragDays(state.edge, dates, Math.round(dx / DAY_WIDTH));
+      state.days = days;
+      setPreview((current) =>
+        current?.edge === state.edge && current.days === days
+          ? current
+          : { edge: state.edge, days },
+      );
+    },
+    onPointerUp: (event: ReactPointerEvent<HTMLElement>) => {
+      const state = drag.current;
+      if (!state || state.pointerId !== event.pointerId) return;
+      cancel();
+      if (!state.moved) return;
+      suppressClick.current = true;
+      commit(state.edge, state.days);
+    },
+    onPointerCancel: (event: ReactPointerEvent<HTMLElement>) => {
+      if (drag.current?.pointerId === event.pointerId) cancel();
+    },
+    onLostPointerCapture: (event: ReactPointerEvent<HTMLElement>) => {
+      if (drag.current?.pointerId === event.pointerId) cancel();
+    },
+    onClick: (event: ReactMouseEvent<HTMLElement>) => {
+      // ドラッグのあとのクリックは開かない（キーボードの Enter・Space のクリック（detail が 0）はいつも開く）
+      if (suppressClick.current && event.detail !== 0) {
+        suppressClick.current = false;
+        return;
+      }
+      suppressClick.current = false;
+      taskDetailPopoverOf(ui).open(task.id, event.currentTarget);
+    },
+  });
+
+  const registerMain: Ref<HTMLButtonElement> = (element) => {
+    if (element) anchors.set(task.id, element);
+    return () => {
+      if (anchors.get(task.id) === element) anchors.delete(task.id);
+    };
+  };
+
+  const title = task.title;
+  const style = { "--bar": color } as CSSProperties;
+  const rangeWidth = range.days * DAY_WIDTH;
+
+  if (shape.kind === "diamond") {
+    return (
+      <Diamond
+        ref={registerMain}
+        kind="diamond"
+        x={xOf(range, shape.on)}
+        on={shape.on}
+        label={`「${title}」 締切 ${formatShortDate(shape.on, today)}`}
+        open={open}
+        dragging={dragging}
+        style={style}
+        {...pointerHandlers("deadline")}
+      />
+    );
+  }
+
+  const left = Math.max(xOf(range, shape.from), 0);
+  const right = Math.min(xOf(range, shape.to) + DAY_WIDTH, rangeWidth);
+  const clippedEnd = xOf(range, shape.to) + DAY_WIDTH > rangeWidth;
+  const doLabel = shape.from === today ? "今日" : formatShortDate(shape.from, today);
+  const barLabel = `「${title}」 やる日 ${doLabel}${
+    shape.endDiamond ? `・締切 ${formatShortDate(shape.to, today)}` : ""
+  }`;
+  const inProgress = task.isInProgress;
+
+  return (
+    <>
+      {right > left && (
+        <button
+          ref={registerMain}
+          type="button"
+          aria-label={barLabel}
+          data-shape="bar"
+          data-from={shape.from}
+          data-to={shape.to}
+          data-end-diamond={shape.endDiamond || undefined}
+          className={cn(
+            "absolute top-[7px] h-[18px] cursor-grab touch-none select-none rounded-md outline-none transition-[filter] hover:brightness-115 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
+            inProgress
+              ? "bg-[linear-gradient(90deg,color-mix(in_srgb,var(--bar)_70%,transparent),var(--bar))] shadow-[0_0_14px_color-mix(in_srgb,var(--bar)_40%,transparent)]"
+              : "bg-[color-mix(in_srgb,var(--bar)_50%,transparent)]",
+            open &&
+              "shadow-[0_0_0_1px_rgb(255_255_255/70%),0_0_16px_color-mix(in_srgb,var(--bar)_65%,transparent)]",
+            dragging && "cursor-grabbing brightness-115",
+          )}
+          style={{ ...style, left: left + BAR_INSET, width: right - left - 2 * BAR_INSET }}
+          {...pointerHandlers()}
+        >
+          {/* 左端と右端のつまみ（引くと、やる日・締切が変わる） */}
+          <span
+            data-edge="start"
+            aria-hidden="true"
+            className="absolute inset-y-0 left-0 w-2 cursor-ew-resize rounded-l-md hover:bg-white/25"
+          />
+          <span
+            data-edge="end"
+            aria-hidden="true"
+            className="absolute inset-y-0 right-0 w-2 cursor-ew-resize rounded-r-md hover:bg-white/25"
+          />
+          {shape.endDiamond && !clippedEnd && (
+            <span
+              data-edge="end"
+              aria-hidden="true"
+              className="absolute top-1/2 -right-1.5 size-2.5 -translate-y-1/2 rotate-45 cursor-ew-resize border border-white/40 bg-(--bar)"
+            />
+          )}
+        </button>
+      )}
+      {shape.looseDeadline !== null && (
+        <Diamond
+          ref={right > left ? undefined : registerMain}
+          kind="loose-deadline"
+          x={xOf(range, shape.looseDeadline)}
+          on={shape.looseDeadline}
+          label={`「${title}」 締切 ${formatShortDate(shape.looseDeadline, today)}`}
+          open={open}
+          dragging={dragging}
+          style={style}
+          {...pointerHandlers("deadline")}
+        />
+      )}
+    </>
+  );
+});
+
+/** ◆（締切）。やる日のないタスクの◆と、やる日より前にある離れた◆ */
+function Diamond({
+  ref,
+  kind,
+  x,
+  on,
+  label,
+  open,
+  dragging,
+  style,
+  ...handlers
+}: {
+  ref?: Ref<HTMLButtonElement>;
+  /** diamond：やる日のないタスクの◆。loose-deadline：やる日より前にある離れた◆ */
+  kind: "diamond" | "loose-deadline";
+  x: number;
+  on: string;
+  label: string;
+  open: boolean;
+  dragging: boolean;
+  style: CSSProperties;
+} & ButtonHTMLAttributes<HTMLButtonElement>) {
+  return (
+    <button
+      ref={ref}
+      type="button"
+      aria-label={label}
+      data-shape={kind}
+      data-on={on}
+      className={cn(
+        "absolute top-1.5 grid size-5 cursor-grab touch-none select-none place-items-center rounded-sm outline-none focus-visible:outline-2 focus-visible:outline-ring",
+        dragging && "cursor-grabbing",
+      )}
+      style={{ ...style, left: x + DAY_WIDTH / 2 - 10 }}
+      {...handlers}
+    >
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-2.5 rotate-45 border-(--bar) border-[1.5px] bg-[color-mix(in_srgb,var(--bar)_20%,transparent)]",
+          open && "bg-(--bar) shadow-[0_0_10px_var(--bar)]",
+        )}
+      />
+    </button>
+  );
+}
