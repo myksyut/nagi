@@ -82,8 +82,8 @@ export function taskDragOf(ui: ListUi): TaskDrag {
   return drag;
 }
 
-/** 複数を運ぶときに、つかんだ位置に「3件」と出す */
-function setCountImage(event: DragEvent, count: number): void {
+/** 複数を運ぶときに、つかんだ位置に「3件」と出す（ボードのカードでも使う） */
+export function setCountImage(event: DragEvent, count: number): void {
   const transfer = event.dataTransfer;
   if (count < 2 || typeof transfer?.setDragImage !== "function") return;
   const ghost = document.createElement("div");

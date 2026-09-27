@@ -15,6 +15,7 @@ export const ListScreen = observer(function ListScreen({
   list,
   date,
   count,
+  actions,
   children,
 }: {
   title: string;
@@ -24,6 +25,8 @@ export const ListScreen = observer(function ListScreen({
   date?: string;
   /** 未完了の件数を読む（0 件なら出さない。完了ログでは渡さない） */
   count?: () => number;
+  /** 見出しの右に置く操作（今日の「リスト｜ボード」） */
+  actions?: ReactNode;
   children?: ReactNode;
 }) {
   const store = useStore();
@@ -45,6 +48,7 @@ export const ListScreen = observer(function ListScreen({
           </span>
         }
         subtitle={<HeadingSubtitle date={date} count={count} />}
+        actions={actions}
       >
         <h1 className="font-[650] text-[26px] leading-tight tracking-[-0.01em]">{title}</h1>
       </ScreenHeading>

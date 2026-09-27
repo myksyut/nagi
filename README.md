@@ -44,7 +44,7 @@ components.json  # shadcn / coss ui の設定
 
 最初の表示と、後から読み込む部品（8）：
 
-- 起動に要らない部品は `defer(() => import("…"))`（`lib/deferred.ts`）で最初の JS から外し、部品の中では `useDeferred` で受け取る。今は ⌘K、`?` の一覧、完了ログの一覧、日付の入力（カレンダー）、p の候補、チェックリストの編集、border-beam、Motion の機能一式（`LazyMotion` に渡す。行などは `motion.*` ではなく `m.*` で書く）
+- 起動に要らない部品は `defer(() => import("…"))`（`lib/deferred.ts`）で最初の JS から外し、部品の中では `useDeferred` で受け取る。今は ⌘K、`?` の一覧、完了ログの一覧、ボード、日付の入力（カレンダー）、p の候補、チェックリストの編集、border-beam、Motion の機能一式（`LazyMotion` に渡す。行などは `motion.*` ではなく `m.*` で書く）
 - 登録したものは、アプリの外枠が起動のあとの空いた時間にまとめて先読みする（最初のキー操作で読み込みを待たせない）。テストでは各ファイルの最初に読み込んでおく（`test/setup.ts`）
 - 後から読み込むモジュールを、起動の道筋（`main.tsx` から静的に import される側）から import しない。import すると最初の JS に戻ってしまう。`pnpm build` の出力で `index-*.js` と一緒に読まれる分を確かめる
 
@@ -92,6 +92,15 @@ import { TaskDetailPopoverHost, taskDetailPopoverOf } from "@/tasks/task-detail-
 - 欄から開く日付の入力と p の候補は、小さな詳細の中に描く（`registerDetachedHost` で、dates と projects が自分の描き方を登録している）。欄からポップオーバーを開く機能を足すときは、`useDetailSurface().detached` を見て、同じように登録する
 - 欄の中の要素の id には `useDetailSurface().idScope`（一覧の中は ""、小さな詳細は詳細ごとの接頭辞）を付ける。同じタスクが一覧と小さな詳細の両方に出ても id が重ならず、id で探すフォーカスの移し先が相手の側へ飛ばないように。欄に id を持つ要素を足すときも同じようにする
 - 小さな詳細のモジュールは Base UI の Popover を使う。起動の道筋から import せず、後から読み込む画面（カレンダー・タイムライン）から使う
+
+ボード（12。`features/board`）：
+
+- 今日と各プロジェクトの見出しの右に「リスト｜ボード」（`view-toggle.tsx`）。v でも切り替わる。どちらで見ていたかは画面ごとに localStorage（`nagi:board-screens`）に残す（`layout.ts`。画面の名前は一覧の名前 `today`・`project:<id>`）
+- ボードの画面（`board.tsx`）は後から読み込む（`lazy-board.tsx`）。プロジェクトの画面と共通の決まり（一覧の名前・追加の行き先）は `features/projects/project-view.ts` に置き、ボードから画面の部品（`project-screen.tsx`）を import しない（import すると、起動の JS の分け方が変わって大きくなる）
+- 一覧の状態はリストと同じ `ListUi`。まとまり（`TaskSection`）に列の名前 `column` を付けると、↑↓・⇧↑↓ は同じ列の中だけを動き、←→（`ui.moveColumn`。場面 `board` で登録）で隣の列へ移る（行のない列は飛ばす）。完了などで次に選ぶ行も同じ列の中から選ぶ。x・s・t・d・l・p・⇧D・⌘⌫・⌥↑↓・Enter は、リストと同じ割り当てが、選んでいるカードに働く
+- カードの下の情報は、行の右側に登録された項目（`registerRowMeta`）をそのまま並べる。日付の入力と p の候補も、カード（`taskRowId` の要素）から開く。丸は `CompleteButton` なので、完了の光の輪もそのまま出る
+- ドラッグ（`commands.ts`）：列をまたぐと状態が変わる（→進行中は `startTasks`、→完了は `completeTasks`、進行中→未着手は `stopTasks`、完了→未着手は `uncompleteTasks`）。完了→進行中は `store.actions.uncompleteTasks(ids, { start: true })` で、完了を外して今日の一番下に進行中で戻すのを1つの操作にする（⌘Z 1回で戻る）。運ぶのは、つかんだカードと同じ列の選んでいるカード（完了のカードも運べる）。列の中は、リストで並べ替えられるまとまりの中だけで並べ替える
+- 追加欄は、今日は未着手の列の一番下、プロジェクトは未着手の列の「あとで」の一番下（アーカイブ済みなら未着手の列の一番上）に開く
 
 オフラインと失敗のとき（8）：
 

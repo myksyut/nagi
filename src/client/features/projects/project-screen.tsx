@@ -1,7 +1,9 @@
 import { observer } from "mobx-react-lite";
 import { useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
-import { type AppStore, type ProjectRow, type ProjectTaskGroups, useStore } from "@/data";
+import { type ProjectRow, type ProjectTaskGroups, useStore } from "@/data";
+import { LazyBoard } from "@/features/board/lazy-board";
+import { useScreenLayout, ViewToggle } from "@/features/board/view-toggle";
 import { isComposingKey } from "@/keyboard/keys";
 import { HOME_PATH } from "@/navigation";
 import { ScreenHeading } from "@/screens/list-screen";
@@ -12,23 +14,16 @@ import { useListView, useUi } from "@/tasks/ui-context";
 import { ProjectColorButton } from "./color-palette";
 import { archiveProject, renameProject, unarchiveProject } from "./commands";
 import { projectNameDraftsOf } from "./name-drafts";
+import { isArchivedProject, liveProject, projectAddTo, projectScreenKey } from "./project-view";
 
 /**
  * プロジェクトの画面：そのプロジェクトのタスクを「今日／予定／あとで／受信箱」のまとまりで並べ、
  * 一番下に、そのプロジェクトで完了したもの（全期間）の「完了 N件」（最初は閉じている）。
  * n で追加すると、そのプロジェクトの「あとで」に入る。
  * 見出しの名前を押すと名前を直せる。見出しの右の小さなボタンから、名前の変更とアーカイブ。
- * 見出しの左にはプロジェクトの色の点。押すとパレット（8 色）が開き、色を選び直せる（color-palette.tsx。⌘Z で戻る）
+ * 見出しの左にはプロジェクトの色の点。押すとパレット（8 色）が開き、色を選び直せる（color-palette.tsx。⌘Z で戻る）。
+ * 見出しの一番右の「リスト｜ボード」か v で、状態の列のボードに切り替わる（features/board。どちらで見ていたかは覚える）
  */
-
-function liveProject(store: AppStore, id: string): ProjectRow | undefined {
-  const project = store.project(id);
-  return project && project.deletedAt === null ? project : undefined;
-}
-
-function isArchived(store: AppStore, id: string): boolean {
-  return liveProject(store, id)?.archivedAt != null;
-}
 
 function projectSections(groups: ProjectTaskGroups): TaskSection[] {
   return [
@@ -46,20 +41,7 @@ function projectSections(groups: ProjectTaskGroups): TaskSection[] {
 
 export const ProjectScreen = observer(function ProjectScreen({ id }: { id: string }) {
   const store = useStore();
-  const view = useListView(() => ({
-    key: `project:${id}`,
-    kind: "project",
-    sections: () => projectSections(store.lists.project(id)),
-    // アーカイブ済みのプロジェクトには付けられないので、そのときは受信箱（プロジェクトなし）に入れる
-    get addTo(): AddTarget {
-      return isArchived(store, id)
-        ? { bucket: "inbox", label: "受信箱に追加" }
-        : { bucket: "later", projectId: id, label: "あとでに追加" };
-    },
-    get addInSection() {
-      return isArchived(store, id) ? undefined : "later";
-    },
-  }));
+  const layout = useScreenLayout(projectScreenKey(id));
   const project = liveProject(store, id);
   const title = project?.name ?? "";
 
@@ -78,9 +60,31 @@ export const ProjectScreen = observer(function ProjectScreen({ id }: { id: strin
   return (
     <>
       <ProjectHeading project={project} />
-      <TaskList view={view} label={project.name} empty={<ProjectEmpty id={id} />} />
+      {layout === "board" ? (
+        <LazyBoard target={{ kind: "project", projectId: id }} />
+      ) : (
+        <ProjectList id={id} label={project.name} />
+      )}
     </>
   );
+});
+
+/** リストで見るとき：今日／予定／あとで／受信箱のまとまりと、一番下の「完了 N件」 */
+const ProjectList = observer(function ProjectList({ id, label }: { id: string; label: string }) {
+  const store = useStore();
+  const view = useListView(() => ({
+    key: projectScreenKey(id),
+    kind: "project",
+    sections: () => projectSections(store.lists.project(id)),
+    // アーカイブ済みのプロジェクトには付けられないので、そのときは受信箱（プロジェクトなし）に入れる
+    get addTo(): AddTarget {
+      return projectAddTo(store, id);
+    },
+    get addInSection() {
+      return isArchivedProject(store, id) ? undefined : "later";
+    },
+  }));
+  return <TaskList view={view} label={label} empty={<ProjectEmpty id={id} />} />;
 });
 
 const ProjectEmpty = observer(function ProjectEmpty({ id }: { id: string }) {
@@ -112,7 +116,10 @@ const ProjectHeading = observer(function ProjectHeading({ project }: { project: 
       leading={<ProjectColorButton project={project} />}
       subtitle={subtitle}
       actions={
-        editing ? undefined : <ProjectActions project={project} onRename={() => setEditing(true)} />
+        <>
+          {!editing && <ProjectActions project={project} onRename={() => setEditing(true)} />}
+          <ViewToggle screen={projectScreenKey(project.id)} />
+        </>
       }
     >
       {editing ? (

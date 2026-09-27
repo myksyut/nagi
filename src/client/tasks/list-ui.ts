@@ -16,6 +16,7 @@ import { Toaster } from "./toaster";
  * - 選択中：ふだんは1つ（↑↓ で動かす）。⇧↑↓ で範囲を広げ、⌘クリックで1行ずつ足し引きできる。
  *   選択の中の1行は「カーソル」（selectedId。↑↓ の起点で、ポップオーバーはこの行から広がる）。
  *   キーの操作は、選んでいるすべての行に働く
+ * - ボード（まとまりに列 column のある一覧）では、↑↓・⇧↑↓ は同じ列の中だけを動き、←→ で隣の列へ移る
  * - 開いているタスク：1つ（その場で下に広がる）
  * - 追加欄：開いているか、下書き
  * - 閉じられるまとまり（今日の「完了 N件」）の開閉
@@ -55,6 +56,11 @@ export type TaskSection = {
    * （今日、あとでのプロジェクトごとのまとまり、プロジェクトの画面の「今日」と「あとで」）
    */
   reorderable?: boolean;
+  /**
+   * ボードの列の名前（例：`notStarted`）。列のある一覧では、↑↓・⇧↑↓ は同じ列の中だけを動き、
+   * ←→（moveColumn）で隣の列へ移る。1つの列に、見出しの付いたまとまりをいくつ並べてもよい
+   */
+  column?: string;
 };
 
 /** 画面ごとの一覧の中身。画面が useListView で渡す */
@@ -116,6 +122,7 @@ function sameSections(a: readonly TaskSection[], b: readonly TaskSection[]): boo
         other !== undefined &&
         section.key === other.key &&
         section.heading === other.heading &&
+        section.column === other.column &&
         section.fold?.label === other.fold?.label &&
         compareShallow(section.rows, other.rows)
       );
@@ -159,8 +166,13 @@ export class ListUi {
   readonly #openFlags = observable.map<string, boolean>();
   /** 画面ごとに最後に選んでいたタスク（リストを切り替えて戻ったときに戻す） */
   readonly #selectionByView = new Map<string, string>();
-  /** 選択中の行が一覧の何番目だったか（行が消えたときに、同じ位置の行を選ぶ） */
+  /**
+   * 選択中の行が一覧の何番目だったか（行が消えたときに、同じ位置の行を選ぶ）。
+   * 列のある一覧では、列の中の何番目か
+   */
   #lastIndex = -1;
+  /** 列のある一覧で、最後にいた列（何も選んでいないときの ↑↓ と、行が消えたときの選び直しに使う） */
+  #column: string | null = null;
   /** ⇧↑↓ で広げる範囲の起点 */
   #anchorId: string | null = null;
   /** ⌘クリックで足した行（⇧↑↓ の範囲とは別に、選んだままにする） */
@@ -194,6 +206,7 @@ export class ListUi {
       editingLocked: observable,
       sections: computed({ equals: sameSections }),
       rows: computed({ equals: compareShallow }),
+      columns: computed({ equals: compareShallow }),
       selected: computed,
       selectedIds: computed({ equals: compareShallow }),
       selectedRows: computed({ equals: compareShallow }),
@@ -202,6 +215,7 @@ export class ListUi {
       clearView: true,
       select: true,
       moveSelection: true,
+      moveColumn: true,
       extendSelection: true,
       toggleInSelection: true,
       reveal: true,
@@ -263,6 +277,31 @@ export class ListUi {
     return this.sections.find((section) => section.rows.some((row) => row.id === taskId));
   }
 
+  /** ボードの列の名前（左から順）。列のない一覧では空 */
+  get columns(): readonly string[] {
+    const columns: string[] = [];
+    for (const { column } of this.sections) {
+      if (column !== undefined && !columns.includes(column)) columns.push(column);
+    }
+    return columns;
+  }
+
+  /** その列の行（上から順。閉じているまとまりの行は入らない） */
+  columnRows(column: string): readonly TaskRow[] {
+    const rows: TaskRow[] = [];
+    for (const section of this.sections) {
+      if (section.column !== column) continue;
+      if (section.fold && !this.isFoldOpen(section.key)) continue;
+      rows.push(...section.rows);
+    }
+    return rows;
+  }
+
+  /** そのタスクの行がある列（列のない一覧や、一覧にない行なら undefined） */
+  columnOf(taskId: string): string | undefined {
+    return this.sectionOf(taskId)?.column;
+  }
+
   /** ids の行がすべて入っている、並べ替えられるまとまり（なければ undefined） */
   reorderableSectionOf(ids: readonly string[]): TaskSection | undefined {
     const first = ids[0];
@@ -296,16 +335,18 @@ export class ListUi {
     return this.#draftQueue.length;
   }
 
-  /** ids を一覧から抜いたときに次に選ぶ行（下の行、なければ上の行）。閉じられるまとまりの中と外はまたがない */
+  /**
+   * ids を一覧から抜いたときに次に選ぶ行（下の行、なければ上の行）。閉じられるまとまりの中と外、
+   * ボードの列はまたがない
+   */
   neighborAfter(ids: readonly string[]): string | null {
     const rows = this.rows;
     const removing = new Set(ids);
     const index = rows.findIndex((row) => removing.has(row.id));
     if (index < 0) return null;
-    const inFold = this.#foldRowIds();
-    const anchorInFold = inFold.has(rows[index]?.id ?? "");
-    const candidate = (row: TaskRow) =>
-      !removing.has(row.id) && inFold.has(row.id) === anchorInFold;
+    const groups = this.#rowGroups();
+    const anchorGroup = groups.get(rows[index]?.id ?? "");
+    const candidate = (row: TaskRow) => !removing.has(row.id) && groups.get(row.id) === anchorGroup;
     const below = rows.slice(index + 1).find(candidate);
     if (below) return below.id;
     const above = rows.slice(0, index).reverse().find(candidate);
@@ -319,6 +360,7 @@ export class ListUi {
     if (this.view === view) return;
     this.#rememberSelection();
     this.view = view;
+    this.#column = null;
     this.applyOpen(null);
     this.adding = false;
     this.lastAddedId = null;
@@ -347,21 +389,22 @@ export class ListUi {
 
   /**
    * 選択を上下に動かす。何も選んでいなければ、↓ で一番上、↑ で一番下を選ぶ。
+   * ボード（列のある一覧）では、今いる列の中だけを動く。
    * 開いているタスクは閉じる
    */
   moveSelection(delta: number): void {
-    let rows = this.rows;
+    let rows = this.#navigableRows();
     if (rows.length === 0) return;
     const indexOfSelected = () =>
       this.selectedId === null ? -1 : rows.findIndex((r) => r.id === this.selectedId);
     let index = indexOfSelected();
     if (delta > 0 && index === rows.length - 1 && this.view?.onReachEnd) {
       this.view.onReachEnd();
-      rows = this.rows;
+      rows = this.#navigableRows();
     } else if (delta < 0 && index === 0 && this.view?.onReachStart) {
       // 上に行が足されると、選んでいる行の位置も変わる
       this.view.onReachStart();
-      rows = this.rows;
+      rows = this.#navigableRows();
       index = indexOfSelected();
     }
     let next: number;
@@ -373,11 +416,43 @@ export class ListUi {
   }
 
   /**
+   * ←→（ボード）：隣の列へ移る。行のない列は飛ばす。移った先では、前の列と同じ位置（上から何番目か）の行を選ぶ
+   * （先の列の行が少なければ一番下）。何も選んでいなければ、→ で行のある一番左の列、← で行のある一番右の列の
+   * 一番上を選ぶ。列のない一覧では何もしない。開いているタスクは閉じる
+   */
+  moveColumn(delta: -1 | 1): void {
+    const columns = this.columns;
+    const current = this.selectedId === null ? undefined : this.columnOf(this.selectedId);
+    const hasRows = (column: string) => this.columnRows(column).length > 0;
+    let target: string | undefined;
+    let index = 0;
+    if (current === undefined) {
+      const filled = columns.filter(hasRows);
+      target = delta > 0 ? filled[0] : filled.at(-1);
+    } else {
+      index = this.columnRows(current).findIndex((row) => row.id === this.selectedId);
+      const from = columns.indexOf(current);
+      for (let i = from + delta; i >= 0 && i < columns.length; i += delta) {
+        const column = columns[i];
+        if (column !== undefined && hasRows(column)) {
+          target = column;
+          break;
+        }
+      }
+    }
+    if (target === undefined) return;
+    const rows = this.columnRows(target);
+    const id = rows[Math.min(Math.max(index, 0), rows.length - 1)]?.id ?? null;
+    if (this.openId !== null && this.openId !== id) this.applyOpen(null);
+    this.applySelection(id);
+  }
+
+  /**
    * ⇧↑↓：選択の範囲を広げる・縮める。起点（最初に選んだ行）からカーソルまでを選ぶ。
-   * 何も選んでいなければ ↑↓ と同じ。開いているタスクは閉じる
+   * ボードでは、今いる列の中だけで広げる。何も選んでいなければ ↑↓ と同じ。開いているタスクは閉じる
    */
   extendSelection(delta: number): void {
-    const rows = this.rows;
+    const rows = this.#navigableRows();
     const cursor =
       this.selectedId === null ? -1 : rows.findIndex((row) => row.id === this.selectedId);
     if (cursor < 0) {
@@ -644,7 +719,32 @@ export class ListUi {
     this.selectedId = cursor;
     this.#anchorId = anchor;
     this.#base = base;
-    this.#lastIndex = cursor === null ? -1 : this.rows.findIndex((row) => row.id === cursor);
+    this.#lastIndex = cursor === null ? -1 : this.#indexInScope(cursor);
+  }
+
+  /**
+   * 行の位置（何番目か）。列のある一覧では、その行の列の中の何番目か（その列を「最後にいた列」として覚える）
+   */
+  #indexInScope(id: string): number {
+    const column = this.columns.length === 0 ? undefined : this.columnOf(id);
+    if (column === undefined) return this.rows.findIndex((row) => row.id === id);
+    this.#column = column;
+    return this.columnRows(column).findIndex((row) => row.id === id);
+  }
+
+  /**
+   * ↑↓・⇧↑↓ で動く範囲。列のある一覧では、今いる列（選んでいる行の列。何も選んでいなければ最後にいた列、
+   * その列に行がなければ行のある一番左の列）の行だけ
+   */
+  #navigableRows(): readonly TaskRow[] {
+    const columns = this.columns;
+    if (columns.length === 0) return this.rows;
+    const current =
+      (this.selectedId === null ? undefined : this.columnOf(this.selectedId)) ??
+      (this.#column !== null && this.columnRows(this.#column).length > 0
+        ? this.#column
+        : columns.find((column) => this.columnRows(column).length > 0));
+    return current === undefined ? [] : this.columnRows(current);
   }
 
   #applyReveal(): void {
@@ -672,7 +772,8 @@ export class ListUi {
   }
 
   /**
-   * 選択中や開いている行が一覧から消えたら（同期・元に戻す・ほかのタブ）、同じ位置の行を選ぶ。
+   * 選択中や開いている行が一覧から消えたら（同期・元に戻す・ほかのタブ）、同じ位置の行を選ぶ
+   * （ボードでは、最後にいた列の同じ位置）。
    * 複数選んでいるときは、消えた行だけを選択から外す（カーソルの行が消えたら、同じ位置の1行を選ぶ）
    */
   #followRows(rows: readonly TaskRow[]): void {
@@ -681,7 +782,7 @@ export class ListUi {
       if (this.selectedId === null) return;
       const index = rows.findIndex((row) => row.id === this.selectedId);
       if (index >= 0) {
-        this.#lastIndex = index;
+        this.#lastIndex = this.#indexInScope(this.selectedId);
         if (this.selection.size <= 1) return;
         const visible = new Set(rows.map((row) => row.id));
         if ([...this.selection].some((id) => !visible.has(id))) {
@@ -695,17 +796,24 @@ export class ListUi {
         }
         return;
       }
-      const fallback = rows[Math.min(this.#lastIndex, rows.length - 1)];
+      const scope =
+        this.columns.length > 0 && this.#column !== null ? this.columnRows(this.#column) : rows;
+      const fallback = scope[Math.min(this.#lastIndex, scope.length - 1)];
       this.applySelection(this.#lastIndex >= 0 && fallback ? fallback.id : null);
     });
   }
 
-  #foldRowIds(): Set<string> {
-    const ids = new Set<string>();
+  /**
+   * 行ごとのまとまりの区切り（次に選ぶ行を探すときに、またがない範囲）：
+   * ボードでは列、それ以外は閉じられるまとまりの中か外か
+   */
+  #rowGroups(): Map<string, string> {
+    const groups = new Map<string, string>();
     for (const section of this.sections) {
-      if (section.fold) for (const row of section.rows) ids.add(row.id);
+      const group = section.column ?? (section.fold ? "fold" : "");
+      for (const row of section.rows) groups.set(row.id, group);
     }
-    return ids;
+    return groups;
   }
 
   /** 追加欄の下書きが空なら、戻ってきた下書きの残りの先頭を入れる（ほかのタブと合わせた最新の残りから取る） */
