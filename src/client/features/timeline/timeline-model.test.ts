@@ -1,3 +1,4 @@
+import { autorun } from "mobx";
 import { describe, expect, it } from "vitest";
 import { AppStore } from "@/data";
 import { createMemoryLocalDb } from "@/data/local-db";
@@ -9,6 +10,8 @@ import {
   doOnOf,
   isInRange,
   shapeOf,
+  type TimelineGroup,
+  TimelineModel,
   timelineRange,
   WEEKS_AFTER,
   WEEKS_BEFORE,
@@ -312,5 +315,77 @@ describe("computeTimelineGroups：まとまり・並び・絞り込み・範囲"
 
     store.actions.setProject([task.id], p2.id);
     expect(computeTimelineGroups(store, ALL_PROJECTS).map((g) => g.projectId)).toEqual([p2.id]);
+  });
+});
+
+describe("14-修正1：1件を変えても、ほかの行とまとまりは同じオブジェクトのまま", () => {
+  it("締切を1件変えると、そのまとまりとその行だけが新しくなる（ほかのまとまり・行は参照が同じ）", async () => {
+    const server = new FakeServer();
+    const p1 = server.putProject(
+      makeProject({ name: "P1", createdAt: "2026-01-01T00:00:00.000Z" }),
+    );
+    const p2 = server.putProject(
+      makeProject({ name: "P2", createdAt: "2026-01-02T00:00:00.000Z" }),
+    );
+    const moving = server.putTask(
+      makeTask({ title: "動く", bucket: "scheduled", scheduledOn: "2026-10-01", projectId: p1.id }),
+    );
+    server.putTask(
+      makeTask({
+        title: "P1の別",
+        bucket: "scheduled",
+        scheduledOn: "2026-10-02",
+        projectId: p1.id,
+      }),
+    );
+    server.putTask(
+      makeTask({
+        title: "P2の行",
+        bucket: "scheduled",
+        scheduledOn: "2026-10-03",
+        projectId: p2.id,
+      }),
+    );
+    const store = await makeTimelineStore(server);
+    const model = new TimelineModel(store);
+    // 観測しているあいだの計算（画面が読んでいるのと同じ）
+    const seen: (readonly TimelineGroup[])[] = [];
+    const stop = autorun(() => {
+      seen.push(model.groups);
+    });
+
+    const [before1, before2] = model.groups;
+    store.actions.setDeadline([moving.id], "2026-10-10");
+    const [after1, after2] = model.groups;
+    stop();
+
+    expect(seen).toHaveLength(2);
+    // P2 のまとまりは同じオブジェクト
+    expect(after2).toBe(before2);
+    // P1 のまとまりは新しいが、変わっていない行（P1の別）は同じオブジェクト
+    expect(after1).not.toBe(before1);
+    const unchangedBefore = before1?.items.find((item) => item.task.title === "P1の別");
+    const unchangedAfter = after1?.items.find((item) => item.task.title === "P1の別");
+    expect(unchangedAfter).toBe(unchangedBefore);
+    expect(after1?.items.find((item) => item.task.id === moving.id)?.deadlineOn).toBe("2026-10-10");
+  });
+
+  it("並びに効かない変更（タイトル）では、並びを知らせない", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "名前", bucket: "scheduled", scheduledOn: "2026-10-01" }),
+    );
+    const store = await makeTimelineStore(server);
+    const model = new TimelineModel(store);
+    let runs = 0;
+    const stop = autorun(() => {
+      void model.groups;
+      runs += 1;
+    });
+
+    store.actions.updateTask(task.id, { title: "新しい名前" });
+    stop();
+
+    expect(runs).toBe(1);
   });
 });

@@ -50,9 +50,12 @@ export function shapeOf(doOn: string | null, deadlineOn: string | null): Timelin
   return deadlineOn === null ? null : { kind: "diamond", on: deadlineOn };
 }
 
+/** 未完了のタスクの置き場 */
+export type OpenBucket = "inbox" | "today" | "scheduled" | "later";
+
 /** 置き場と予定の日付から、やる日（予定は予定の日付、今日のタスクは今日、ほかは null） */
 export function doOnOf(
-  bucket: "inbox" | "today" | "scheduled" | "later",
+  bucket: OpenBucket,
   scheduledOn: string | null,
   today: string,
 ): string | null {
@@ -72,15 +75,19 @@ export function isInRange(shape: TimelineShape, range: TimelineRange): boolean {
   return shape.looseDeadline !== null && within(shape.looseDeadline, range);
 }
 
-/** タイムラインの1行 */
+/**
+ * タイムラインの1行。置き場・やる日・締切が前と同じなら、同じオブジェクトのまま使う
+ * （1件の日付を変えても、ほかの行の部品に新しい props を渡さないように）
+ */
 export type TimelineItem = {
   task: TaskRow;
+  bucket: OpenBucket;
   doOn: string | null;
   deadlineOn: string | null;
   shape: TimelineShape;
 };
 
-/** プロジェクトごとのまとまり。projectId が null なら「プロジェクトなし」 */
+/** プロジェクトごとのまとまり。projectId が null なら「プロジェクトなし」。行が前と同じなら、同じオブジェクトのまま使う */
 export type TimelineGroup = {
   key: string;
   projectId: string | null;
@@ -101,54 +108,48 @@ function compareNullable(a: string | null, b: string | null): number {
   return a < b ? -1 : 1;
 }
 
-function sameItems(a: readonly TimelineItem[], b: readonly TimelineItem[]): boolean {
-  return (
-    a.length === b.length &&
-    a.every((item, i) => {
-      const other = b[i];
-      return (
-        other !== undefined &&
-        item.task === other.task &&
-        item.doOn === other.doOn &&
-        item.deadlineOn === other.deadlineOn
-      );
-    })
-  );
-}
-
-function sameGroups(a: readonly TimelineGroup[], b: readonly TimelineGroup[]): boolean {
-  return (
-    a.length === b.length &&
-    a.every((group, i) => {
-      const other = b[i];
-      return other !== undefined && group.key === other.key && sameItems(group.items, other.items);
-    })
-  );
+/** 並び（行もまとまりも、同じオブジェクトを使い回すので、参照で比べる） */
+function sameList<T>(a: readonly T[], b: readonly T[]): boolean {
+  return a.length === b.length && a.every((value, i) => value === b[i]);
 }
 
 /**
  * タイムラインの並びを計算する。未完了のタスクを、プロジェクトごとのまとまりに分けて返す
- * （行が1つもないまとまりは入れない）。範囲の外のタスクは入れない
+ * （行が1つもないまとまりは入れない）。範囲の外のタスクは入れない。
+ * previous（前に計算した並び）を渡すと、置き場・やる日・締切が同じ行と、行が同じまとまりは、前のオブジェクトを使う
  */
 export function computeTimelineGroups(
   store: AppStore,
   filter: ProjectFilter,
+  previous: readonly TimelineGroup[] = [],
 ): readonly TimelineGroup[] {
+  const previousItems = new Map<TaskRow, TimelineItem>();
+  const previousGroups = new Map<string, TimelineGroup>();
+  for (const group of previous) {
+    previousGroups.set(group.key, group);
+    for (const item of group.items) previousItems.set(item.task, item);
+  }
   const today = store.today;
   const range = timelineRange(today);
   const { lists } = store;
   // 置き場ごとの並び（今日は並び順、予定は日付順、あとでは並び順、受信箱は古い順）を、同じ日の中の並びに使う
-  const sources: [TaskRow, "today" | "scheduled" | "later" | "inbox"][] = [
-    ...lists.today.map((row) => [row, "today"] as [TaskRow, "today"]),
-    ...lists.scheduled.map((row) => [row, "scheduled"] as [TaskRow, "scheduled"]),
-    ...lists.later.map((row) => [row, "later"] as [TaskRow, "later"]),
-    ...lists.inbox.map((row) => [row, "inbox"] as [TaskRow, "inbox"]),
+  const sources: [TaskRow, OpenBucket][] = [
+    ...lists.today.map((row) => [row, "today"] as [TaskRow, OpenBucket]),
+    ...lists.scheduled.map((row) => [row, "scheduled"] as [TaskRow, OpenBucket]),
+    ...lists.later.map((row) => [row, "later"] as [TaskRow, OpenBucket]),
+    ...lists.inbox.map((row) => [row, "inbox"] as [TaskRow, OpenBucket]),
   ];
   const byProject = new Map<string | null, { item: TimelineItem; index: number }[]>();
   sources.forEach(([task, bucket], index) => {
     const doOn = doOnOf(bucket, task.field("scheduledOn"), today);
     const deadlineOn = task.field("deadlineOn");
-    const shape = shapeOf(doOn, deadlineOn);
+    const kept = previousItems.get(task);
+    const same =
+      kept !== undefined &&
+      kept.bucket === bucket &&
+      kept.doOn === doOn &&
+      kept.deadlineOn === deadlineOn;
+    const shape = same ? kept.shape : shapeOf(doOn, deadlineOn);
     if (!shape || !isInRange(shape, range)) return;
     const projectId = liveProjectId(store, task.field("projectId"));
     if (filter.kind === "none" && projectId !== null) return;
@@ -158,7 +159,7 @@ export function computeTimelineGroups(
       items = [];
       byProject.set(projectId, items);
     }
-    items.push({ item: { task, doOn, deadlineOn, shape }, index });
+    items.push({ item: same ? kept : { task, bucket, doOn, deadlineOn, shape }, index });
   });
   // プロジェクトの作成順（アーカイブ済みのプロジェクトに未完了が残っていても出す）。プロジェクトなしは最後
   const projectIds = [...byProject.keys()]
@@ -169,19 +170,20 @@ export function computeTimelineGroups(
       return createdA < createdB ? -1 : createdA > createdB ? 1 : a < b ? -1 : a > b ? 1 : 0;
     });
   const order: (string | null)[] = byProject.has(null) ? [...projectIds, null] : projectIds;
-  return order.map((projectId) => ({
-    key: projectId ?? NO_PROJECT_KEY,
-    projectId,
+  return order.map((projectId) => {
+    const key = projectId ?? NO_PROJECT_KEY;
     // やる日の順（やる日のない◆だけの行は後ろ）。同じなら締切の順、さらに同じなら置き場の並び
-    items: (byProject.get(projectId) ?? [])
+    const items = (byProject.get(projectId) ?? [])
       .sort(
         (a, b) =>
           compareNullable(a.item.doOn, b.item.doOn) ||
           compareNullable(a.item.deadlineOn, b.item.deadlineOn) ||
           a.index - b.index,
       )
-      .map(({ item }) => item),
-  }));
+      .map(({ item }) => item);
+    const kept = previousGroups.get(key);
+    return kept && sameList(kept.items, items) ? kept : { key, projectId, items };
+  });
 }
 
 /** プロジェクトの id（削除済みか、ないプロジェクトなら null＝プロジェクトなし） */
@@ -200,12 +202,18 @@ export class TimelineModel {
   filter: ProjectFilter = ALL_PROJECTS;
   readonly #store: AppStore;
   readonly #groups: IComputedValue<readonly TimelineGroup[]>;
+  /** 前に計算した並び（変わっていない行とまとまりを、同じオブジェクトのまま使う） */
+  #previous: readonly TimelineGroup[] = [];
 
   constructor(store: AppStore) {
     this.#store = store;
-    this.#groups = computed(() => computeTimelineGroups(this.#store, this.filter), {
-      equals: sameGroups,
-    });
+    this.#groups = computed(
+      () => {
+        this.#previous = computeTimelineGroups(this.#store, this.filter, this.#previous);
+        return this.#previous;
+      },
+      { equals: sameList },
+    );
     makeObservable(this, { filter: observableRef, setFilter: true });
     // 手元の控えを読み終える前は、プロジェクトの一覧が空なので見ない
     reaction(

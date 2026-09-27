@@ -172,6 +172,93 @@ function breaksTaskRules(
   return false;
 }
 
+// --- 日付の決まり（d・⇧D・タイムラインの真ん中のドラッグ） --------------------------------
+// 操作（moveTasks・setDeadline・shiftTaskDates）と、送る前の見た目（タイムラインのドラッグのプレビュー）の両方が、
+// 同じ決まりを使うように、ここに1つだけ置く（並び順キーは決めない。操作の側で付ける）
+
+/** d の決まり：やる日を on にしたときの行き先。今日か過去の日なら今日 */
+export function scheduleDestination(on: string, today: string): Destination {
+  return on <= today ? { bucket: "today" } : { bucket: "scheduled", on };
+}
+
+/**
+ * ⇧D の決まり：締切を deadlineOn にしたとき、今日の到着の位置へ移すか。未完了の予定・あとでのタスクに、
+ * 今日以前の締切を付けたとき（受信箱は振り分けの途中なので動かさない。今日にあるものはもう今日にある）
+ */
+export function arrivesByDeadline(
+  task: Pick<Task, "bucket" | "completedAt">,
+  deadlineOn: string | null,
+  today: string,
+): boolean {
+  return (
+    deadlineOn !== null &&
+    deadlineOn <= today &&
+    task.completedAt === null &&
+    (task.bucket === "scheduled" || task.bucket === "later")
+  );
+}
+
+/** 日付の操作：d（やる日を決める）・⇧D（締切を付ける・外す）・やる日と締切を同じ日数ずらす */
+export type DateChange =
+  | { kind: "schedule"; on: string }
+  | { kind: "deadline"; on: string | null }
+  | { kind: "shift"; days: number };
+
+/** 日付の操作をかけたあとの置き場と日付。arrived は、締切で今日の到着の位置へ移ったか */
+export type DatePlacement = {
+  bucket: Bucket;
+  scheduledOn: string | null;
+  deadlineOn: string | null;
+  arrived: boolean;
+};
+
+/**
+ * 日付の操作をかけたあとの置き場と日付（並び順キーは除く）。moveTasks（予定へ）・setDeadline・shiftTaskDates と同じ決まり。
+ * shift は、ずらした日で d をかけてから ⇧D をかけたときと同じ（やる日は、予定は予定の日付、今日のタスクは今日）
+ */
+export function placementAfter(
+  task: Pick<Task, "bucket" | "scheduledOn" | "deadlineOn" | "completedAt">,
+  change: DateChange,
+  today: string,
+): DatePlacement {
+  let { bucket, scheduledOn, deadlineOn } = task;
+  let arrived = false;
+  const schedule = (on: string) => {
+    const to = scheduleDestination(on, today);
+    if (to.bucket === "scheduled") {
+      bucket = "scheduled";
+      scheduledOn = to.on;
+    } else if (bucket !== "today") {
+      bucket = "today";
+      scheduledOn = null;
+    }
+  };
+  const setDeadlineTo = (on: string | null) => {
+    if (on === deadlineOn) return;
+    deadlineOn = on;
+    if (arrivesByDeadline({ bucket, completedAt: task.completedAt }, on, today)) {
+      bucket = "today";
+      scheduledOn = null;
+      arrived = true;
+    }
+  };
+  switch (change.kind) {
+    case "schedule":
+      schedule(change.on);
+      break;
+    case "deadline":
+      setDeadlineTo(change.on);
+      break;
+    case "shift": {
+      const doOn = bucket === "scheduled" ? scheduledOn : bucket === "today" ? today : null;
+      if (doOn !== null) schedule(addDays(doOn, change.days));
+      if (task.deadlineOn !== null) setDeadlineTo(addDays(task.deadlineOn, change.days));
+      break;
+    }
+  }
+  return { bucket, scheduledOn, deadlineOn, arrived };
+}
+
 export class TaskActions {
   readonly #replica: Replica;
   readonly #day: LogicalDay;
@@ -343,8 +430,8 @@ export class TaskActions {
    */
   moveTasks(ids: readonly string[], destination: Destination): OperationResult {
     const to: Destination =
-      destination.bucket === "scheduled" && destination.on <= this.#day.today
-        ? { bucket: "today" }
+      destination.bucket === "scheduled"
+        ? scheduleDestination(destination.on, this.#day.today)
         : destination;
     const scheduledOn = to.bucket === "scheduled" ? to.on : null;
     const targets = this.#rows(ids).filter(
@@ -413,11 +500,7 @@ export class TaskActions {
    */
   setDeadline(ids: readonly string[], deadlineOn: string | null): OperationResult {
     const today = this.#day.today;
-    const arrives = (task: Task) =>
-      deadlineOn !== null &&
-      deadlineOn <= today &&
-      task.completedAt === null &&
-      (task.bucket === "scheduled" || task.bucket === "later");
+    const arrives = (task: Task) => arrivesByDeadline(task, deadlineOn, today);
     const targets = this.#rows(ids).filter(
       (task) => task.deletedAt === null && task.deadlineOn !== deadlineOn,
     );
@@ -455,30 +538,24 @@ export class TaskActions {
     if (!Number.isInteger(days)) return { ok: false, reason: "invalid" };
     if (days === 0) return { ok: false, reason: "noop" };
     const today = this.#day.today;
+    // 置き場と日付の決まりは placementAfter（d → ⇧D と同じ）。ここでは並び順キーを付ける
     const plans = this.#rows(ids)
       .filter((task) => task.completedAt === null && task.deletedAt === null)
       .flatMap((task) => {
-        const doOn =
-          task.bucket === "scheduled" ? task.scheduledOn : task.bucket === "today" ? today : null;
-        const scheduledOn = doOn === null ? null : addDays(doOn, days);
-        const deadlineOn = task.deadlineOn === null ? null : addDays(task.deadlineOn, days);
-        if (scheduledOn === null && deadlineOn === null) return [];
-        // d の決まり：今日以前なら今日へ（今日にあれば動かさない）、それより後なら予定へ
-        const place: "keep" | "today" | "scheduled" =
-          scheduledOn === null
-            ? "keep"
-            : scheduledOn > today
-              ? "scheduled"
-              : task.bucket === "today"
-                ? "keep"
-                : "today";
-        const bucket = place === "keep" ? task.bucket : place;
-        // ⇧D の決まり：予定・あとでにあって、締切が今日以前になったら今日の到着の位置へ
-        const arrives =
-          deadlineOn !== null &&
-          deadlineOn <= today &&
-          (bucket === "scheduled" || bucket === "later");
-        return [{ task, place: arrives ? ("arrive" as const) : place, scheduledOn, deadlineOn }];
+        const after = placementAfter(task, { kind: "shift", days }, today);
+        const unchanged =
+          after.bucket === task.bucket &&
+          after.scheduledOn === task.scheduledOn &&
+          after.deadlineOn === task.deadlineOn;
+        if (unchanged) return [];
+        const place: "keep" | "today" | "scheduled" | "arrive" = after.arrived
+          ? "arrive"
+          : after.bucket === "scheduled"
+            ? "scheduled"
+            : after.bucket === "today" && task.bucket !== "today"
+              ? "today"
+              : "keep";
+        return [{ task, place, scheduledOn: after.scheduledOn, deadlineOn: after.deadlineOn }];
       });
     const count = (place: string) => plans.filter((plan) => plan.place === place).length;
     const ranks = {
@@ -488,7 +565,7 @@ export class TaskActions {
     };
     const next = { today: 0, scheduled: 0, arrive: 0 };
     const updates = plans.map(({ task, place, scheduledOn, deadlineOn }) => {
-      const changes: TaskChanges = deadlineOn === null ? {} : { deadlineOn };
+      const changes: TaskChanges = deadlineOn === task.deadlineOn ? {} : { deadlineOn };
       switch (place) {
         case "keep":
           break;

@@ -10,6 +10,7 @@ import { keymap } from "@/keyboard/keymap";
 import { useKeymap } from "@/keyboard/use-keymap";
 import { TIMELINE } from "@/navigation";
 import { ListUi } from "@/tasks/list-ui";
+import { taskDetailPopoverOf } from "@/tasks/task-detail-popover";
 import { ToastHost } from "@/tasks/toast-host";
 import { UiProvider } from "@/tasks/ui-context";
 import { FakeServer } from "@/test/fake-server";
@@ -576,5 +577,138 @@ describe("つなぎ込み：サイドバー・7・右下の「＋」と n", () =
     await waitFor(() =>
       expect(store.lists.inbox.find((row) => row.title === "Pの追加")?.projectId).toBe(project.id),
     );
+  });
+});
+
+/**
+ * 14-修正1：ドラッグのプレビューと到着、範囲の外の◆。
+ * 見えている形は、行の中の data-shape の要素のうち、ドラッグの元として隠しているもの（data-drag-source）を除いたもの
+ */
+function visibleShapes(taskId: string): Record<string, string | null>[] {
+  const row = document.querySelector(`[data-timeline-row="${taskId}"]`);
+  if (!row) return [];
+  return Array.from(row.querySelectorAll("[data-shape]:not([data-drag-source])"), (element) => ({
+    shape: element.getAttribute("data-shape"),
+    from: element.getAttribute("data-from"),
+    to: element.getAttribute("data-to"),
+    on: element.getAttribute("data-on"),
+    endDiamond: element.getAttribute("data-end-diamond"),
+  })).sort((a, b) => (a.shape ?? "").localeCompare(b.shape ?? ""));
+}
+
+/** 押して動かしたところで止める（離さない） */
+function pressAndMove(element: HTMLElement, dx: number, pointerId = 5) {
+  fireEvent.pointerDown(element, { button: 0, pointerId, clientX: 0 });
+  fireEvent.pointerMove(element, { pointerId, clientX: dx });
+}
+
+describe("14-修正1：ドラッグ中の形は、締切による今日への到着まで含めて、確定したあとの形と同じ", () => {
+  it("あとでの◆だけのタスク：締切を今日へ引くと、ドラッグ中から今日の棒と◆になり、離しても同じ", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "あとで締切", bucket: "later", deadlineOn: "2026-10-01" }),
+    );
+    const { store } = await setupTimeline(server, () => new Date("2026-09-27T05:00:00+09:00"));
+
+    const diamond = await screen.findByRole("button", { name: /^「あとで締切」 締切/ });
+    pressAndMove(diamond, -4 * DAY_WIDTH);
+    const during = visibleShapes(task.id);
+    expect(during).toEqual([
+      { shape: "bar", from: "2026-09-27", to: "2026-09-27", on: null, endDiamond: "true" },
+    ]);
+
+    fireEvent.pointerUp(diamond, { pointerId: 5, clientX: -4 * DAY_WIDTH });
+    await waitFor(() => expect(store.task(task.id)?.bucket).toBe("today"));
+    expect(visibleShapes(task.id)).toEqual(during);
+  });
+
+  it("予定の棒と離れた◆：◆を今日より前へ引くと、ドラッグ中から今日の棒と離れた◆になり、離しても同じ", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({
+        title: "予定と前の締切",
+        bucket: "scheduled",
+        scheduledOn: "2026-10-10",
+        deadlineOn: "2026-10-01",
+      }),
+    );
+    const { store } = await setupTimeline(server, () => new Date("2026-09-27T05:00:00+09:00"));
+
+    const loose = await screen.findByRole("button", { name: /^「予定と前の締切」 締切/ });
+    pressAndMove(loose, -5 * DAY_WIDTH);
+    const during = visibleShapes(task.id);
+    expect(during).toEqual([
+      { shape: "bar", from: "2026-09-27", to: "2026-09-27", on: null, endDiamond: null },
+      { shape: "loose-deadline", from: null, to: null, on: "2026-09-26", endDiamond: null },
+    ]);
+
+    fireEvent.pointerUp(loose, { pointerId: 5, clientX: -5 * DAY_WIDTH });
+    await waitFor(() => expect(store.task(task.id)?.bucket).toBe("today"));
+    expect(visibleShapes(task.id)).toEqual(during);
+  });
+
+  it("押したときに、押した要素がポインタを捕まえる（setPointerCapture）", async () => {
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "捕まえる", bucket: "scheduled", scheduledOn: "2026-10-05" }));
+    await setupTimeline(server, () => new Date("2026-09-27T05:00:00+09:00"));
+    const capture = vi.spyOn(HTMLElement.prototype, "setPointerCapture");
+
+    const bar = await screen.findByRole("button", { name: /^「捕まえる」/ });
+    fireEvent.pointerDown(bar, { button: 0, pointerId: 9, clientX: 0 });
+
+    expect(capture).toHaveBeenCalledWith(9);
+    expect(capture.mock.contexts[0]).toBe(bar);
+    fireEvent.pointerUp(bar, { pointerId: 9, clientX: 0 });
+    capture.mockRestore();
+  });
+});
+
+describe("14-修正1：範囲の外の離れた◆", () => {
+  it("範囲より前の離れた◆は描かない（Tab で行けない）。棒は出る", async () => {
+    const server = new FakeServer();
+    server.putTask(
+      makeTask({ title: "ずっと前の締切", bucket: "today", deadlineOn: "2026-09-01" }),
+    );
+    await setupTimeline(server, () => new Date("2026-09-27T05:00:00+09:00"));
+
+    expect(await screen.findByRole("button", { name: /^「ずっと前の締切」 やる日/ })).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /^「ずっと前の締切」 締切/ })).toBeNull();
+  });
+
+  it("離れた◆から小さな詳細を開いたまま、締切を範囲より前へ変えると、見えている棒へ付け直す", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "付け直し", bucket: "today", deadlineOn: "2026-09-25" }),
+    );
+    const { store, ui } = await setupTimeline(server, () => new Date("2026-09-27T05:00:00+09:00"));
+    const user = userEvent.setup();
+
+    await user.click(await screen.findByRole("button", { name: /^「付け直し」 締切/ }));
+    await screen.findByRole("dialog", { name: "「付け直し」の詳細" });
+
+    act(() => {
+      store.actions.setDeadline([task.id], "2026-09-01");
+    });
+
+    const bar = screen.getByRole("button", { name: /^「付け直し」 やる日/ });
+    await waitFor(() => expect(taskDetailPopoverOf(ui).request?.anchor).toBe(bar));
+    expect(screen.getByRole("dialog", { name: "「付け直し」の詳細" })).toBeInTheDocument();
+  });
+
+  it("離れた◆を範囲より前へ引いても、離すまで捕まえたままで、離すと締切が変わる", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "外へ引く", bucket: "today", deadlineOn: "2026-09-25" }),
+    );
+    const { store } = await setupTimeline(server, () => new Date("2026-09-27T05:00:00+09:00"));
+
+    const loose = await screen.findByRole("button", { name: /^「外へ引く」 締切/ });
+    pressAndMove(loose, -10 * DAY_WIDTH);
+    // 動かしているあいだは、押した要素（ポインタを捕まえている）を残す
+    expect(loose.isConnected).toBe(true);
+    fireEvent.pointerUp(loose, { pointerId: 5, clientX: -10 * DAY_WIDTH });
+
+    await waitFor(() => expect(store.task(task.id)?.deadlineOn).toBe("2026-09-15"));
+    expect(screen.queryByRole("button", { name: /^「外へ引く」 締切/ })).toBeNull();
   });
 });

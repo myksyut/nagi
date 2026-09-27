@@ -10,6 +10,7 @@ import {
   type Ref,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -26,13 +27,20 @@ import { TaskDetailPopoverHost, taskDetailPopoverOf } from "@/tasks/task-detail-
 import { useUi } from "@/tasks/ui-context";
 import { shiftTaskDates } from "./commands";
 import { ProjectFilterButton } from "./project-filter";
-import { clampDragDays, type DragDates, type DragEdge, draggedDates } from "./timeline-drag";
+import {
+  clampDragDays,
+  type DragEdge,
+  type DragSubject,
+  dragChange,
+  draggedDates,
+} from "./timeline-drag";
 import {
   shapeOf,
   type TimelineGroup,
   type TimelineItem,
   type TimelineModel,
   type TimelineRange,
+  type TimelineShape,
   timelineModelOf,
   timelineRange,
 } from "./timeline-model";
@@ -113,7 +121,8 @@ const TimelineGrid = observer(function TimelineGrid({ model }: { model: Timeline
   const store = useStore();
   const ui = useUi();
   const today = store.today;
-  const range = timelineRange(today);
+  // 範囲は今日が変わったときだけ作り直す（行の部品に、毎回新しい props を渡さないように）
+  const range = useMemo(() => timelineRange(today), [today]);
   const groups = model.groups;
   const scrollRef = useRef<HTMLElement>(null);
   const [anchors] = useState(() => new Map<string, HTMLElement>());
@@ -361,9 +370,38 @@ type DragState = {
   moved: boolean;
 };
 
+function within(date: string, range: TimelineRange): boolean {
+  return date >= range.start && date <= range.end;
+}
+
+/** 棒の位置と幅（範囲の端で切る）。範囲に1日も入らなければ null。clippedEnd は右端が範囲の外にあるか */
+function barBox(
+  shape: Extract<TimelineShape, { kind: "bar" }>,
+  range: TimelineRange,
+): { left: number; width: number; clippedEnd: boolean } | null {
+  const rangeWidth = range.days * DAY_WIDTH;
+  const left = Math.max(xOf(range, shape.from), 0);
+  const end = xOf(range, shape.to) + DAY_WIDTH;
+  const right = Math.min(end, rangeWidth);
+  if (right <= left) return null;
+  return {
+    left: left + BAR_INSET,
+    width: right - left - 2 * BAR_INSET,
+    clippedEnd: end > rangeWidth,
+  };
+}
+
+/** ◆（締切）の位置（その日の列のまん中） */
+function diamondLeft(range: TimelineRange, on: string): number {
+  return xOf(range, on) + DAY_WIDTH / 2 - 10;
+}
+
 /**
  * 1行の棒と◆。押すと小さな詳細が開き、ドラッグで日付を変える。
- * 動かしているあいだは、離したときに送る先の日付の形（今日より前のやる日は今日）で描く
+ * 押せる棒と◆（ボタン）は、確定している日付の形で描く。動かしているあいだは、ボタンはそのまま残して
+ * （ポインタを捕まえたまま。見えなくするだけ）、離したときの形（今日への到着も含む）を、押せない見た目の層に描く
+ * （表示と操作を分ける。形が棒から◆に変わっても、範囲の外へ出ても、捕まえた要素を消さないように）。
+ * 範囲の外の離れた◆は描かない（Tab で見えない◆へ行かないように）
  */
 const TimelineMarks = observer(function TimelineMarks({
   item,
@@ -379,15 +417,20 @@ const TimelineMarks = observer(function TimelineMarks({
   color: string;
 }) {
   const ui = useUi();
-  const { task } = item;
-  const dates: DragDates = { doOn: item.doOn, deadlineOn: item.deadlineOn };
+  const { task, shape } = item;
+  const subject: DragSubject = {
+    bucket: item.bucket,
+    scheduledOn: item.bucket === "scheduled" ? item.doOn : null,
+    deadlineOn: item.deadlineOn,
+  };
   const [preview, setPreview] = useState<{ edge: DragEdge; days: number } | null>(null);
   const drag = useRef<DragState | null>(null);
   // ドラッグのあとのクリックでは、小さな詳細を開かない
   const suppressClick = useRef(false);
-  const shown = preview ? draggedDates(preview.edge, dates, preview.days, today) : dates;
-  const shape = shapeOf(shown.doOn, shown.deadlineOn) ?? item.shape;
   const open = taskDetailPopoverOf(ui).isOpen(task.id);
+  const dragging = preview !== null;
+  const previewDates = preview ? draggedDates(preview.edge, subject, preview.days, today) : null;
+  const previewShape = previewDates ? shapeOf(previewDates.doOn, previewDates.deadlineOn) : null;
 
   const cancel = () => {
     drag.current = null;
@@ -395,7 +438,6 @@ const TimelineMarks = observer(function TimelineMarks({
   };
 
   // 動かしているあいだの Esc でやめる（アプリのキーより先に受ける）
-  const dragging = preview !== null;
   useEffect(() => {
     if (!dragging) return;
     const onKeyDown = (event: KeyboardEvent) => {
@@ -411,19 +453,19 @@ const TimelineMarks = observer(function TimelineMarks({
     return () => window.removeEventListener("keydown", onKeyDown, true);
   }, [dragging]);
 
+  /** 離した：日付の操作を送る（決まりはデータ層。変えるものがなければ何も送らない） */
   const commit = (edge: DragEdge, days: number) => {
-    if (days === 0) return;
-    const next = draggedDates(edge, dates, days, today);
-    switch (edge) {
-      case "start":
-        if (next.doOn !== null && next.doOn !== dates.doOn) scheduleTasks(ui, [task.id], next.doOn);
+    const change = dragChange(edge, subject, days, today);
+    if (change === null) return;
+    switch (change.kind) {
+      case "schedule":
+        scheduleTasks(ui, [task.id], change.on);
         return;
-      case "end":
       case "deadline":
-        if (next.deadlineOn !== dates.deadlineOn) setDeadline(ui, [task.id], next.deadlineOn);
+        setDeadline(ui, [task.id], change.on);
         return;
-      case "move":
-        shiftTaskDates(ui, [task.id], days);
+      case "shift":
+        shiftTaskDates(ui, [task.id], change.days);
         return;
     }
   };
@@ -459,7 +501,7 @@ const TimelineMarks = observer(function TimelineMarks({
         if (Math.abs(dx) < DRAG_THRESHOLD) return;
         state.moved = true;
       }
-      const days = clampDragDays(state.edge, dates, Math.round(dx / DAY_WIDTH));
+      const days = clampDragDays(state.edge, subject, Math.round(dx / DAY_WIDTH), today);
       state.days = days;
       setPreview((current) =>
         current?.edge === state.edge && current.days === days
@@ -501,36 +543,43 @@ const TimelineMarks = observer(function TimelineMarks({
 
   const title = task.title;
   const style = { "--bar": color } as CSSProperties;
-  const rangeWidth = range.days * DAY_WIDTH;
+  // 動かしているあいだは、押せる棒と◆を見えなくする（ポインタを捕まえたまま残す）
+  const source = dragging ? { "data-drag-source": "" } : {};
+  const previewLayer = previewShape && (
+    <MarksPreview shape={previewShape} range={range} inProgress={task.isInProgress} style={style} />
+  );
 
   if (shape.kind === "diamond") {
     return (
-      <Diamond
-        ref={registerMain}
-        kind="diamond"
-        x={xOf(range, shape.on)}
-        on={shape.on}
-        label={`「${title}」 締切 ${formatShortDate(shape.on, today)}`}
-        open={open}
-        dragging={dragging}
-        style={style}
-        {...pointerHandlers("deadline")}
-      />
+      <>
+        <DiamondButton
+          ref={registerMain}
+          kind="diamond"
+          left={diamondLeft(range, shape.on)}
+          on={shape.on}
+          label={`「${title}」 締切 ${formatShortDate(shape.on, today)}`}
+          open={open}
+          hidden={dragging}
+          style={style}
+          {...source}
+          {...pointerHandlers("deadline")}
+        />
+        {previewLayer}
+      </>
     );
   }
 
-  const left = Math.max(xOf(range, shape.from), 0);
-  const right = Math.min(xOf(range, shape.to) + DAY_WIDTH, rangeWidth);
-  const clippedEnd = xOf(range, shape.to) + DAY_WIDTH > rangeWidth;
+  const box = barBox(shape, range);
+  const loose =
+    shape.looseDeadline !== null && within(shape.looseDeadline, range) ? shape.looseDeadline : null;
   const doLabel = shape.from === today ? "今日" : formatShortDate(shape.from, today);
   const barLabel = `「${title}」 やる日 ${doLabel}${
     shape.endDiamond ? `・締切 ${formatShortDate(shape.to, today)}` : ""
   }`;
-  const inProgress = task.isInProgress;
 
   return (
     <>
-      {right > left && (
+      {box && (
         <button
           ref={registerMain}
           type="button"
@@ -539,16 +588,15 @@ const TimelineMarks = observer(function TimelineMarks({
           data-from={shape.from}
           data-to={shape.to}
           data-end-diamond={shape.endDiamond || undefined}
+          {...source}
           className={cn(
-            "absolute top-[7px] h-[18px] cursor-grab touch-none select-none rounded-md outline-none transition-[filter] hover:brightness-115 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
-            inProgress
-              ? "bg-[linear-gradient(90deg,color-mix(in_srgb,var(--bar)_70%,transparent),var(--bar))] shadow-[0_0_14px_color-mix(in_srgb,var(--bar)_40%,transparent)]"
-              : "bg-[color-mix(in_srgb,var(--bar)_50%,transparent)]",
+            barClassName(task.isInProgress),
+            "cursor-grab touch-none select-none outline-none transition-[filter] hover:brightness-115 focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-ring",
             open &&
               "shadow-[0_0_0_1px_rgb(255_255_255/70%),0_0_16px_color-mix(in_srgb,var(--bar)_65%,transparent)]",
-            dragging && "cursor-grabbing brightness-115",
+            dragging && "cursor-grabbing opacity-0",
           )}
-          style={{ ...style, left: left + BAR_INSET, width: right - left - 2 * BAR_INSET }}
+          style={{ ...style, left: box.left, width: box.width }}
           {...pointerHandlers()}
         >
           {/* 左端と右端のつまみ（引くと、やる日・締切が変わる） */}
@@ -562,54 +610,140 @@ const TimelineMarks = observer(function TimelineMarks({
             aria-hidden="true"
             className="absolute inset-y-0 right-0 w-2 cursor-ew-resize rounded-r-md hover:bg-white/25"
           />
-          {shape.endDiamond && !clippedEnd && (
-            <span
-              data-edge="end"
-              aria-hidden="true"
-              className="absolute top-1/2 -right-1.5 size-2.5 -translate-y-1/2 rotate-45 cursor-ew-resize border border-white/40 bg-(--bar)"
-            />
+          {shape.endDiamond && !box.clippedEnd && (
+            <span data-edge="end" aria-hidden="true" className={END_DIAMOND_CLASS} />
           )}
         </button>
       )}
-      {shape.looseDeadline !== null && (
-        <Diamond
-          ref={right > left ? undefined : registerMain}
+      {loose !== null && (
+        <DiamondButton
+          ref={box ? undefined : registerMain}
           kind="loose-deadline"
-          x={xOf(range, shape.looseDeadline)}
-          on={shape.looseDeadline}
-          label={`「${title}」 締切 ${formatShortDate(shape.looseDeadline, today)}`}
+          left={diamondLeft(range, loose)}
+          on={loose}
+          label={`「${title}」 締切 ${formatShortDate(loose, today)}`}
           open={open}
-          dragging={dragging}
+          hidden={dragging}
           style={style}
+          {...source}
           {...pointerHandlers("deadline")}
         />
       )}
+      {previewLayer}
     </>
   );
 });
 
-/** ◆（締切）。やる日のないタスクの◆と、やる日より前にある離れた◆ */
-function Diamond({
+/** 棒の見た目（押せる棒と、ドラッグ中の見た目の層で共通） */
+function barClassName(inProgress: boolean): string {
+  return cn(
+    "absolute top-[7px] h-[18px] rounded-md",
+    inProgress
+      ? "bg-[linear-gradient(90deg,color-mix(in_srgb,var(--bar)_70%,transparent),var(--bar))] shadow-[0_0_14px_color-mix(in_srgb,var(--bar)_40%,transparent)]"
+      : "bg-[color-mix(in_srgb,var(--bar)_50%,transparent)]",
+  );
+}
+
+/** 棒の右端の◆ */
+const END_DIAMOND_CLASS =
+  "absolute top-1/2 -right-1.5 size-2.5 -translate-y-1/2 rotate-45 cursor-ew-resize border border-white/40 bg-(--bar)";
+
+/** ◆の中身（押せる◆と、ドラッグ中の見た目の層で共通） */
+function DiamondGlyph({ open = false }: { open?: boolean }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        "size-2.5 rotate-45 border-(--bar) border-[1.5px] bg-[color-mix(in_srgb,var(--bar)_20%,transparent)]",
+        open && "bg-(--bar) shadow-[0_0_10px_var(--bar)]",
+      )}
+    />
+  );
+}
+
+/**
+ * ドラッグ中の見た目の層：離したときの形（今日への到着も含む）。押せない（pointer-events: none）、読み上げない。
+ * 範囲の外の部分は描かない
+ */
+function MarksPreview({
+  shape,
+  range,
+  inProgress,
+  style,
+}: {
+  shape: TimelineShape;
+  range: TimelineRange;
+  inProgress: boolean;
+  style: CSSProperties;
+}) {
+  if (shape.kind === "diamond") {
+    if (!within(shape.on, range)) return null;
+    return (
+      <div aria-hidden="true" className="pointer-events-none contents">
+        <div
+          data-shape="diamond"
+          data-on={shape.on}
+          className="absolute top-1.5 grid size-5 place-items-center"
+          style={{ ...style, left: diamondLeft(range, shape.on) }}
+        >
+          <DiamondGlyph open />
+        </div>
+      </div>
+    );
+  }
+  const box = barBox(shape, range);
+  const loose = shape.looseDeadline;
+  return (
+    <div aria-hidden="true" className="pointer-events-none contents">
+      {box && (
+        <div
+          data-shape="bar"
+          data-from={shape.from}
+          data-to={shape.to}
+          data-end-diamond={shape.endDiamond || undefined}
+          className={cn(barClassName(inProgress), "brightness-115")}
+          style={{ ...style, left: box.left, width: box.width }}
+        >
+          {shape.endDiamond && !box.clippedEnd && <span className={END_DIAMOND_CLASS} />}
+        </div>
+      )}
+      {loose !== null && within(loose, range) && (
+        <div
+          data-shape="loose-deadline"
+          data-on={loose}
+          className="absolute top-1.5 grid size-5 place-items-center"
+          style={{ ...style, left: diamondLeft(range, loose) }}
+        >
+          <DiamondGlyph open />
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 押せる◆（締切）。やる日のないタスクの◆と、やる日より前にある離れた◆ */
+function DiamondButton({
   ref,
   kind,
-  x,
+  left,
   on,
   label,
   open,
-  dragging,
+  hidden,
   style,
-  ...handlers
+  ...rest
 }: {
   ref?: Ref<HTMLButtonElement>;
   /** diamond：やる日のないタスクの◆。loose-deadline：やる日より前にある離れた◆ */
   kind: "diamond" | "loose-deadline";
-  x: number;
+  left: number;
   on: string;
   label: string;
   open: boolean;
-  dragging: boolean;
+  /** ドラッグ中（見えなくして、ポインタを捕まえたまま残す） */
+  hidden: boolean;
   style: CSSProperties;
-} & ButtonHTMLAttributes<HTMLButtonElement>) {
+} & ButtonHTMLAttributes<HTMLButtonElement> & { "data-drag-source"?: string }) {
   return (
     <button
       ref={ref}
@@ -619,18 +753,12 @@ function Diamond({
       data-on={on}
       className={cn(
         "absolute top-1.5 grid size-5 cursor-grab touch-none select-none place-items-center rounded-sm outline-none focus-visible:outline-2 focus-visible:outline-ring",
-        dragging && "cursor-grabbing",
+        hidden && "cursor-grabbing opacity-0",
       )}
-      style={{ ...style, left: x + DAY_WIDTH / 2 - 10 }}
-      {...handlers}
+      style={{ ...style, left }}
+      {...rest}
     >
-      <span
-        aria-hidden="true"
-        className={cn(
-          "size-2.5 rotate-45 border-(--bar) border-[1.5px] bg-[color-mix(in_srgb,var(--bar)_20%,transparent)]",
-          open && "bg-(--bar) shadow-[0_0_10px_var(--bar)]",
-        )}
-      />
+      <DiamondGlyph open={open} />
     </button>
   );
 }
