@@ -273,7 +273,11 @@ export class AppStore {
   ): OperationResult {
     if (!this.#isActive()) return { ok: false, reason: "stopped" };
     if (!this.isOnline) {
-      this.#notices.emit({ type: "offline-blocked", operation: kind });
+      this.#notices.emit({
+        type: "offline-blocked",
+        operation: kind,
+        autosave: options.autosave === true,
+      });
       return { ok: false, reason: "offline" };
     }
     if (mutations.length === 0) return { ok: false, reason: "noop" };

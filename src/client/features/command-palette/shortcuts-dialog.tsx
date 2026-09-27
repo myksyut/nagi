@@ -21,6 +21,8 @@ export const ShortcutsDialog = observer(function ShortcutsDialog() {
   const overlays = overlaysOf(ui);
   return (
     <Dialog
+      // フォーカスは閉じ込めるが、ページのスクロールは止めず、外の要素も隠さない（⌘K と同じ）
+      modal="trap-focus"
       open={overlays.shortcuts}
       onOpenChange={(open) => {
         if (open) overlays.openShortcuts();

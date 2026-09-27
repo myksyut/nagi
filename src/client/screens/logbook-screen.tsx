@@ -70,7 +70,18 @@ function logbookSections(
  * 完了ログ：昨日までに完了したものを、完了した日ごとに新しい順で（今日の分は今日の「完了 N件」）。
  * 丸か x で完了を外すと、今日の一番下に戻る
  */
-export const LogbookScreen = observer(function LogbookScreen() {
+export function LogbookScreen() {
+  return (
+    <ListScreen title="完了ログ">
+      <LogbookList />
+    </ListScreen>
+  );
+}
+
+/**
+ * 完了ログの一覧（見出しの下）。後から読み込むのはこの部分で、見出しは読み込む前から出しておく（lazy-logbook-screen.tsx）
+ */
+export const LogbookList = observer(function LogbookList() {
   const store = useStore();
   const [range] = useState(() =>
     observable.box<LogbookWindow>({ start: 0, end: LOGBOOK_PAGE_SIZE }, { deep: false }),
@@ -109,10 +120,10 @@ export const LogbookScreen = observer(function LogbookScreen() {
   const { start, end } = range.get();
   const hidden = total - end;
   const buttonClassName =
-    "rounded-md px-2.5 py-1 text-muted-foreground text-sm hover:text-foreground";
+    "rounded-md px-2.5 py-1 text-muted-foreground text-sm outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/70";
 
   return (
-    <ListScreen title="完了ログ">
+    <>
       {start > 0 && (
         <button type="button" className={`mt-4 ${buttonClassName}`} onClick={showNewer}>
           新しい完了を表示（ほかに {start} 件）
@@ -124,6 +135,6 @@ export const LogbookScreen = observer(function LogbookScreen() {
           さらに表示（残り {hidden} 件）
         </button>
       )}
-    </ListScreen>
+    </>
   );
 });

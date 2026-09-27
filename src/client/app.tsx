@@ -4,7 +4,7 @@ import { ProjectScreen } from "./features/projects/project-screen";
 import { BUCKET_LISTS, HOME_PATH, type ListKey, LOGBOOK, PROJECT_PATH_PATTERN } from "./navigation";
 import { InboxScreen } from "./screens/inbox-screen";
 import { LaterScreen } from "./screens/later-screen";
-import { LogbookScreen } from "./screens/logbook-screen";
+import { LazyLogbookScreen } from "./screens/lazy-logbook-screen";
 import { LoginScreen } from "./screens/login-screen";
 import { TodayScreen } from "./screens/today-screen";
 import { UpcomingScreen } from "./screens/upcoming-screen";
@@ -15,7 +15,8 @@ const SCREENS: Record<ListKey, ComponentType> = {
   today: TodayScreen,
   upcoming: UpcomingScreen,
   later: LaterScreen,
-  logbook: LogbookScreen,
+  // 完了ログは後から読み込む
+  logbook: LazyLogbookScreen,
 };
 
 /**

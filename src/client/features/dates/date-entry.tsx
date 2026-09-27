@@ -1,35 +1,27 @@
-import { ja } from "@daypicker/react/locale/ja";
-import { parseDateInput } from "@shared/date-input";
 import { action, makeObservable, observable, observableRef } from "mobx";
 import { observer } from "mobx-react-lite";
-import { type KeyboardEvent, useEffect, useRef, useState } from "react";
-import { Calendar } from "@/components/ui/calendar";
-import { Kbd } from "@/components/ui/kbd";
-import { Popover, PopoverPopup } from "@/components/ui/popover";
-import { type TaskRow, useStore } from "@/data";
-import { keymap } from "@/keyboard/keymap";
-import { formatKey, isComposingKey } from "@/keyboard/keys";
-import { cn } from "@/lib/utils";
-import { moveTasks } from "@/tasks/commands";
+import { useEffect, useRef, useState } from "react";
+import { useAnchoredStyle, WaitingInput } from "@/components/waiting-input";
+import type { TaskRow } from "@/data";
+import { defer, useDeferred } from "@/lib/deferred";
 import type { ListUi, ListView } from "@/tasks/list-ui";
 import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
-import { scheduleTasks, setDeadline } from "./commands";
-import { formatLongDate } from "./labels";
 
 /**
- * 日付の入力（d と ⇧D で共通）。小さな入力欄が開き、打つと解釈した日付がその場で出る。
- * Enter で決定、Esc でやめる。カレンダーのクリックでも選べる。締切は欄を空にして Enter で外せる。
+ * 日付の入力（d と ⇧D で共通）の開閉の状態と、それを描く枠。入力そのもの（カレンダーを含む）は
+ * date-entry-panel.tsx にあり、起動に要らないので後から読み込む（DayPicker と date-fns を最初の JS から外す）。
  *
  * 開いているかどうかは一覧の状態（ListUi）ごとに1つだけ持つ。ポップオーバーは、開いた画面の中の、対象のタスク
  * （複数なら先頭）の行の右側の枠（register.tsx の締切の表示）が描く。行に合わせて開き、小さなボタンから開いたときは
- * ボタンに合わせる。対象の行が一覧から消えたとき（同期・完了・振り分け）や画面を切り替えたときは閉じて、
+ * ボタンに合わせる。閉じたときは、消えるときのフェード（150ms）が終わるまで描き続ける（leaving）。
+ * 対象の行が一覧から消えたとき（同期・完了・振り分け）や画面を切り替えたときは、フェードなしで閉じて、
  * 一覧にフォーカスを戻す（あとで同じ行が出てきても、前の入力を開き直さない）
  */
 
 export type DateEntryKind = "schedule" | "deadline";
 
-type DateEntryRequest = {
+export type DateEntryRequest = {
   /** 開くたびに変わる番号（入力欄の中身を開くたびに空から始めるため） */
   id: number;
   kind: DateEntryKind;
@@ -41,13 +33,23 @@ type DateEntryRequest = {
 };
 
 export class DateEntry {
+  /** 開いている入力 */
   request: DateEntryRequest | null = null;
+  /** 閉じる途中の入力（消えるときのフェードのあいだだけ描く） */
+  leaving: DateEntryRequest | null = null;
   /** ポップオーバーを描く行（行ごとに自分の id だけを観測する） */
   readonly #hosts = observable.map<string, true>();
   #nextId = 1;
 
   constructor() {
-    makeObservable(this, { request: observableRef, open: action, close: action });
+    makeObservable(this, {
+      request: observableRef,
+      leaving: observableRef,
+      open: action,
+      close: action,
+      dismiss: action,
+      left: action,
+    });
   }
 
   open(
@@ -59,25 +61,48 @@ export class DateEntry {
     const host = taskIds[0];
     this.close();
     if (host === undefined || view === null) return;
+    // 同じ行で開き直すときは、前の入力のフェードを待たずに入れ替える（1つの行に描けるのは1つだけ）
+    if (this.leaving?.taskIds[0] === host) this.leaving = null;
     this.request = { id: this.#nextId++, kind, taskIds: [...taskIds], view, anchor };
-    this.#hosts.set(host, true);
+    this.#syncHosts();
   }
 
+  /** 閉じる（消えるときのフェードのあいだは描き続ける） */
   close(): void {
+    if (this.request) this.leaving = this.request;
     this.request = null;
-    this.#hosts.clear();
+    this.#syncHosts();
   }
 
-  /** 開いているのが id の入力なら閉じる（もう次の入力を開いていたら何もしない）。閉じたら true */
+  /** 開いているのが id の入力なら、フェードなしで閉じる（もう次の入力を開いていたら何もしない）。閉じたら true */
   dismiss(id: number): boolean {
+    this.left(id);
     if (this.request?.id !== id) return false;
-    this.close();
+    this.request = null;
+    this.#syncHosts();
     return true;
+  }
+
+  /** id の入力の、消えるときのフェードが終わった（描くのをやめる） */
+  left(id: number): void {
+    if (this.leaving?.id !== id) return;
+    this.leaving = null;
+    this.#syncHosts();
   }
 
   /** この行がポップオーバーを描くか */
   isHost(taskId: string): boolean {
     return this.#hosts.has(taskId);
+  }
+
+  #syncHosts(): void {
+    const hosts = new Set<string>();
+    for (const request of [this.request, this.leaving]) {
+      const host = request?.taskIds[0];
+      if (host !== undefined) hosts.add(host);
+    }
+    for (const id of [...this.#hosts.keys()]) if (!hosts.has(id)) this.#hosts.delete(id);
+    for (const id of hosts) if (!this.#hosts.has(id)) this.#hosts.set(id, true);
   }
 }
 
@@ -93,33 +118,46 @@ export function dateEntryOf(ui: ListUi): DateEntry {
   return entry;
 }
 
-// --- 日付と Date（カレンダーはその端末の時間帯の Date で扱う） --------------------------------
-
-function toLocalDate(date: string): Date {
-  return new Date(
-    Number(date.slice(0, 4)),
-    Number(date.slice(5, 7)) - 1,
-    Number(date.slice(8, 10)),
-  );
+/** 入力欄の読み上げ名 */
+export function dateEntryLabel(kind: DateEntryKind): string {
+  return kind === "schedule" ? "予定の日付" : "締切";
 }
 
-function fromLocalDate(date: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())}`;
+export function dateEntryPlaceholder(kind: DateEntryKind): string {
+  return kind === "schedule" ? "明日、金曜、10/3 など" : "締切（金曜、10/3 など）";
 }
 
-function monthOf(date: string): Date {
-  return new Date(Number(date.slice(0, 4)), Number(date.slice(5, 7)) - 1, 1);
+/**
+ * 入力の後始末：対象の行が今の画面の一覧から消えたら閉じる。行ごと外れた（画面の切り替え、抜けていく動きの終わり）
+ * ときも閉じる。どちらも一覧にフォーカスを戻す（ポップオーバーの入力欄にあったフォーカスが行き場を失うため）。
+ * 外れたかどうかは、StrictMode の付け直しと区別するため、外れた直後の microtask で確かめる。
+ * 行の枠（DateEntryPopover）で使う（待ちの欄から本物の入力へ替わるときに閉じないように）
+ */
+function useDismissWhenGone(requestId: number | null, inList: boolean) {
+  const ui = useUi();
+  const mounted = useRef(false);
+  useEffect(() => {
+    if (requestId !== null && !inList && dateEntryOf(ui).dismiss(requestId)) ui.focusList();
+  }, [ui, requestId, inList]);
+  useEffect(() => {
+    if (requestId === null) return;
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+      queueMicrotask(() => {
+        if (!mounted.current && dateEntryOf(ui).dismiss(requestId)) ui.focusList();
+      });
+    };
+  }, [ui, requestId]);
 }
 
-function keyLabel(id: string): string | undefined {
-  const key = keymap.get(id)?.keys[0];
-  return key === undefined ? undefined : formatKey(key);
-}
+const panel = defer(() => import("./date-entry-panel"));
 
-// --- ポップオーバー ---------------------------------------------------------------------------
-
-/** 行の右側の枠から描く。開いていないとき・開いた画面の行でないときは何も描かない */
+/**
+ * 行の右側の枠から描く。開いていないとき・開いた画面の行でないときは何も描かない。
+ * 開いている入力を先に、なければ閉じる途中の入力を描く。
+ * 入力（カレンダーを含む）が届く前は、待ちの欄がキーを受け止め、打った文字は届いたら入力欄へ移す
+ */
 export const DateEntryPopover = observer(function DateEntryPopover({
   task,
   view,
@@ -128,246 +166,74 @@ export const DateEntryPopover = observer(function DateEntryPopover({
   view: ListView;
 }) {
   const ui = useUi();
-  const request = dateEntryOf(ui).request;
-  if (!request || request.taskIds[0] !== task.id || request.view !== view) return null;
-  return <DateEntryPanel key={request.id} request={request} task={task} />;
-});
-
-/**
- * 入力の後始末：対象の行が今の画面の一覧から消えたら閉じる。行ごと外れた（画面の切り替え、抜けていく動きの終わり）
- * ときも閉じる。どちらも一覧にフォーカスを戻す（ポップオーバーの入力欄にあったフォーカスが行き場を失うため）。
- * 外れたかどうかは、StrictMode の付け直しと区別するため、外れた直後の microtask で確かめる
- */
-function useDismissWhenGone(request: DateEntryRequest, inList: boolean) {
-  const ui = useUi();
-  const mounted = useRef(false);
-  useEffect(() => {
-    if (!inList && dateEntryOf(ui).dismiss(request.id)) ui.focusList();
-  }, [ui, request.id, inList]);
-  useEffect(() => {
-    mounted.current = true;
-    return () => {
-      mounted.current = false;
-      queueMicrotask(() => {
-        if (!mounted.current && dateEntryOf(ui).dismiss(request.id)) ui.focusList();
-      });
-    };
-  }, [ui, request.id]);
-}
-
-const DateEntryPanel = observer(function DateEntryPanel({
-  request,
-  task,
-}: {
-  request: DateEntryRequest;
-  task: TaskRow;
-}) {
-  const ui = useUi();
-  const store = useStore();
   const entry = dateEntryOf(ui);
-  const today = store.today;
-  const { kind, taskIds } = request;
-  // 複数のタスクにかけるとき（7 の複数選択）は、今の値がそろっているときだけ出す
-  const targets = taskIds.flatMap((id) => {
-    const row = id === task.id ? task : store.task(id);
-    return row ? [row] : [];
-  });
-  const dateOf = (row: TaskRow) => (kind === "schedule" ? row.scheduledOn : row.deadlineOn);
-  const current = targets.every((row) => dateOf(row) === dateOf(task)) ? dateOf(task) : null;
-  const anyHasValue = targets.some((row) => dateOf(row) !== null);
-  const [text, setText] = useState("");
-  const parsed = text.trim() === "" ? null : parseDateInput(text, today);
-  const [month, setMonth] = useState(() => monthOf(current ?? today));
-  const input = useRef<HTMLInputElement>(null);
-  const inList = ui.view === request.view && ui.rows.some((row) => row.id === task.id);
-  useDismissWhenGone(request, inList);
-  const anchor = request.anchor ?? document.getElementById(taskRowId(task.id));
-
-  /** 閉じて一覧にフォーカスを戻す（キーの操作を続けられるように） */
-  const finish = () => {
-    entry.close();
-    ui.focusList();
-  };
-
-  const commit = (date: string | null) => {
-    finish();
-    if (kind === "schedule") {
-      if (date !== null) scheduleTasks(ui, taskIds, date);
-    } else {
-      setDeadline(ui, taskIds, date);
-    }
-  };
-
-  const onKeyDown = (event: KeyboardEvent<HTMLInputElement>) => {
-    if (isComposingKey(event.nativeEvent)) return;
-    if (event.metaKey || event.ctrlKey || event.altKey) return;
-    if (event.key === "Escape") {
-      event.preventDefault();
-      finish();
-    } else if (event.key === "Enter") {
-      event.preventDefault();
-      if (text.trim() === "") {
-        // 締切は、欄を空にして Enter で外す。予定は何もせずに閉じる
-        if (kind === "deadline" && anyHasValue) commit(null);
-        else finish();
-      } else if (parsed !== null) {
-        commit(parsed);
-      }
-    }
-  };
-
-  const moves =
-    kind === "schedule"
-      ? parsed !== null && parsed <= today
-      : parsed !== null &&
-        parsed <= today &&
-        targets.some(
-          (row) =>
-            row.completedAt === null && (row.bucket === "scheduled" || row.bucket === "later"),
-        );
-
-  const label = kind === "schedule" ? "予定の日付" : "締切";
-  const selected = parsed ?? current;
-  /** 何も打っていないときの一行（複数なら件数、今の値、締切の外し方） */
-  const emptyHint = [
-    targets.length > 1 ? `${targets.length}件` : null,
-    ...(kind === "deadline" && current !== null
-      ? [`締切 ${formatLongDate(current, today)}`, "空のまま Enter で外す"]
-      : kind === "deadline" && anyHasValue
-        ? ["空のまま Enter で締切を外す"]
-        : kind === "schedule" && current !== null
-          ? [`予定 ${formatLongDate(current, today)}`]
-          : []),
-  ]
-    .filter((part) => part !== null)
-    .join("・");
-
+  const shown =
+    [entry.request, entry.leaving].find(
+      (request) => request !== null && request.taskIds[0] === task.id && request.view === view,
+    ) ?? null;
+  const inList =
+    shown !== null && ui.view === shown.view && ui.rows.some((row) => row.id === task.id);
+  useDismissWhenGone(shown?.id ?? null, inList);
+  // 届く前に打った文字（入力ごと）
+  const [typed, setTyped] = useState<{ id: number; text: string } | null>(null);
+  const { module, failed, retry } = useDeferred(panel, shown !== null, shown?.id);
+  if (shown === null) return null;
+  const text = typed?.id === shown.id ? typed.text : "";
   // 行が一覧から消えた（抜けていく動きのあいだも）ら描かない。閉じるのは useDismissWhenGone
   if (!inList) return null;
-
+  if (module) {
+    return <module.DateEntryPanel key={shown.id} request={shown} task={task} initialText={text} />;
+  }
+  // 閉じる途中の入力は、届いていなければ描かない
+  if (entry.request?.id !== shown.id) return null;
   return (
-    <Popover
-      open
-      onOpenChange={(open, details) => {
-        if (open) return;
-        // Esc は一覧に戻す。外をクリックしたときは、クリックした先にフォーカスを任せる
-        if (details.reason === "escape-key") finish();
-        else entry.close();
-      }}
-    >
-      <PopoverPopup
-        anchor={anchor}
-        side="bottom"
-        align="start"
-        aria-label={kind === "schedule" ? "日付を決めて予定へ" : "締切"}
-        data-keymap="off"
-        initialFocus={input}
-        finalFocus={false}
-        className="duration-(--duration-short) data-ending-style:opacity-0 data-ending-style:duration-(--duration-exit)"
-        // 行の中から描いているので、クリックが行（開く・閉じる）へ伝わらないようにする
-        onClick={(event) => event.stopPropagation()}
-      >
-        <div className="flex w-[16.5rem] flex-col gap-1.5">
-          <input
-            ref={input}
-            aria-label={label}
-            className="h-8 w-full border-b bg-transparent px-1 text-sm outline-none placeholder:text-muted-foreground/60 focus-visible:border-primary/70"
-            placeholder={kind === "schedule" ? "明日、金曜、10/3 など" : "締切（金曜、10/3 など）"}
-            value={text}
-            onChange={(event) => {
-              const next = event.target.value;
-              setText(next);
-              const date = next.trim() === "" ? null : parseDateInput(next, today);
-              if (date !== null) setMonth(monthOf(date));
-            }}
-            onKeyDown={onKeyDown}
-          />
-          <p aria-live="polite" className="min-h-5 px-1 text-xs leading-5">
-            {text.trim() === "" ? (
-              <span className="text-muted-foreground">{emptyHint}</span>
-            ) : parsed === null ? (
-              <span className="text-muted-foreground">日付として読めません</span>
-            ) : (
-              <>
-                <span className="text-primary">→ {formatLongDate(parsed, today)}</span>
-                {moves && <span className="ml-1.5 text-muted-foreground">今日へ入ります</span>}
-              </>
-            )}
-          </p>
-          <Calendar
-            mode="single"
-            locale={ja}
-            className="self-center"
-            today={toLocalDate(today)}
-            selected={selected === null ? undefined : toLocalDate(selected)}
-            month={month}
-            onMonthChange={setMonth}
-            // 選び直しで選択が外れる（undefined）ときも、押した日で決める
-            onSelect={(_: Date | undefined, day: Date) => commit(fromLocalDate(day))}
-          />
-          <Footer kind={kind} task={task} taskIds={taskIds} onDone={finish} />
-        </div>
-      </PopoverPopup>
-    </Popover>
+    <DateEntryWaiting
+      key={shown.id}
+      request={shown}
+      task={task}
+      text={text}
+      onText={(next) => setTyped({ id: shown.id, text: next })}
+      failed={failed}
+      onRetry={retry}
+    />
   );
 });
 
-/** 下の小さなボタン：予定では「今日」「あとで」、締切では「締切を外す」 */
-const Footer = observer(function Footer({
-  kind,
+/** 日付の入力が届くまでの待ちの欄。対象の行（かボタン）の下に出す */
+const DateEntryWaiting = observer(function DateEntryWaiting({
+  request,
   task,
-  taskIds,
-  onDone,
+  text,
+  onText,
+  failed,
+  onRetry,
 }: {
-  kind: DateEntryKind;
+  request: DateEntryRequest;
   task: TaskRow;
-  taskIds: readonly string[];
-  onDone: () => void;
+  text: string;
+  onText: (text: string) => void;
+  failed: boolean;
+  onRetry: () => void;
 }) {
   const ui = useUi();
-  const buttonClassName =
-    "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-muted-foreground text-xs hover:bg-accent hover:text-foreground";
-
-  if (kind === "deadline") {
-    const store = ui.store;
-    const anyHasDeadline = taskIds.some((id) => (store.task(id) ?? task).deadlineOn !== null);
-    if (!anyHasDeadline) return null;
-    return (
-      <div className="flex justify-end border-t pt-1.5">
-        <button
-          type="button"
-          className={buttonClassName}
-          onClick={() => {
-            onDone();
-            setDeadline(ui, taskIds, null);
-          }}
-        >
-          締切を外す
-        </button>
-      </div>
-    );
-  }
-
-  const destinations = [
-    { bucket: "today", label: "今日", key: keyLabel("task.today") },
-    { bucket: "later", label: "あとで", key: keyLabel("task.later") },
-  ] as const;
+  const style = useAnchoredStyle(
+    request.anchor ?? document.getElementById(taskRowId(task.id)),
+    "start",
+  );
   return (
-    <div className="flex justify-end gap-1 border-t pt-1.5">
-      {destinations.map(({ bucket, label, key }) => (
-        <button
-          key={bucket}
-          type="button"
-          className={cn(buttonClassName, task.bucket === bucket && "text-foreground")}
-          onClick={() => {
-            onDone();
-            moveTasks(ui, taskIds, bucket);
-          }}
-        >
-          {label}
-          {key !== undefined && <Kbd>{key}</Kbd>}
-        </button>
-      ))}
-    </div>
+    <WaitingInput
+      label={dateEntryLabel(request.kind)}
+      placeholder={dateEntryPlaceholder(request.kind)}
+      value={text}
+      onChange={onText}
+      onCancel={() => {
+        dateEntryOf(ui).close();
+        ui.focusList();
+      }}
+      failed={failed}
+      onRetry={onRetry}
+      className="w-[17.5rem]"
+      style={style}
+    />
   );
 });

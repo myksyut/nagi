@@ -40,7 +40,8 @@ function ToastList() {
       {/* 赤は締切を過ぎたときにだけ使うので、「保存できませんでした」も色は変えない */}
       <div className="flex flex-col">
         <Toast.Title className="font-normal" />
-        <Toast.Description className="text-muted-foreground text-xs" />
+        {/* 2行になることがある（操作の側の知らせに「下書きに戻しました」を添えたとき） */}
+        <Toast.Description className="whitespace-pre-line text-muted-foreground text-xs" />
       </div>
       {toast.actionProps && (
         <Toast.Action className="rounded-sm text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring" />

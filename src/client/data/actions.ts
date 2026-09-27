@@ -37,6 +37,11 @@ export type OperationResult =
 export type PerformOptions = {
   /** 元に戻すの対象にするか（既定は true） */
   undoable?: boolean;
+  /**
+   * 入力の自動保存か（タイトル・メモ・チェックリストの項目の名前）。オフラインで止めたときの知らせにそのまま載せる
+   * （画面は、自動保存を止めたときは上部の帯を強調しない）
+   */
+  autosave?: boolean;
 };
 
 export type Perform = (

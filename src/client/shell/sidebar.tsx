@@ -1,8 +1,11 @@
 import { observer } from "mobx-react-lite";
+import { AnimatePresence, m } from "motion/react";
+import { useState } from "react";
 import { Link, useRoute } from "wouter";
 import { useStore } from "@/data";
 import { dateEntryOf } from "@/features/dates/date-entry";
 import { ProjectNavItems } from "@/features/projects/project-nav";
+import { DURATION, EASE_OUT } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { moveTasks } from "@/tasks/commands";
 import { useTaskDropTarget } from "@/tasks/drag";
@@ -92,13 +95,48 @@ const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
       {...dropProps}
     >
       {list.label}
-      {count > 0 && (
-        <span className="font-normal text-muted-foreground text-xs tabular-nums">
-          <span className="sr-only">（</span>
-          {count}
-          <span className="sr-only">件）</span>
-        </span>
-      )}
+      {count > 0 && <Count count={count} />}
     </Link>
   );
 });
+
+/** 件数の数字が入れ替わるときの動き（増えたら下から、減ったら上から。数字だけが小さく入れ替わる） */
+const COUNT_VARIANTS = {
+  enter: (direction: number) => ({ y: direction * 6, opacity: 0 }),
+  shown: { y: 0, opacity: 1, transition: { duration: DURATION.short, ease: EASE_OUT } },
+  leave: (direction: number) => ({
+    y: direction * -6,
+    opacity: 0,
+    transition: { duration: DURATION.exit, ease: EASE_OUT },
+  }),
+};
+
+/**
+ * サイドバーの件数（受信箱 3 → 2 など）。数字だけが小さく入れ替わる（transitions.dev の数字の入れ替えを写したもの）。
+ * 最初の描画とリストの切り替えでは動かさない。読み上げには「（3件）」を出す
+ */
+function Count({ count }: { count: number }) {
+  // 前の件数との比べ（描き直しのたびではなく、件数が変わったときだけ向きを決める）
+  const [last, setLast] = useState({ count, direction: 1 });
+  if (last.count !== count) setLast({ count, direction: count > last.count ? 1 : -1 });
+  const { direction } = last;
+  return (
+    <span className="relative inline-flex font-normal text-muted-foreground text-xs tabular-nums">
+      <span className="sr-only">（{count}件）</span>
+      {/* 抜けていく数字は、新しい数字の位置に重ねる（popLayout） */}
+      <AnimatePresence initial={false} mode="popLayout" custom={direction}>
+        <m.span
+          key={count}
+          aria-hidden="true"
+          custom={direction}
+          variants={COUNT_VARIANTS}
+          initial="enter"
+          animate="shown"
+          exit="leave"
+        >
+          {count}
+        </m.span>
+      </AnimatePresence>
+    </span>
+  );
+}

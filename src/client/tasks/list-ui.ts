@@ -8,6 +8,7 @@ import {
   runInAction,
 } from "mobx";
 import type { AppStore, Notice, TaskRow } from "@/data";
+import { type DraftChange, DraftStorage } from "./draft-storage";
 import { Toaster } from "./toaster";
 
 /**
@@ -18,6 +19,7 @@ import { Toaster } from "./toaster";
  * - 開いているタスク：1つ（その場で下に広がる）
  * - 追加欄：開いているか、下書き
  * - 閉じられるまとまり（今日の「完了 N件」）の開閉
+ * - 下書き（追加欄・戻ってきた追加・保存できなかったタイトルとメモ）。localStorage にも残す（draft-storage.ts）
  * データ（タスクの中身や並び）はストアが持ち、ここでは id で指すだけ
  */
 
@@ -77,6 +79,22 @@ export type ListView = {
   reveal?: (taskId: string) => void;
 };
 
+/** 保存できなかったときに出す知らせの文言 */
+export type FailureMessage = { title: string; description?: string };
+
+/**
+ * その操作が保存できなかったときの知らせを、操作の側で決める（汎用の「保存できませんでした」の代わりに1つだけ出す）。
+ * null を返すと汎用の知らせになる
+ */
+export type FailureHandler = (
+  reason: Extract<Notice, { type: "save-failed" }>["reason"],
+) => FailureMessage | null | Promise<FailureMessage | null>;
+
+export type ListUiOptions = {
+  /** 下書きの置き場（既定は localStorage） */
+  drafts?: DraftStorage;
+};
+
 function sameSections(a: readonly TaskSection[], b: readonly TaskSection[]): boolean {
   return (
     a.length === b.length &&
@@ -108,6 +126,11 @@ export class ListUi {
   addDraft = "";
   /** 追加欄を開いてから最後に追加したタスク（Esc で閉じるとこれを選ぶ） */
   lastAddedId: string | null = null;
+  /**
+   * 編集を受け付けない（新しいバージョンへ読み込み直すまで）。タスクを開けず、追加欄も開けない。
+   * 打った文字を、読み込み直す前に下書きへ残しきるため
+   */
+  editingLocked = false;
 
   /** 保存できずに戻ってきた追加の文字の残り（追加欄が空になったら、次を下書きに入れる） */
   readonly #draftQueue = observable.array<string>([], { deep: false });
@@ -134,8 +157,20 @@ export class ListUi {
   #reveal: { taskId: string; viewKey: string } | null = null;
   #listElement: HTMLElement | null = null;
 
-  constructor(store: AppStore) {
+  /** 下書きを localStorage に残す */
+  readonly #drafts: DraftStorage;
+  /** 保存できなかったときの知らせを、操作の側で決めるもの（操作の id → 決め方） */
+  readonly #failureHandlers = new Map<string, FailureHandler>();
+  /** 開いている入力欄の、まだ送っていない文字を読む（`<タスクの id>:<項目>` → 読み方） */
+  readonly #editing = new Map<string, () => string | undefined>();
+
+  constructor(store: AppStore, options: ListUiOptions = {}) {
     this.store = store;
+    this.#drafts = options.drafts ?? new DraftStorage();
+    // 前に開いていたときの下書きを戻す（再読み込み・ログインのし直し・新しいバージョン）
+    this.addDraft = this.#drafts.loadAddDraft();
+    this.#draftQueue.replace(this.#drafts.loadAddQueue());
+    this.#unsavedText.replace(this.#drafts.loadUnsaved());
     makeObservable<ListUi, "applySelection" | "applyOpen">(this, {
       view: observableRef,
       selectedId: observable,
@@ -144,6 +179,7 @@ export class ListUi {
       adding: observable,
       addDraft: observable,
       lastAddedId: observable,
+      editingLocked: observable,
       sections: computed({ equals: sameSections }),
       rows: computed({ equals: compareShallow }),
       selected: computed,
@@ -168,6 +204,8 @@ export class ListUi {
       keepUnsavedText: true,
       clearUnsavedText: true,
       toggleFold: true,
+      lockEditing: true,
+      unlockEditing: true,
       applySelection: true,
       applyOpen: true,
     });
@@ -385,6 +423,7 @@ export class ListUi {
   // --- 開く -------------------------------------------------------------------------------
 
   open(id: string): void {
+    if (this.editingLocked) return;
     this.adding = false;
     this.applyOpen(id);
     this.applySelection(id);
@@ -395,6 +434,7 @@ export class ListUi {
   }
 
   toggleOpen(id: string): void {
+    if (this.editingLocked) return;
     if (this.openId === id) this.close();
     else this.open(id);
   }
@@ -402,7 +442,7 @@ export class ListUi {
   // --- 追加欄 -----------------------------------------------------------------------------
 
   startAdding(): void {
-    if (!this.view) return;
+    if (!this.view || this.editingLocked) return;
     this.applyOpen(null);
     this.adding = true;
     this.lastAddedId = null;
@@ -419,18 +459,23 @@ export class ListUi {
 
   setAddDraft(text: string): void {
     this.addDraft = text;
+    this.#drafts.saveAddDraft(text);
   }
 
-  /** 追加できた。下書きを空にし、戻ってきた下書きの残りがあれば次を入れる */
+  /**
+   * 追加できた。下書きを空にし、戻ってきた下書きの残りがあれば次を入れる。
+   * そのあいだにほかのタブが別の下書きを書いていたら、それを残す（下書きはタブのあいだで1つ）
+   */
   noteAdded(id: string): void {
     this.lastAddedId = id;
-    this.addDraft = "";
+    this.addDraft = this.#drafts.clearAddDraftIf(this.addDraft);
     this.#fillDraftFromQueue();
   }
 
   /** 保存できなかった追加の文字を、追加欄の下書きに戻す（空なら1つ目を入れ、残りは順に） */
   restoreDrafts(titles: readonly string[]): void {
-    this.#draftQueue.push(...titles.filter((title) => title.trim() !== ""));
+    const added = titles.filter((title) => title.trim() !== "");
+    if (added.length > 0) this.#draftQueue.replace(this.#drafts.appendToAddQueue(added));
     this.#fillDraftFromQueue();
   }
 
@@ -441,11 +486,80 @@ export class ListUi {
   }
 
   keepUnsavedText(taskId: string, field: TextField, value: string): void {
-    this.#unsavedText.set(textKey(taskId, field), value);
+    const key = textKey(taskId, field);
+    this.#unsavedText.set(key, value);
+    this.#drafts.saveUnsaved(key, value);
   }
 
   clearUnsavedText(taskId: string, field: TextField): void {
-    this.#unsavedText.delete(textKey(taskId, field));
+    const key = textKey(taskId, field);
+    if (!this.#unsavedText.has(key)) return;
+    this.#unsavedText.delete(key);
+    this.#drafts.removeUnsaved(key);
+  }
+
+  /**
+   * 開いている入力欄（タイトル・メモ）の、まだ送っていない文字を読めるようにする（use-autosave）。
+   * 読み込み直す直前とページを離れるときに、persistEditing で下書きへ書く。戻り値を呼ぶとやめる
+   */
+  trackEditing(taskId: string, field: TextField, read: () => string | undefined): () => void {
+    const key = textKey(taskId, field);
+    this.#editing.set(key, read);
+    return () => {
+      if (this.#editing.get(key) === read) this.#editing.delete(key);
+    };
+  }
+
+  /**
+   * 開いている入力欄の、まだ送っていない文字を、今すぐ（同期で）下書きへ書く。
+   * 下書きがすべて localStorage に残っていれば true（書けなかったものがあれば false。読み込み直すと失う）
+   */
+  persistEditing(): boolean {
+    runInAction(() => {
+      for (const [key, read] of this.#editing) {
+        const value = read();
+        if (value === undefined) continue;
+        this.#unsavedText.set(key, value);
+        this.#drafts.saveUnsaved(key, value);
+      }
+    });
+    return this.#drafts.persisted;
+  }
+
+  // --- 新しいバージョン -------------------------------------------------------------------
+
+  /** 編集を止める（新しいバージョンへ読み込み直すまで）。開いているタスクと追加欄を閉じる（打った文字は下書きへ） */
+  lockEditing(): void {
+    this.editingLocked = true;
+    this.applyOpen(null);
+    this.adding = false;
+  }
+
+  unlockEditing(): void {
+    this.editingLocked = false;
+  }
+
+  // --- 保存できなかったときの知らせ -------------------------------------------------------
+
+  /**
+   * その操作が保存できなかったときの知らせを、汎用の「保存できませんでした」の代わりに handler で決める
+   * （プロジェクトのアーカイブを断られたときなど。知らせを2つ重ねないため）。保存できたら忘れる
+   */
+  onSaveFailed(operationId: string, handler: FailureHandler): void {
+    const { store } = this;
+    if (!store.replica.pending.some((batch) => batch.operationId === operationId)) return;
+    this.#failureHandlers.set(operationId, handler);
+    const stop = reaction(
+      () => store.replica.pending.some((batch) => batch.operationId === operationId),
+      (pending) => {
+        if (pending) return;
+        // 捨てられたときの知らせは、送信の列から外れた直後に届くので、それを待ってから忘れる
+        queueMicrotask(() => {
+          this.#failureHandlers.delete(operationId);
+          stop();
+        });
+      },
+    );
   }
 
   // --- まとまりの開閉 ---------------------------------------------------------------------
@@ -471,7 +585,7 @@ export class ListUi {
 
   // --- 動かす -----------------------------------------------------------------------------
 
-  /** 行が消えたときの選択の追いかけと、知らせの受け取り。戻り値を呼ぶと止める */
+  /** 行が消えたときの選択の追いかけと、知らせの受け取り、ほかのタブの下書きの追いかけ。戻り値を呼ぶと止める */
   start(): () => void {
     const disposers = [
       reaction(
@@ -480,6 +594,7 @@ export class ListUi {
       ),
       this.store.subscribe((notice) => this.#onNotice(notice)),
       this.toaster.start(this.store),
+      this.#drafts.subscribe((change) => this.#onDraftChange(change)),
     ];
     return () => {
       for (const dispose of disposers) dispose();
@@ -581,14 +696,43 @@ export class ListUi {
     return ids;
   }
 
+  /** 追加欄の下書きが空なら、戻ってきた下書きの残りの先頭を入れる（ほかのタブと合わせた最新の残りから取る） */
   #fillDraftFromQueue(): void {
     if (this.addDraft.trim() !== "") return;
-    const next = this.#draftQueue.shift();
-    if (next !== undefined) this.addDraft = next;
+    const { taken, rest } = this.#drafts.takeFromAddQueue();
+    this.#draftQueue.replace(rest);
+    if (taken !== undefined) this.setAddDraft(taken);
   }
 
+  /** ほかのタブが下書きを変えたら、合わせる */
+  #onDraftChange(change: DraftChange): void {
+    runInAction(() => {
+      switch (change.kind) {
+        case "add":
+          this.addDraft = change.value;
+          return;
+        case "add-queue":
+          this.#draftQueue.replace(change.value);
+          return;
+        case "unsaved":
+          if (change.value === null) this.#unsavedText.delete(change.key);
+          else this.#unsavedText.set(change.key, change.value);
+          return;
+        case "cleared":
+          this.addDraft = "";
+          this.#draftQueue.clear();
+          this.#unsavedText.clear();
+          return;
+      }
+    });
+  }
+
+  /**
+   * 送信中の操作が捨てられたら、打った文字を下書きに戻す（保存の失敗、ログインが切れた、版が古い）。
+   * 保存の失敗だけはトーストで知らせる（ログインと版はそれぞれの画面・帯が受け持つ）
+   */
   #onNotice(notice: Notice): void {
-    if (notice.type !== "save-failed") return;
+    if (notice.type === "offline-blocked") return;
     const titles = notice.failedCreates.map((create) => create.title);
     // 捨てられたタイトルとメモの変更（同じ項目が何度もあれば、最後に打ったもの）
     const lost = new Map<string, { taskId: string; field: TextField; value: string }>();
@@ -609,15 +753,44 @@ export class ListUi {
         this.keepUnsavedText(taskId, field, value);
       }
     });
-    this.toaster.error(
-      notice.reason === "conflict"
-        ? "ほかの画面で先に変更されていたため、保存できませんでした"
-        : "保存できませんでした",
-      titles.length > 0
-        ? "追加した文字は、追加欄の下書きに戻しました"
-        : lost.size > 0
-          ? "直した文字は、そのタスクを開くと欄に戻ります"
-          : undefined,
-    );
+    if (notice.type !== "save-failed") return;
+    const generic: FailureMessage = {
+      title:
+        notice.reason === "conflict"
+          ? "ほかの画面で先に変更されていたため、保存できませんでした"
+          : "保存できませんでした",
+      description:
+        titles.length > 0
+          ? "追加した文字は、追加欄の下書きに戻しました"
+          : lost.size > 0
+            ? "直した文字は、そのタスクを開くと欄に戻ります"
+            : undefined,
+    };
+    const handlers = notice.discarded.flatMap((operation) => {
+      const handler = this.#failureHandlers.get(operation.operationId);
+      this.#failureHandlers.delete(operation.operationId);
+      return handler ? [handler] : [];
+    });
+    const [handler] = handlers;
+    if (!handler) {
+      this.toaster.error(generic.title, generic.description);
+      return;
+    }
+    // 操作の側の文言で1つにまとめて出す（下書きに戻したことは2行目に添える）
+    void Promise.resolve(handler(notice.reason))
+      .catch((error: unknown) => {
+        console.error(error);
+        return null;
+      })
+      .then((message) => {
+        if (!message) {
+          this.toaster.error(generic.title, generic.description);
+          return;
+        }
+        const description = [message.description, generic.description]
+          .filter((line) => line !== undefined)
+          .join("\n");
+        this.toaster.error(message.title, description === "" ? undefined : description);
+      });
   }
 }
