@@ -1,4 +1,4 @@
-import type { Project, Task } from "@shared/model";
+import type { ChecklistItem, Project, Task } from "@shared/model";
 import type { Mutation } from "@shared/mutations";
 import { createAtom } from "mobx";
 import { applyProjectMutation, applyTaskMutation } from "./overlay";
@@ -29,6 +29,41 @@ function previousValues<T extends object>(current: T, changes: object): Partial<
 }
 
 /**
+ * チェックリストの操作（チェック・追加・削除・並べ替え）を戻したあとのチェックリスト。
+ * チェックリストは1つの項目（配列）なので、そのまま操作の前の配列に戻すと、操作のあとに直した項目の文字
+ * （⌘Z の対象にしない自動保存）まで戻ってしまう。操作の前の並びとチェックに戻しつつ、
+ * 操作のあとで変わった文字とチェックは今の値を残す。操作のあとで足された項目は残し、消された項目は消したまま
+ */
+export function revertChecklist(
+  before: readonly ChecklistItem[],
+  after: readonly ChecklistItem[],
+  current: readonly ChecklistItem[],
+): ChecklistItem[] {
+  const afterById = new Map(after.map((item) => [item.id, item]));
+  const currentById = new Map(current.map((item) => [item.id, item]));
+  const beforeIds = new Set(before.map((item) => item.id));
+  const reverted: ChecklistItem[] = [];
+  for (const item of before) {
+    const was = afterById.get(item.id);
+    const now = currentById.get(item.id);
+    if (was === undefined) {
+      // 操作で消した項目は戻す
+      reverted.push(item);
+    } else if (now !== undefined) {
+      reverted.push({
+        ...item,
+        title: now.title !== was.title ? now.title : item.title,
+        done: now.done !== was.done ? now.done : item.done,
+      });
+    }
+  }
+  for (const item of current) {
+    if (!beforeIds.has(item.id) && !afterById.has(item.id)) reverted.push(item);
+  }
+  return reverted;
+}
+
+/**
  * 操作の逆向きを作る。操作を順にたどって行の状態を進めながら、各操作の逆を作り、逆の順に並べる
  * （同じまとまりで作ったプロジェクトをタスクに付けた、などの順序を逆にたどれるように）
  */
@@ -50,11 +85,25 @@ export function buildInverse(mutations: readonly Mutation[], read: Readers): Inv
       case "task.update": {
         const { id, changes } = mutation;
         const before = taskNow(id);
-        if (before) {
+        const after = applyTaskMutation(before, mutation, "");
+        if (before && after) {
           const previous = previousValues(before, changes);
-          steps.push(() => ({ type: "task.update", id, changes: previous }));
+          steps.push(() => {
+            // チェックリストは、戻すときの今の中身と合わせ（revertChecklist）、今の配列を添える
+            const current = previous.checklist && read.task(id)?.checklist;
+            if (!current) return { type: "task.update", id, changes: previous };
+            return {
+              type: "task.update",
+              id,
+              changes: {
+                ...previous,
+                checklist: revertChecklist(before.checklist, after.checklist, current),
+              },
+              baseChecklist: [...current],
+            };
+          });
         }
-        tasks.set(id, applyTaskMutation(before, mutation, ""));
+        tasks.set(id, after);
         break;
       }
       case "project.create": {

@@ -34,9 +34,11 @@ export type Notice =
   | { type: "offline-blocked"; operation: OperationKind }
   /**
    * 保存できなかった。送信中の操作はすべて捨てて、表示は元に戻っている。
-   * network：再送しても通信できなかった・5xx。rejected：400 など（ほぼ不具合。記録はコンソールに残す）
+   * network：再送しても通信できなかった・5xx。rejected：400 など（ほぼ不具合。記録はコンソールに残す）。
+   * conflict：ほかの画面が先に変えていた（チェックリストの配列・アーカイブするプロジェクトのタスクなど）。
+   * ストアは最新を取りに行く
    */
-  | ({ type: "save-failed"; reason: "network" | "rejected" } & Discarded)
+  | ({ type: "save-failed"; reason: "network" | "rejected" | "conflict" } & Discarded)
   /** ログインが切れた（401）。画面はログイン画面へ移る。同期と送信は止まる */
   | ({ type: "unauthorized" } & Discarded)
   /** 画面の版が古い（409）。画面は「新しいバージョン」を出して再読み込みする（8）。同期と送信は止まる */

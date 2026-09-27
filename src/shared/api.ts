@@ -49,7 +49,9 @@ export type InvalidRequestReason =
   | "project_archived"
   | "project_deleted"
   | "schedule_mismatch"
-  | "project_has_open_tasks";
+  | "project_has_open_tasks"
+  /** チェックリストの今の配列が、操作に添えられた「変える前の配列」と違う（ほかの画面が先に変えた） */
+  | "checklist_conflict";
 
 export type ApiErrorResponse =
   | {

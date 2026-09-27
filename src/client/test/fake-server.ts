@@ -7,7 +7,13 @@ import {
   type SyncResponse,
   syncRequestSchema,
 } from "@shared/api";
-import { isScheduleConsistent, type Project, type SyncRow, type Task } from "@shared/model";
+import {
+  isScheduleConsistent,
+  type Project,
+  type SyncRow,
+  sameChecklist,
+  type Task,
+} from "@shared/model";
 import { mutationBatchSchema, type ParsedMutationBatch } from "@shared/mutations";
 
 /**
@@ -289,6 +295,9 @@ export class FakeServer {
       case "task.update": {
         const current = this.tasks.get(mutation.id);
         if (!current) throw new Rejection("task_not_found");
+        if (mutation.baseChecklist && !sameChecklist(current.checklist, mutation.baseChecklist)) {
+          throw new Rejection("checklist_conflict");
+        }
         const next = { ...current, ...mutation.changes };
         if (!isScheduleConsistent(next)) throw new Rejection("schedule_mismatch");
         if (next.projectId !== current.projectId) this.#assertAttachable(next.projectId);

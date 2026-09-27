@@ -7,6 +7,8 @@ import { App } from "./app";
 import { AppStore, StoreProvider } from "./data";
 import { createMemoryLocalDb } from "./data/local-db";
 import { FakeServer } from "./test/fake-server";
+import { makeProject } from "./test/fixtures";
+import { setupApp } from "./test/render-app";
 
 /**
  * チケット 1 で決めたリストの URL と表示名（サイドバーの上からの順）。
@@ -41,12 +43,20 @@ describe("各リストの URL", () => {
     expect(document.title).toBe(`${label} — nagi`);
   });
 
-  it("/projects/:id は「プロジェクト」の見出しが出る", async () => {
-    renderAt("/projects/abc-123");
-    expect(
-      await screen.findByRole("heading", { level: 1, name: "プロジェクト" }),
-    ).toBeInTheDocument();
-    expect(document.title).toBe("プロジェクト — nagi");
+  it("/projects/:id は、そのプロジェクトの名前が見出しと document.title に出る", async () => {
+    const server = new FakeServer();
+    const project = makeProject({ name: "AIPR" });
+    server.putProject(project);
+    const { store } = await setupApp(`/projects/${project.id}`, server);
+    expect(await screen.findByRole("heading", { level: 1, name: "AIPR" })).toBeInTheDocument();
+    expect(document.title).toBe("AIPR — nagi");
+    store.dispose();
+  });
+
+  it("/projects/:id で、そのプロジェクトがなければ「プロジェクトが見つかりません」", async () => {
+    const { store } = await setupApp("/projects/0199a000-0000-7000-8000-00000000ffff");
+    expect(await screen.findByText("プロジェクトが見つかりません")).toBeInTheDocument();
+    store.dispose();
   });
 });
 

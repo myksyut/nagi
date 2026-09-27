@@ -4,6 +4,7 @@ import {
   isScheduleConsistent,
   type Project,
   type SyncRow,
+  sameChecklist,
   type Task,
 } from "@shared/model";
 import type { ParsedMutationBatch, ProjectChanges, TaskChanges } from "@shared/mutations";
@@ -19,7 +20,10 @@ export type MutateOutcome =
   | { ok: false; reason: InvalidRequestReason; mutationIndex: number };
 
 /** 検証に使うタスクの項目 */
-type TaskFacts = Pick<Task, "bucket" | "scheduledOn" | "projectId" | "completedAt" | "deletedAt">;
+type TaskFacts = Pick<
+  Task,
+  "bucket" | "scheduledOn" | "projectId" | "checklist" | "completedAt" | "deletedAt"
+>;
 type ProjectFacts = { archivedAt: string | null; deletedAt: string | null };
 
 type NewTask = Omit<typeof tasks.$inferInsert, "createdAt" | "updatedAt" | "seq">;
@@ -89,6 +93,7 @@ async function isApplied(db: Db, batchId: string): Promise<boolean> {
  * あいだの変更は割り切る）
  * - 操作の対象のタスクとプロジェクト、タスクに付けるプロジェクト
  * - アーカイブするプロジェクトの、未完了・未削除のタスク
+ * チェックリストは、読んだときの文字列（D1 に入っているそのまま）も返す（バッチの中の守りで比べる）
  */
 async function loadFacts(db: Db, batch: ParsedMutationBatch) {
   const { taskIds, projectIds } = targetIds(batch);
@@ -111,6 +116,8 @@ async function loadFacts(db: Db, batch: ParsedMutationBatch) {
     bucket: tasks.bucket,
     scheduledOn: tasks.scheduledOn,
     projectId: tasks.projectId,
+    // JSON に読み替えずに、入っている文字列のまま読む
+    checklistText: sql<string>`${tasks.checklist}`,
     completedAt: tasks.completedAt,
     deletedAt: tasks.deletedAt,
   };
@@ -143,24 +150,28 @@ async function loadFacts(db: Db, batch: ParsedMutationBatch) {
   ]);
 
   const taskFacts = new Map<string, TaskFacts>();
-  for (const { id, ...facts } of [...targetTasks.flat(), ...openTasks.flat()]) {
-    taskFacts.set(id, facts);
+  const checklistTexts = new Map<string, string>();
+  for (const { id, checklistText, ...facts } of [...targetTasks.flat(), ...openTasks.flat()]) {
+    taskFacts.set(id, { ...facts, checklist: JSON.parse(checklistText) });
+    checklistTexts.set(id, checklistText);
   }
   const projectFacts = new Map<string, ProjectFacts>();
   for (const { id, ...facts } of projectRows.flat()) projectFacts.set(id, facts);
-  return { taskFacts, projectFacts };
+  return { taskFacts, projectFacts, checklistTexts };
 }
 
 /**
  * まとまりの操作を順に、読んだ行に重ねながら検証し、行ごとの書き込みにまとめる。
- * 検証に落ちたら Rejection を投げる（何も書かない）
+ * 検証に落ちたら Rejection を投げる（何も書かない）。
+ * checklistChecked は、変える前の配列（baseChecklist）と比べたタスク（バッチの中の守りの対象）
  */
 function planWrites(
   batch: ParsedMutationBatch,
   taskFacts: Map<string, TaskFacts>,
   projectFacts: Map<string, ProjectFacts>,
-): PendingWrite[] {
+): { writes: PendingWrite[]; checklistChecked: Set<string> } {
   const writes = new Map<string, PendingWrite>();
+  const checklistChecked = new Set<string>();
 
   /** アーカイブ済み・削除済みでない、あるプロジェクトだけを付けられる */
   const assertAttachable = (projectId: string, index: number) => {
@@ -179,6 +190,7 @@ function planWrites(
           bucket: task.bucket,
           scheduledOn: task.scheduledOn,
           projectId: task.projectId,
+          checklist: task.checklist,
           completedAt: null,
           deletedAt: null,
         };
@@ -194,9 +206,16 @@ function planWrites(
         break;
       }
       case "task.update": {
-        const { id, changes } = mutation;
+        const { id, changes, baseChecklist } = mutation;
         const current = taskFacts.get(id);
         if (!current) throw new Rejection("task_not_found", index);
+        // チェックリストは配列をまるごと置き換えるので、ほかの画面が先に変えていたら断る（黙って消さない）
+        if (baseChecklist !== undefined) {
+          if (!sameChecklist(current.checklist, baseChecklist)) {
+            throw new Rejection("checklist_conflict", index);
+          }
+          checklistChecked.add(id);
+        }
         const next = overlay(current, changes);
         if (!isScheduleConsistent(next)) throw new Rejection("schedule_mismatch", index);
         if (next.projectId !== null && next.projectId !== current.projectId) {
@@ -253,17 +272,29 @@ function planWrites(
       }
     }
   });
-  return [...writes.values()];
+  return { writes: [...writes.values()], checklistChecked };
 }
+
+/** 読んだときのチェックリストがバッチの時点でも同じであること（守り） */
+type ChecklistGuard = { id: string; text: string };
 
 /** 今の行を読んで検証し、行ごとの書き込みにまとめる */
 async function plan(
   db: Db,
   batch: ParsedMutationBatch,
-): Promise<{ ok: true; writes: PendingWrite[] } | Extract<MutateOutcome, { ok: false }>> {
-  const { taskFacts, projectFacts } = await loadFacts(db, batch);
+): Promise<
+  | { ok: true; writes: PendingWrite[]; checklistGuards: ChecklistGuard[] }
+  | Extract<MutateOutcome, { ok: false }>
+> {
+  const { taskFacts, projectFacts, checklistTexts } = await loadFacts(db, batch);
   try {
-    return { ok: true, writes: planWrites(batch, taskFacts, projectFacts) };
+    const { writes, checklistChecked } = planWrites(batch, taskFacts, projectFacts);
+    const checklistGuards = [...checklistChecked].flatMap((id) => {
+      const text = checklistTexts.get(id);
+      // 同じまとまりで作ったタスクは、読んだ行がないので守らなくてよい
+      return text === undefined ? [] : [{ id, text }];
+    });
+    return { ok: true, writes, checklistGuards };
   } catch (error) {
     if (error instanceof Rejection) {
       return { ok: false, reason: error.reason, mutationIndex: error.mutationIndex };
@@ -297,11 +328,39 @@ function requireExistingRows(db: Db, writes: readonly PendingWrite[]) {
   ];
 }
 
+/** 1つの文に入れる守りの数（1つの守りでバインド変数を2つ使う。1つの文で 100 まで） */
+const CHECKLIST_GUARDS_PER_STATEMENT = 45;
+
+/**
+ * チェックリストを変える前の配列と比べたタスクについて、検証で読んだあとにほかの書き込みが割り込んで
+ * 配列が変わっていないことを、バッチの中で確かめる文。変わっていたら requireExistingRows と同じく
+ * meta.seq の value に NULL を入れようとして、バッチ全体を失敗させる（そのあと検証し直して checklist_conflict）
+ */
+function requireUnchangedChecklists(db: Db, guards: readonly ChecklistGuard[]) {
+  return chunk(guards, CHECKLIST_GUARDS_PER_STATEMENT).map((part) =>
+    db
+      .update(meta)
+      .set({ value: sql`NULL` })
+      .where(
+        and(
+          eq(meta.key, "seq"),
+          sql`(${sql.join(
+            part.map(
+              ({ id, text }) =>
+                sql`(SELECT ${tasks.checklist} FROM ${tasks} WHERE ${tasks.id} = ${id}) IS NOT ${text}`,
+            ),
+            sql` OR `,
+          )})`,
+        ),
+      ),
+  );
+}
+
 /**
  * 操作のまとまりを反映する。書き込みは db.batch() 1回だけで、全部成功か全部失敗
  * （D1 には対話的なトランザクションがないので、Drizzle の transaction() は使わない）。
- * バッチの中身は、applied_mutations の INSERT → 更新する行がまだあることの確認 →
- * meta.seq を行数ぶん進める → 行ごとの INSERT / UPDATE。
+ * バッチの中身は、applied_mutations の INSERT → 更新する行がまだあること・チェックリストが検証のときのままで
+ * あることの確認 → meta.seq を行数ぶん進める → 行ごとの INSERT / UPDATE。
  * 同じ id のまとまりが再び来たら、書き込まずに、対象の行の今の内容を返す
  */
 export async function applyMutationBatch(
@@ -325,13 +384,14 @@ export async function applyMutationBatch(
     if (await isApplied(db, batch.id)) return currentRows();
     return planned;
   }
-  const { writes } = planned;
+  const { writes, checklistGuards } = planned;
 
   const timestamp = now.toISOString();
   const count = writes.length;
   const statements: BatchItem<"sqlite">[] = [
     db.insert(appliedMutations).values({ id: batch.id, appliedAt: timestamp }),
     ...requireExistingRows(db, writes),
+    ...requireUnchangedChecklists(db, checklistGuards),
     advanceSeq(db, count),
     ...writes.map((write, i) => {
       const seq = seqFor(count, i);

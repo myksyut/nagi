@@ -1,3 +1,4 @@
+import type { InvalidRequestReason } from "@shared/api";
 import type { SyncRow } from "@shared/model";
 import { MAX_MUTATIONS_PER_BATCH, type Mutation, mutationSchema } from "@shared/mutations";
 import { makeObservable, observable, runInAction } from "mobx";
@@ -323,6 +324,12 @@ export class AppStore {
         this.#notices.emit({ type: error.kind, ...detail });
         return;
       case "rejected":
+        if (isConflict(error)) {
+          // ほかの画面が先に変えていた。最新を取りに行く（自動で合わせることはしない）
+          this.#notices.emit({ type: "save-failed", reason: "conflict", ...detail });
+          void this.sync();
+          return;
+        }
         // 検証エラーはほぼ不具合なので、記録を残す
         console.error("保存を受け付けられませんでした", error, detail.discarded);
         this.#notices.emit({ type: "save-failed", reason: "rejected", ...detail });
@@ -375,6 +382,25 @@ export class AppStore {
     }
     this.#localDb.purgeDeleted(cutoff).catch((error) => console.error(error));
   }
+}
+
+/**
+ * ほかの画面が先に変えていたので断られた理由（不具合ではない）。
+ * チェックリストの配列が変わっていた・アーカイブしようとしたプロジェクトにタスクが付いた・
+ * 付けようとしたプロジェクトがアーカイブされた
+ */
+const CONFLICT_REASONS: ReadonlySet<InvalidRequestReason> = new Set([
+  "checklist_conflict",
+  "project_has_open_tasks",
+  "project_archived",
+]);
+
+function isConflict(error: ApiFailure): boolean {
+  return (
+    error.kind === "rejected" &&
+    error.body?.error === "invalid_request" &&
+    CONFLICT_REASONS.has(error.body.reason)
+  );
 }
 
 export function createAppStore(options?: AppStoreOptions): AppStore {

@@ -1,8 +1,42 @@
+import type { ChecklistItem } from "@shared/model";
 import { describe, expect, it } from "vitest";
 import { makeBatch, makeProject, makeTask } from "../test/fixtures";
-import { buildInverse, UndoStack } from "./undo";
+import { buildInverse, revertChecklist, UndoStack } from "./undo";
 
 /** 10. 元に戻す（単体：buildInverse と UndoStack） */
+
+function item(overrides: Partial<ChecklistItem> = {}): ChecklistItem {
+  return { id: "i1", title: "項目", done: false, ...overrides };
+}
+
+describe("revertChecklist", () => {
+  it("チェックの操作を戻すと、操作のあとに直した名前は残る", () => {
+    const before = [item({ id: "a", title: "元の名前", done: false })];
+    const after = [item({ id: "a", title: "元の名前", done: true })]; // 操作：チェックを付けた
+    const current = [item({ id: "a", title: "書き直した", done: true })]; // 操作のあとに名前を直した（自動保存）
+    expect(revertChecklist(before, after, current)).toEqual([
+      { id: "a", title: "書き直した", done: false },
+    ]);
+  });
+
+  it("操作で消した項目は戻す。操作のあとに足された項目は残す", () => {
+    const before = [item({ id: "a" }), item({ id: "b", title: "消される" })];
+    const after = [item({ id: "a" })]; // 操作：b を消した
+    const current = [item({ id: "a" }), item({ id: "c", title: "あとで足した" })];
+    expect(revertChecklist(before, after, current)).toEqual([
+      item({ id: "a" }),
+      item({ id: "b", title: "消される" }),
+      item({ id: "c", title: "あとで足した" }),
+    ]);
+  });
+
+  it("並び替えを戻すと、操作前の並びに戻る", () => {
+    const before = [item({ id: "a" }), item({ id: "b" })];
+    const after = [item({ id: "b" }), item({ id: "a" })]; // 操作：並べ替え
+    const current = [item({ id: "b" }), item({ id: "a" })];
+    expect(revertChecklist(before, after, current)).toEqual([item({ id: "a" }), item({ id: "b" })]);
+  });
+});
 
 describe("buildInverse", () => {
   it("作成の逆は削除（deletedAt が入る）", () => {

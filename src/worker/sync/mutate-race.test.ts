@@ -230,3 +230,61 @@ describe("D: バッチの途中の制約違反で全体が戻る", () => {
     );
   });
 });
+
+describe("E: 検証のあとでチェックリストがほかの書き込みで変わる", () => {
+  it("★ バッチの直前に配列が変わると、400 checklist_conflict で何も書かれない（バッチの中の守り）", async () => {
+    const a = { id: crypto.randomUUID(), title: "A", done: false };
+    const b = { id: crypto.randomUUID(), title: "B", done: false };
+    const created = await applyMutationBatch(
+      db,
+      parseBatch([{ type: "task.create", task: taskInput({ checklist: [a, b] }) }]),
+      now,
+    );
+    if (!created.ok) throw new Error("下ごしらえの作成に失敗しました");
+    const id = created.rows[0]?.row.id;
+    if (id === undefined) throw new Error("下ごしらえの id が読めません");
+
+    const batch = parseBatch([
+      {
+        type: "task.update",
+        id,
+        changes: { checklist: [a, { ...b, done: true }] },
+        baseChecklist: [a, b],
+      },
+    ]);
+    const idb = interceptedDb(env.DB, {
+      beforeBatch: async () => {
+        // 検証が終わったあと、書き込みの直前に、ほかの画面の操作が A をチェックする
+        const racer = await applyMutationBatch(
+          db,
+          parseBatch([
+            {
+              type: "task.update",
+              id,
+              changes: { checklist: [{ ...a, done: true }, b] },
+              baseChecklist: [a, b],
+            },
+          ]),
+          now,
+        );
+        expect(racer.ok).toBe(true);
+      },
+    });
+    const before = await snapshot(db);
+
+    const outcome = await applyMutationBatch(idb, batch, now);
+    expect(outcome.ok).toBe(false);
+    if (outcome.ok) throw new Error("unreachable");
+    expect(outcome.reason).toBe("checklist_conflict");
+
+    // 割り込んだ書き込み（A のチェック）だけが残り、こちらのまとまりは何も書いていない
+    const row = await db.select().from(tasks).where(eq(tasks.id, id)).get();
+    expect(row?.checklist).toEqual([{ ...a, done: true }, b]);
+    expect((await snapshot(db)).seq).toBe(before.seq + 1);
+    const appliedRows = await db
+      .select()
+      .from(appliedMutations)
+      .where(eq(appliedMutations.id, batch.id));
+    expect(appliedRows).toHaveLength(0);
+  });
+});

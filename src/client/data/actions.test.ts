@@ -1,7 +1,7 @@
 import type { Mutation } from "@shared/mutations";
 import { rankAfter } from "@shared/rank";
 import { describe, expect, it } from "vitest";
-import { makeTask } from "../test/fixtures";
+import { makeProject, makeTask } from "../test/fixtures";
 import { normalizeTaskChanges, type OperationResult, TaskActions } from "./actions";
 import { LogicalDay } from "./logical-day";
 import type { OperationKind } from "./replica";
@@ -332,5 +332,49 @@ describe("createProject / updateProject", () => {
     ]);
     const result = actions.updateProject("proj-1", { archivedAt: "2026-01-05T00:00:00.000Z" });
     expect(result).toEqual({ ok: false, reason: "has-open-tasks" });
+  });
+});
+
+describe("setProject", () => {
+  it("アーカイブ済み・削除済み・存在しないプロジェクトは invalid（何も送らない）", () => {
+    const { replica, actions, performed } = setup();
+    const archived = makeProject({ id: "archived", archivedAt: "2026-01-01T00:00:00.000Z" });
+    const deleted = makeProject({ id: "deleted", deletedAt: "2026-01-01T00:00:00.000Z" });
+    const task = makeTask({ bucket: "inbox" });
+    replica.replaceConfirmed([
+      { kind: "project", row: archived },
+      { kind: "project", row: deleted },
+      { kind: "task", row: task },
+    ]);
+
+    expect(actions.setProject([task.id], "archived")).toEqual({ ok: false, reason: "invalid" });
+    expect(actions.setProject([task.id], "deleted")).toEqual({ ok: false, reason: "invalid" });
+    expect(actions.setProject([task.id], "no-such-project")).toEqual({
+      ok: false,
+      reason: "invalid",
+    });
+    expect(performed).toHaveLength(0);
+  });
+
+  it("生きているプロジェクトは付けられる。null で外せる", () => {
+    const { replica, actions, performed } = setup();
+    const project = makeProject({ id: "p1" });
+    const unassigned = makeTask({ bucket: "inbox", projectId: null });
+    const assigned = makeTask({ bucket: "inbox", projectId: "p1" });
+    replica.replaceConfirmed([
+      { kind: "project", row: project },
+      { kind: "task", row: unassigned },
+      { kind: "task", row: assigned },
+    ]);
+
+    expect(actions.setProject([unassigned.id], "p1").ok).toBe(true);
+    expect(performed[0]?.mutations).toEqual([
+      { type: "task.update", id: unassigned.id, changes: { projectId: "p1" } },
+    ]);
+
+    expect(actions.setProject([assigned.id], null).ok).toBe(true);
+    expect(performed[1]?.mutations).toEqual([
+      { type: "task.update", id: assigned.id, changes: { projectId: null } },
+    ]);
   });
 });
