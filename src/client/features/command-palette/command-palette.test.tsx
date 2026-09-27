@@ -73,7 +73,7 @@ async function expectRunnableFromPalette(
 const BOARD_SCOPE = "board";
 
 describe("完了の条件3：キーマップのすべての割り当てを ⌘K から実行できる", () => {
-  it("keymap.list() の各割り当て（ボードの場面を除く）が、今日のリストで正しいキー表示で並び、選ぶと run が呼ばれる", async () => {
+  it("keymap.list() の各割り当て（場面を分けたものを除く）が、今日のリストで正しいキー表示で並び、選ぶと run が呼ばれる", async () => {
     const user = userEvent.setup();
     const server = new FakeServer();
     server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));
@@ -89,9 +89,11 @@ describe("完了の条件3：キーマップのすべての割り当てを ⌘K 
     await user.keyboard("j"); // A を選ぶ（並べ替え・完了・today/later などの対象にする）
     expect(store.canUndo).toBe(true);
 
+    // 場面（scope）を分けた割り当て（カレンダーの [ ]、ボードの ←→ など）は、その画面が出ているときだけ使えるので、
+    // その画面で確かめる（ボードは下のテスト、カレンダーはカレンダーのテスト）
     const bindings = keymap
       .list()
-      .filter((binding) => binding.id !== PALETTE_BINDING_ID && binding.scope !== BOARD_SCOPE);
+      .filter((binding) => binding.id !== PALETTE_BINDING_ID && binding.scope === undefined);
     expect(bindings.length).toBeGreaterThan(5);
     await expectRunnableFromPalette(user, bindings);
   });

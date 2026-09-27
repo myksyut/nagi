@@ -65,13 +65,14 @@ export type Perform = (
 export type TaskChanges = Extract<Mutation, { type: "task.update" }>["changes"];
 export type ProjectChanges = Extract<Mutation, { type: "project.update" }>["changes"];
 
-/** 追加の行き先（予定への追加は Core Flows にない） */
+/**
+ * 追加の中身と行き先。予定へは日付と一緒に指定する（カレンダーの日のマスの「＋」。13）
+ */
 export type AddTaskInput = {
   title: string;
   memo?: string;
-  bucket: Exclude<Bucket, "scheduled">;
   projectId?: string | null;
-};
+} & ({ bucket: Exclude<Bucket, "scheduled"> } | { bucket: "scheduled"; on: string });
 
 /** 置き場の移動先。予定は日付と一緒に指定する */
 export type Destination =
@@ -239,15 +240,24 @@ export class TaskActions {
 
   // --- タスク -----------------------------------------------------------------------------
 
-  /** 追加。置き場の一番下に入る。ids[0] が作ったタスクの id */
-  addTask({ title, memo = "", bucket, projectId = null }: AddTaskInput): OperationResult {
+  /**
+   * 追加。置き場の一番下に入る。ids[0] が作ったタスクの id。
+   * 予定へ追加するときに、日付が今日か過去なら今日の一番下に入れる（moveTasks と同じ決まり）
+   */
+  addTask(input: AddTaskInput): OperationResult {
+    const { title, memo = "", projectId = null } = input;
     if (!isNonBlank(title)) return { ok: false, reason: "invalid" };
+    const scheduledOn =
+      input.bucket === "scheduled" && input.on > this.#day.today ? input.on : null;
+    const bucket: Bucket =
+      input.bucket !== "scheduled" ? input.bucket : scheduledOn === null ? "today" : "scheduled";
     const [rank] = this.bottomRanks(bucket);
     if (rank === undefined) return { ok: false, reason: "invalid" };
+    const task = { id: this.#newId(), title, memo, bucket, projectId, rank };
     return this.#perform("task.add", [
       {
         type: "task.create",
-        task: { id: this.#newId(), title, memo, bucket, projectId, rank },
+        task: scheduledOn === null ? task : { ...task, scheduledOn },
       },
     ]);
   }

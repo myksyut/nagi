@@ -78,6 +78,47 @@ describe("addTask", () => {
     expect(result).toEqual({ ok: false, reason: "invalid" });
     expect(performed).toHaveLength(0);
   });
+
+  it("予定へ（13：カレンダーの日のマス）：明日以降の日付なら、その日の予定として1つの操作で作る", () => {
+    const { replica, actions, performed } = setup();
+    const r1 = rankAfter(null);
+    replica.replaceConfirmed([
+      { kind: "task", row: makeTask({ bucket: "scheduled", scheduledOn: "2026-01-20", rank: r1 }) },
+    ]);
+
+    const result = actions.addTask({ title: "レビュー会", bucket: "scheduled", on: "2026-01-16" });
+
+    expect(result.ok).toBe(true);
+    expect(performed).toHaveLength(1);
+    expect(performed[0]?.kind).toBe("task.add");
+    expect(performed[0]?.mutations).toHaveLength(1);
+    const mutation = performed[0]?.mutations[0];
+    expect(mutation).toMatchObject({
+      type: "task.create",
+      task: { title: "レビュー会", bucket: "scheduled", scheduledOn: "2026-01-16" },
+    });
+    // 予定の一番下（ほかの日の予定の行より後ろ）
+    const rank = mutation?.type === "task.create" ? mutation.task.rank : undefined;
+    expect(rank !== undefined && rank > r1).toBe(true);
+  });
+
+  it.each([
+    ["今日", "2026-01-15"],
+    ["過去", "2026-01-10"],
+  ])("予定へ：日付が%sなら、今日の一番下に入る（moveTasks と同じ決まり）", (_, on) => {
+    const { replica, actions, performed } = setup();
+    const r1 = rankAfter(null);
+    replica.replaceConfirmed([{ kind: "task", row: makeTask({ bucket: "today", rank: r1 }) }]);
+
+    actions.addTask({ title: "すぐやる", bucket: "scheduled", on });
+
+    const mutation = performed[0]?.mutations[0];
+    expect(mutation?.type).toBe("task.create");
+    const task = mutation?.type === "task.create" ? mutation.task : undefined;
+    expect(task?.bucket).toBe("today");
+    expect(task?.scheduledOn ?? null).toBeNull();
+    expect(task !== undefined && task.rank > r1).toBe(true);
+  });
 });
 
 describe("uncompleteTasks", () => {
