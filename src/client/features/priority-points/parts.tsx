@@ -182,6 +182,8 @@ const ValuePickerPopup = observer(function ValuePickerPopup({
     // オフラインで受け付けられなかったときは、開いたままにする
     if (!result.ok && result.reason === "offline") return;
     closePicker(ui, picker, session);
+    // 並び方（手動以外）で並べていると、選んでいる行の位置が変わるので、見えるところまで動かす
+    if (result.ok) ui.revealSelected();
   };
 
   return (

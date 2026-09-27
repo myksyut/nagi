@@ -8,6 +8,7 @@ import {
   runInAction,
 } from "mobx";
 import type { AppStore, Notice, TaskRow } from "@/data";
+import { DURATION } from "@/lib/motion";
 import { type DraftChange, DraftStorage } from "./draft-storage";
 import { Toaster } from "./toaster";
 
@@ -677,6 +678,35 @@ export class ListUi {
 
   focusList(): void {
     this.#listElement?.focus({ preventScroll: true });
+  }
+
+  /**
+   * 自分の操作（⇧P・e・⌘Z・並び方の切り替え）で選んでいる行の位置が変わったときに、その行が見えるところまで
+   * スクロールする（↑↓ と同じく、はみ出したときだけ最小限に動かす）。キーだけで操作していて、選んだ行を見失わないように。
+   * 行が別の位置へ移る動き（layout。中身は transform）が終わってから測る（途中では前の位置で測ってしまう）。
+   * ほかのタブの変更や同期で並びが変わったときは呼ばない（動かさない）
+   */
+  revealSelected(): void {
+    const list = this.#listElement;
+    if (!list) return;
+    let waits = 0;
+    const reveal = () => {
+      const id = list.getAttribute("aria-activedescendant");
+      const row = id === null ? null : document.getElementById(id);
+      if (!row) return;
+      // まだ動いている（行を包む要素に layout の transform が残っている）なら、止まるまで待つ（長くても 0.5 秒）
+      let moving = false;
+      for (
+        let element = row.parentElement;
+        element && element !== list;
+        element = element.parentElement
+      ) {
+        if (getComputedStyle(element).transform !== "none") moving = true;
+      }
+      if (moving && waits++ < 10) setTimeout(reveal, 50);
+      else row.scrollIntoView?.({ block: "nearest" });
+    };
+    setTimeout(reveal, DURATION.base * 1000);
   }
 
   // --- 動かす -----------------------------------------------------------------------------

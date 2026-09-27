@@ -37,13 +37,14 @@ export function sortOf(ui: ListUi, screen: string): TaskSort {
   return sortsOf(ui).get(screen) ?? "manual";
 }
 
-/** その画面の並び方を変えて、覚える */
+/** その画面の並び方を変えて、覚える。選んでいる行の位置が変わるので、見えるところまで動かす */
 export function setSort(ui: ListUi, screen: string, sort: TaskSort): void {
   const map = sortsOf(ui);
   runInAction(() => {
     if (sort === "manual") map.delete(screen);
     else map.set(screen, sort);
   });
+  ui.revealSelected();
   try {
     localStorage.setItem(STORAGE_KEY, JSON.stringify(Object.fromEntries(map)));
   } catch {

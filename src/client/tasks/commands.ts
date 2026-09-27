@@ -267,12 +267,16 @@ export function deleteTasks(ui: ListUi, ids: readonly string[]): OperationResult
   });
 }
 
-/** 元に戻す（⌘Z とトーストの「元に戻す」）。戻ったタスクが今の一覧にあれば選ぶ */
+/**
+ * 元に戻す（⌘Z とトーストの「元に戻す」）。戻ったタスクが今の一覧にあれば選ぶ。
+ * 並び方（手動以外）で並べていると、戻した値で選んでいる行の位置が変わることがあるので、見えるところまで動かす
+ */
 export function undo(ui: ListUi): OperationResult {
   const result = ui.store.actions.undo();
   if (!result.ok) return result;
   ui.toaster.dismissUndo();
   const restored = result.ids.find((id) => ui.rows.some((row) => row.id === id));
   if (restored !== undefined) ui.select(restored);
+  ui.revealSelected();
   return result;
 }
