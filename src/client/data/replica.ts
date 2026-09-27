@@ -18,6 +18,7 @@ export type OperationKind =
   | "task.complete"
   | "task.uncomplete"
   | "task.move"
+  | "task.reorder"
   | "task.deadline"
   | "task.delete"
   | "project.create"

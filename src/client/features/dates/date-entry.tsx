@@ -167,7 +167,14 @@ const DateEntryPanel = observer(function DateEntryPanel({
   const entry = dateEntryOf(ui);
   const today = store.today;
   const { kind, taskIds } = request;
-  const current = kind === "schedule" ? task.scheduledOn : task.deadlineOn;
+  // 複数のタスクにかけるとき（7 の複数選択）は、今の値がそろっているときだけ出す
+  const targets = taskIds.flatMap((id) => {
+    const row = id === task.id ? task : store.task(id);
+    return row ? [row] : [];
+  });
+  const dateOf = (row: TaskRow) => (kind === "schedule" ? row.scheduledOn : row.deadlineOn);
+  const current = targets.every((row) => dateOf(row) === dateOf(task)) ? dateOf(task) : null;
+  const anyHasValue = targets.some((row) => dateOf(row) !== null);
   const [text, setText] = useState("");
   const parsed = text.trim() === "" ? null : parseDateInput(text, today);
   const [month, setMonth] = useState(() => monthOf(current ?? today));
@@ -201,7 +208,7 @@ const DateEntryPanel = observer(function DateEntryPanel({
       event.preventDefault();
       if (text.trim() === "") {
         // 締切は、欄を空にして Enter で外す。予定は何もせずに閉じる
-        if (kind === "deadline" && current !== null) commit(null);
+        if (kind === "deadline" && anyHasValue) commit(null);
         else finish();
       } else if (parsed !== null) {
         commit(parsed);
@@ -214,11 +221,26 @@ const DateEntryPanel = observer(function DateEntryPanel({
       ? parsed !== null && parsed <= today
       : parsed !== null &&
         parsed <= today &&
-        task.completedAt === null &&
-        (task.bucket === "scheduled" || task.bucket === "later");
+        targets.some(
+          (row) =>
+            row.completedAt === null && (row.bucket === "scheduled" || row.bucket === "later"),
+        );
 
   const label = kind === "schedule" ? "予定の日付" : "締切";
   const selected = parsed ?? current;
+  /** 何も打っていないときの一行（複数なら件数、今の値、締切の外し方） */
+  const emptyHint = [
+    targets.length > 1 ? `${targets.length}件` : null,
+    ...(kind === "deadline" && current !== null
+      ? [`締切 ${formatLongDate(current, today)}`, "空のまま Enter で外す"]
+      : kind === "deadline" && anyHasValue
+        ? ["空のまま Enter で締切を外す"]
+        : kind === "schedule" && current !== null
+          ? [`予定 ${formatLongDate(current, today)}`]
+          : []),
+  ]
+    .filter((part) => part !== null)
+    .join("・");
 
   // 行が一覧から消えた（抜けていく動きのあいだも）ら描かない。閉じるのは useDismissWhenGone
   if (!inList) return null;
@@ -262,13 +284,7 @@ const DateEntryPanel = observer(function DateEntryPanel({
           />
           <p aria-live="polite" className="min-h-5 px-1 text-xs leading-5">
             {text.trim() === "" ? (
-              <span className="text-muted-foreground">
-                {kind === "deadline" && current !== null
-                  ? `締切 ${formatLongDate(current, today)}・空のまま Enter で外す`
-                  : kind === "schedule" && current !== null
-                    ? `予定 ${formatLongDate(current, today)}`
-                    : ""}
-              </span>
+              <span className="text-muted-foreground">{emptyHint}</span>
             ) : parsed === null ? (
               <span className="text-muted-foreground">日付として読めません</span>
             ) : (
@@ -313,7 +329,9 @@ const Footer = observer(function Footer({
     "inline-flex h-7 items-center gap-1.5 rounded-md px-2 text-muted-foreground text-xs hover:bg-accent hover:text-foreground";
 
   if (kind === "deadline") {
-    if (task.deadlineOn === null) return null;
+    const store = ui.store;
+    const anyHasDeadline = taskIds.some((id) => (store.task(id) ?? task).deadlineOn !== null);
+    if (!anyHasDeadline) return null;
     return (
       <div className="flex justify-end border-t pt-1.5">
         <button

@@ -28,9 +28,9 @@ function isArchived(store: AppStore, id: string): boolean {
 
 function projectSections(groups: ProjectTaskGroups): TaskSection[] {
   return [
-    { key: "today", heading: "今日", rows: groups.today },
+    { key: "today", heading: "今日", rows: groups.today, reorderable: true },
     { key: "scheduled", heading: "予定", rows: groups.scheduled },
-    { key: "later", heading: "あとで", rows: groups.later },
+    { key: "later", heading: "あとで", rows: groups.later, reorderable: true },
     { key: "inbox", heading: "受信箱", rows: groups.inbox },
     {
       key: "completed",

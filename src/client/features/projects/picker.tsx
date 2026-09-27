@@ -43,11 +43,13 @@ function itemKey(item: PickerItem): string {
 /**
  * 打った文字に合う候補。プロジェクトは作成順で、名前の一部が合うもの（全角と半角、大文字と小文字は区別しない）。
  * 名前がちょうど同じものがなければ、最後に「「◯◯」を作成」。付いているプロジェクトを外す候補は、何も打っていないときだけ
+ * （複数のタスクにかけるときは、どれかにプロジェクトが付いていれば canClear）
  */
 export function pickerItems(
   projects: readonly ProjectRow[],
   query: string,
   currentProjectId: string | null,
+  canClear = currentProjectId !== null,
 ): PickerItem[] {
   const q = normalizeName(query);
   const items: PickerItem[] = projects
@@ -57,7 +59,7 @@ export function pickerItems(
   if (q !== "" && !projects.some((project) => normalizeName(project.name) === q)) {
     items.push({ kind: "create", name, label: `「${name}」を作成` });
   }
-  if (q === "" && currentProjectId !== null) {
+  if (q === "" && canClear) {
     items.push({ kind: "clear", label: "プロジェクトを外す" });
   }
   return items;
@@ -65,11 +67,16 @@ export function pickerItems(
 
 /**
  * 候補を開いているタスクと、広げる元。一覧の状態（ListUi）ごとに1つ。
+ * 複数のタスクにかけるとき（7 の複数選択）は、候補を1回だけ開き、決めたものをすべてに付ける。
+ * 候補は先頭のタスク（taskId）の行から広がる。
  * 画面が変わったときと、そのタスクが一覧からなくなったとき（同期・ほかのタブ）は閉じる
  * （候補の部品は行と一緒に消えるので、閉じたことを自分では知らせられない）
  */
 export class ProjectPicker {
+  /** 候補を描く行（taskIds の先頭） */
   taskId: string | null = null;
+  /** 決めたものを付けるタスク */
+  taskIds: readonly string[] = [];
   /** 広げる元の要素（開いたタスクのボタン）。null なら行から広げる */
   anchor: Element | null = null;
   /** 行ごとの「候補を開いているか」（行は自分の id だけを観測する） */
@@ -93,16 +100,22 @@ export class ProjectPicker {
     return this.#openFlags.has(taskId);
   }
 
-  open(taskId: string, anchor: Element | null = null): void {
+  /** 候補を開く。taskIds は1つの id か、上から見えている順の id の列 */
+  open(taskIds: string | readonly string[], anchor: Element | null = null): void {
+    const ids = typeof taskIds === "string" ? [taskIds] : [...taskIds];
+    const host = ids[0];
     this.close();
-    this.taskId = taskId;
+    if (host === undefined) return;
+    this.taskId = host;
+    this.taskIds = ids;
     this.anchor = anchor;
-    this.#openFlags.set(taskId, true);
+    this.#openFlags.set(host, true);
   }
 
   close(): void {
     if (this.taskId !== null) this.#openFlags.delete(this.taskId);
     this.taskId = null;
+    this.taskIds = [];
     this.anchor = null;
   }
 }
@@ -137,8 +150,20 @@ const ProjectPickerPopup = observer(function ProjectPickerPopup({
   const { store } = ui;
   const [query, setQuery] = useState("");
   const [anchor] = useState(() => picker.anchor);
-  const items = pickerItems(store.lists.projects, query, task.projectId);
-  const current = items.find((item) => item.kind === "project" && item.id === task.projectId);
+  const [taskIds] = useState(() => (picker.taskIds.length > 0 ? picker.taskIds : [task.id]));
+  // 複数のタスクにかけるときは、付いているプロジェクトがそろっているときだけ「今の値」として出す
+  const targets = taskIds.flatMap((id) => {
+    const row = id === task.id ? task : store.task(id);
+    return row ? [row] : [];
+  });
+  const shared = targets.every((row) => row.projectId === task.projectId) ? task.projectId : null;
+  const items = pickerItems(
+    store.lists.projects,
+    query,
+    shared,
+    targets.some((row) => row.projectId !== null),
+  );
+  const current = items.find((item) => item.kind === "project" && item.id === shared);
 
   /** 閉じて、開いた元へフォーカスを戻す（ボタンから開いたらボタンへ。ボタンが消えていたら一覧へ） */
   const close = () => {
@@ -150,8 +175,8 @@ const ProjectPickerPopup = observer(function ProjectPickerPopup({
   const choose = (item: PickerItem) => {
     const result =
       item.kind === "create"
-        ? createProjectFor(ui, [task.id], item.name)
-        : setTaskProject(ui, [task.id], item.kind === "project" ? item.id : null);
+        ? createProjectFor(ui, taskIds, item.name)
+        : setTaskProject(ui, taskIds, item.kind === "project" ? item.id : null);
     // オフラインで受け付けられなかったときは、打った名前を残して開いたままにする
     if (!result.ok && result.reason === "offline") return;
     close();
@@ -186,7 +211,9 @@ const ProjectPickerPopup = observer(function ProjectPickerPopup({
         <div className="border-b p-1">
           <ComboboxPrimitive.Input
             aria-label="プロジェクト"
-            placeholder="プロジェクト名"
+            placeholder={
+              taskIds.length > 1 ? `${taskIds.length}件のプロジェクト` : "プロジェクト名"
+            }
             autoFocus
             className="h-8 w-full rounded-md bg-transparent px-2 text-sm outline-none placeholder:text-muted-foreground/60"
             onKeyDown={(event) => {

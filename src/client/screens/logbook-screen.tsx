@@ -45,12 +45,23 @@ export const LogbookScreen = observer(function LogbookScreen() {
       const next = nextLogbookLimit(limit.get(), countRows(store.lists.logbook));
       if (next !== limit.get()) limit.set(next);
     });
+  // ⌘K の検索で選んだタスクがまだ描いていない続きにあれば、そこまで読み込む
+  const reveal = (taskId: string) =>
+    runInAction(() => {
+      const index = store.lists.logbook
+        .flatMap((day) => day.tasks)
+        .findIndex((task) => task.id === taskId);
+      if (index >= limit.get()) {
+        limit.set(Math.ceil((index + 1) / LOGBOOK_PAGE_SIZE) * LOGBOOK_PAGE_SIZE);
+      }
+    });
   const view = useListView(() => ({
     key: "logbook",
     kind: "logbook",
     sections: () => logbookSections(store.lists.logbook, limit.get(), store.today),
     addTo: { bucket: "inbox", label: "受信箱に追加" },
     onReachEnd: showMore,
+    reveal,
   }));
   const total = countRows(store.lists.logbook);
   const hidden = total - limit.get();

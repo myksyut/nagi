@@ -2,6 +2,7 @@ import { observer } from "mobx-react-lite";
 import { useStore } from "@/data";
 import { type KeyBinding, type KeyContext, registerKeyBindings } from "@/keyboard/keymap";
 import { cn } from "@/lib/utils";
+import { openRowsOf, selectionForOperation } from "@/tasks/commands";
 import {
   DETAIL_ORDER,
   ROW_META_ORDER,
@@ -16,18 +17,22 @@ import { deadlineStatus, formatLongDate, formatShortDateWithWeekday } from "./la
 
 /**
  * 5 の登録：d（日付を決めて予定へ）と ⇧D（締切）のキー、行の右側の締切の表示、
- * 開いたタスクの「いつやる」と「締切」の小さなボタン（押すと日付の入力が開く）
+ * 開いたタスクの「いつやる」と「締切」の小さなボタン（押すと日付の入力が開く）。
+ * d・⇧D は、選んでいるすべての未完了の行にかける（7 の複数選択）
  */
 
-const selectedOpenTask = ({ ui }: KeyContext) => {
-  const task = ui.selected;
-  return task && task.completedAt === null ? task : undefined;
-};
+const hasOpenSelected = ({ ui }: KeyContext) =>
+  ui.selectedRows.some((row) => row.completedAt === null);
 
+/**
+ * 選んでいる未完了の行に、日付の入力を1回だけ開く（決めた日付をすべての行にかける。先頭の行から広がる）。
+ * 選択が 500 件を超えていたら、開かずに知らせる
+ */
 function openDateEntry(kind: DateEntryKind) {
-  return (context: KeyContext) => {
-    const task = selectedOpenTask(context);
-    if (task) dateEntryOf(context.ui).open(kind, [task.id], context.ui.view);
+  return ({ ui }: KeyContext) => {
+    const rows = selectionForOperation(ui);
+    const ids = openRowsOf(rows ?? []).map((row) => row.id);
+    if (ids.length > 0) dateEntryOf(ui).open(kind, ids, ui.view);
   };
 }
 
@@ -37,7 +42,7 @@ export const DATE_KEY_BINDINGS: readonly KeyBinding[] = [
     label: "日付を決めて予定へ",
     group: "いつやる",
     keys: ["d"],
-    when: (context) => selectedOpenTask(context) !== undefined,
+    when: hasOpenSelected,
     run: openDateEntry("schedule"),
   },
   {
@@ -45,7 +50,7 @@ export const DATE_KEY_BINDINGS: readonly KeyBinding[] = [
     label: "締切",
     group: "いつやる",
     keys: ["Shift+d"],
-    when: (context) => selectedOpenTask(context) !== undefined,
+    when: hasOpenSelected,
     run: openDateEntry("deadline"),
   },
 ];

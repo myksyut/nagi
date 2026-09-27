@@ -61,6 +61,16 @@ export type Destination =
   | { bucket: Exclude<Bucket, "scheduled"> }
   | { bucket: "scheduled"; on: string };
 
+/**
+ * 並べ替えの1か所ぶん：ids（上から入れる順）を、after の行の後ろ・before の行の前へ入れる。
+ * after と before は、画面で見えている動かさない行（端なら null。両方 null は受け付けない）
+ */
+export type Placement = {
+  ids: readonly string[];
+  after: string | null;
+  before: string | null;
+};
+
 type ActionsOptions = {
   replica: Replica;
   day: LogicalDay;
@@ -243,6 +253,50 @@ export class TaskActions {
   }
 
   /**
+   * 並べ替え（⌥↑↓・ドラッグ）。書き換えるのは動かした行の rank だけで、置き場は変えない。
+   * 動かす行は、同じ置き場の未完了のタスク。1回の操作で何か所に入れてもよい（まとめて戻る）。
+   * 新しい rank は、隣の行とのあいだで、その置き場のほかの行（完了済み・削除済みや、画面に出ていない
+   * ほかのプロジェクトの行も含む）の rank と重ならないところに作る（元に戻したときに並びが崩れないように）
+   */
+  reorderTasks(placements: readonly Placement[]): OperationResult {
+    const moving = new Set(placements.flatMap((placement) => placement.ids));
+    const rows = this.#rows([...moving]);
+    const bucket = rows[0]?.bucket;
+    if (
+      bucket === undefined ||
+      rows.length !== moving.size ||
+      rows.some(
+        (task) => task.bucket !== bucket || task.completedAt !== null || task.deletedAt !== null,
+      )
+    ) {
+      return { ok: false, reason: "invalid" };
+    }
+    const rankOf = (id: string | null) =>
+      id === null ? null : (this.#replica.task(id)?.peek().rank ?? undefined);
+    // 動かさない行の rank（小さい順）
+    const fixed = this.#ranksIn(bucket, moving).sort();
+    const updates: { id: string; changes: TaskChanges }[] = [];
+    for (const { ids, after, before } of placements) {
+      if (ids.length === 0) continue;
+      const afterRank = rankOf(after);
+      const beforeRank = rankOf(before);
+      if (afterRank === undefined || beforeRank === undefined)
+        return { ok: false, reason: "invalid" };
+      if (afterRank === null && beforeRank === null) return { ok: false, reason: "invalid" };
+      // after の直後（次の rank の手前）か、after が端なら before の直前（前の rank の後ろ）に入れる
+      const [lower, upper] =
+        afterRank !== null
+          ? [afterRank, fixed.find((rank) => rank > afterRank) ?? null]
+          : [fixed.findLast((rank) => rank < (beforeRank ?? "")) ?? null, beforeRank];
+      const ranks = ranksBetween(lower, upper, ids.length);
+      ids.forEach((id, i) => {
+        updates.push({ id, changes: { rank: ranks[i] } });
+      });
+    }
+    return this.#updateMany("task.reorder", updates);
+  }
+
+  /**
    * 締切を付ける・外す（null）。未完了の予定・あとでのタスクに今日以前の締切を付けたら、同じ操作で
    * 今日の到着の位置（今日来たタスクの後ろ、それ以外の今日のタスクの前）へ移し、到着の印（arrivedOn）を付ける。
    * 受信箱（振り分けの途中）と、すでに今日にあるタスクは動かさない。
@@ -386,13 +440,16 @@ export class TaskActions {
     return rows;
   }
 
-  #ranksIn(bucket: Bucket): string[] {
+  /** 置き場にある行（完了済み・削除済みも含む）の rank。except の行は除く */
+  #ranksIn(bucket: Bucket, except?: ReadonlySet<string>): string[] {
     const ranks: string[] = [];
-    for (const row of this.#replica.taskIndex.rows(bucket)) ranks.push(row.peek().rank);
+    for (const row of this.#replica.taskIndex.rows(bucket)) {
+      if (!except?.has(row.id)) ranks.push(row.peek().rank);
+    }
     for (const partition of ["completed", "deleted"] as const) {
       for (const row of this.#replica.taskIndex.rows(partition)) {
         const task = row.peek();
-        if (task.bucket === bucket) ranks.push(task.rank);
+        if (task.bucket === bucket && !except?.has(task.id)) ranks.push(task.rank);
       }
     }
     return ranks;

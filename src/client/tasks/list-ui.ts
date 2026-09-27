@@ -12,7 +12,9 @@ import { Toaster } from "./toaster";
 
 /**
  * 画面側の一覧の状態。画面（リスト）ごとの中身は ListView で受け取り、状態は1つだけ持つ。
- * - 選択中：1つ（↑↓ で動かす。キーの操作は選択中のタスクに働く）
+ * - 選択中：ふだんは1つ（↑↓ で動かす）。⇧↑↓ で範囲を広げ、⌘クリックで1行ずつ足し引きできる。
+ *   選択の中の1行は「カーソル」（selectedId。↑↓ の起点で、ポップオーバーはこの行から広がる）。
+ *   キーの操作は、選んでいるすべての行に働く
  * - 開いているタスク：1つ（その場で下に広がる）
  * - 追加欄：開いているか、下書き
  * - 閉じられるまとまり（今日の「完了 N件」）の開閉
@@ -46,6 +48,11 @@ export type TaskSection = {
   rows: readonly TaskRow[];
   /** 閉じられるまとまり（今日の「完了 N件」）。最初は閉じていて、閉じているあいだは行を描かず、↑↓ でも選ばない */
   fold?: { label: string };
+  /**
+   * 自分で決めた順（rank）で並ぶまとまり。⌥↑↓ とドラッグで、このまとまりの中で並べ替えられる
+   * （今日、あとでのプロジェクトごとのまとまり、プロジェクトの画面の「今日」と「あとで」）
+   */
+  reorderable?: boolean;
 };
 
 /** 画面ごとの一覧の中身。画面が useListView で渡す */
@@ -60,6 +67,8 @@ export type ListView = {
   addInSection?: string;
   /** ↓ で一番下の行より先へ進もうとしたとき（完了ログの続きを読み込むなど） */
   onReachEnd?: () => void;
+  /** そのタスクの行を一覧に出す（⌘K の検索で選んだとき。完了ログの続きを読み込むなど） */
+  reveal?: (taskId: string) => void;
 };
 
 function sameSections(a: readonly TaskSection[], b: readonly TaskSection[]): boolean {
@@ -83,7 +92,10 @@ export class ListUi {
   readonly toaster = new Toaster();
 
   view: ListView | null = null;
+  /** 選択の中のカーソル（↑↓ の起点）。何も選んでいなければ null */
   selectedId: string | null = null;
+  /** 選んでいる行（カーソルを含む。並びは決めない） */
+  selection: ReadonlySet<string> = new Set();
   openId: string | null = null;
   adding = false;
   /** 追加欄の下書き（閉じても残る） */
@@ -102,11 +114,18 @@ export class ListUi {
   readonly #openFolds = observable.set<string>();
   /** 行ごとの「選択中か」「開いているか」。行は自分の id だけを観測するので、選択が動いても描き直すのは2行だけ */
   readonly #selectedFlags = observable.map<string, boolean>();
+  readonly #cursorFlags = observable.map<string, boolean>();
   readonly #openFlags = observable.map<string, boolean>();
   /** 画面ごとに最後に選んでいたタスク（リストを切り替えて戻ったときに戻す） */
   readonly #selectionByView = new Map<string, string>();
   /** 選択中の行が一覧の何番目だったか（行が消えたときに、同じ位置の行を選ぶ） */
   #lastIndex = -1;
+  /** ⇧↑↓ で広げる範囲の起点 */
+  #anchorId: string | null = null;
+  /** ⌘クリックで足した行（⇧↑↓ の範囲とは別に、選んだままにする） */
+  #base: ReadonlySet<string> = new Set();
+  /** ⌘K の検索で選んだタスク。そのリストが開いたら（開いていれば今すぐ）選ぶ */
+  #reveal: { taskId: string; viewKey: string } | null = null;
   #listElement: HTMLElement | null = null;
 
   constructor(store: AppStore) {
@@ -114,6 +133,7 @@ export class ListUi {
     makeObservable<ListUi, "applySelection" | "applyOpen">(this, {
       view: observableRef,
       selectedId: observable,
+      selection: observableRef,
       openId: observable,
       adding: observable,
       addDraft: observable,
@@ -121,11 +141,16 @@ export class ListUi {
       sections: computed({ equals: sameSections }),
       rows: computed({ equals: compareShallow }),
       selected: computed,
+      selectedIds: computed({ equals: compareShallow }),
+      selectedRows: computed({ equals: compareShallow }),
       draftCount: computed,
       setView: true,
       clearView: true,
       select: true,
       moveSelection: true,
+      extendSelection: true,
+      toggleInSelection: true,
+      reveal: true,
       open: true,
       close: true,
       toggleOpen: true,
@@ -159,14 +184,46 @@ export class ListUi {
     return rows;
   }
 
+  /** 選択のカーソルの行 */
   get selected(): TaskRow | undefined {
     const id = this.selectedId;
     return id === null ? undefined : this.rows.find((row) => row.id === id);
   }
 
+  /** 選んでいる行の id（上から見えている順） */
+  get selectedIds(): readonly string[] {
+    return this.selectedRows.map((row) => row.id);
+  }
+
+  /** 選んでいる行（上から見えている順） */
+  get selectedRows(): readonly TaskRow[] {
+    const selection = this.selection;
+    if (selection.size === 0) return [];
+    return this.rows.filter((row) => selection.has(row.id));
+  }
+
+  /** そのタスクの行があるまとまり（閉じているまとまりも含む） */
+  sectionOf(taskId: string): TaskSection | undefined {
+    return this.sections.find((section) => section.rows.some((row) => row.id === taskId));
+  }
+
+  /** ids の行がすべて入っている、並べ替えられるまとまり（なければ undefined） */
+  reorderableSectionOf(ids: readonly string[]): TaskSection | undefined {
+    const first = ids[0];
+    const section = first === undefined ? undefined : this.sectionOf(first);
+    if (!section?.reorderable) return undefined;
+    const inSection = new Set(section.rows.map((row) => row.id));
+    return ids.every((id) => inSection.has(id)) ? section : undefined;
+  }
+
   /** 行ごとに「選択中か」を読む（その行の分だけ観測する） */
   isSelected(id: string): boolean {
     return this.#selectedFlags.has(id);
+  }
+
+  /** 行ごとに「選択のカーソルか」を読む（その行の分だけ観測する） */
+  isCursor(id: string): boolean {
+    return this.#cursorFlags.has(id);
   }
 
   /** 行ごとに「開いているか」を読む（その行の分だけ観測する） */
@@ -213,6 +270,7 @@ export class ListUi {
     this.applySelection(
       remembered !== null && this.rows.some((row) => row.id === remembered) ? remembered : null,
     );
+    this.#applyReveal();
   }
 
   /** 画面が閉じたとき */
@@ -249,6 +307,66 @@ export class ListUi {
     const id = rows[next]?.id ?? null;
     if (this.openId !== null && this.openId !== id) this.applyOpen(null);
     this.applySelection(id);
+  }
+
+  /**
+   * ⇧↑↓：選択の範囲を広げる・縮める。起点（最初に選んだ行）からカーソルまでを選ぶ。
+   * 何も選んでいなければ ↑↓ と同じ。開いているタスクは閉じる
+   */
+  extendSelection(delta: number): void {
+    const rows = this.rows;
+    const cursor =
+      this.selectedId === null ? -1 : rows.findIndex((row) => row.id === this.selectedId);
+    if (cursor < 0) {
+      this.moveSelection(delta);
+      return;
+    }
+    const anchorIndex = rows.findIndex((row) => row.id === this.#anchorId);
+    const anchor = anchorIndex < 0 ? cursor : anchorIndex;
+    const next = Math.min(Math.max(cursor + delta, 0), rows.length - 1);
+    if (this.openId !== null) this.applyOpen(null);
+    const range = rows.slice(Math.min(anchor, next), Math.max(anchor, next) + 1);
+    this.#setSelection(
+      [...this.#base, ...range.map((row) => row.id)],
+      rows[next]?.id ?? null,
+      rows[anchor]?.id ?? null,
+      this.#base,
+    );
+  }
+
+  /**
+   * ⌘クリック：その行を選択に足す・選択から外す。足した行がカーソルになる。
+   * 外したときは、いちばん近い選んでいる行（同じ距離なら上）がカーソルになる
+   */
+  toggleInSelection(id: string): void {
+    const rows = this.rows;
+    const index = rows.findIndex((row) => row.id === id);
+    if (index < 0) return;
+    if (this.openId !== null) this.applyOpen(null);
+    if (!this.selection.has(id)) {
+      const next = new Set([...this.selectedIds, id]);
+      this.#setSelection(next, id, id, next);
+      return;
+    }
+    const remaining = new Set(this.selectedIds.filter((other) => other !== id));
+    let cursor: string | null = null;
+    let distance = Number.POSITIVE_INFINITY;
+    rows.forEach((row, i) => {
+      if (remaining.has(row.id) && Math.abs(i - index) < distance) {
+        cursor = row.id;
+        distance = Math.abs(i - index);
+      }
+    });
+    this.#setSelection(remaining, cursor, cursor, remaining);
+  }
+
+  /**
+   * ⌘K の検索で選んだタスクを、そのリスト（viewKey）で選ぶ。リストがまだ開いていなければ、開いたときに選ぶ。
+   * 閉じているまとまり（今日の「完了 N件」）にあれば開き、完了ログなら続きを読み込む
+   */
+  reveal(taskId: string, viewKey: string): void {
+    this.#reveal = { taskId, viewKey };
+    this.#applyReveal();
   }
 
   // --- 開く -------------------------------------------------------------------------------
@@ -363,11 +481,48 @@ export class ListUi {
     if (id !== null) this.#openFlags.set(id, true);
   }
 
+  /** 1行だけを選ぶ（null なら何も選ばない） */
   protected applySelection(id: string | null): void {
-    if (this.selectedId !== null) this.#selectedFlags.delete(this.selectedId);
-    this.selectedId = id;
-    if (id !== null) this.#selectedFlags.set(id, true);
-    this.#lastIndex = id === null ? -1 : this.rows.findIndex((row) => row.id === id);
+    this.#setSelection(id === null ? [] : [id], id, id, new Set());
+  }
+
+  /** 選択を入れ替える。行ごとの「選択中か」は、変わった行の分だけ書き換える */
+  #setSelection(
+    ids: Iterable<string>,
+    cursor: string | null,
+    anchor: string | null,
+    base: ReadonlySet<string>,
+  ): void {
+    const next = new Set(ids);
+    for (const id of this.selection) if (!next.has(id)) this.#selectedFlags.delete(id);
+    for (const id of next) if (!this.selection.has(id)) this.#selectedFlags.set(id, true);
+    this.selection = next;
+    if (this.selectedId !== cursor) {
+      if (this.selectedId !== null) this.#cursorFlags.delete(this.selectedId);
+      if (cursor !== null) this.#cursorFlags.set(cursor, true);
+    }
+    this.selectedId = cursor;
+    this.#anchorId = anchor;
+    this.#base = base;
+    this.#lastIndex = cursor === null ? -1 : this.rows.findIndex((row) => row.id === cursor);
+  }
+
+  #applyReveal(): void {
+    const request = this.#reveal;
+    const view = this.view;
+    if (!request || !view || view.key !== request.viewKey) return;
+    this.#reveal = null;
+    view.reveal?.(request.taskId);
+    const section = this.sectionOf(request.taskId);
+    if (!section) return;
+    if (section.fold && !this.isFoldOpen(section.key)) {
+      this.#openFolds.add(`${view.key}:${section.key}`);
+    }
+    this.adding = false;
+    this.applyOpen(null);
+    this.applySelection(request.taskId);
+    // 開いたリストの一覧へフォーカスを移す（そのまま ↑↓ やキーの操作を続けられるように）
+    this.focusList();
   }
 
   #rememberSelection(): void {
@@ -376,7 +531,10 @@ export class ListUi {
     else this.#selectionByView.set(this.view.key, this.selectedId);
   }
 
-  /** 選択中や開いている行が一覧から消えたら（同期・元に戻す・ほかのタブ）、同じ位置の行を選ぶ */
+  /**
+   * 選択中や開いている行が一覧から消えたら（同期・元に戻す・ほかのタブ）、同じ位置の行を選ぶ。
+   * 複数選んでいるときは、消えた行だけを選択から外す（カーソルの行が消えたら、同じ位置の1行を選ぶ）
+   */
   #followRows(rows: readonly TaskRow[]): void {
     runInAction(() => {
       if (this.openId !== null && !rows.some((row) => row.id === this.openId)) this.applyOpen(null);
@@ -384,6 +542,17 @@ export class ListUi {
       const index = rows.findIndex((row) => row.id === this.selectedId);
       if (index >= 0) {
         this.#lastIndex = index;
+        if (this.selection.size <= 1) return;
+        const visible = new Set(rows.map((row) => row.id));
+        if ([...this.selection].some((id) => !visible.has(id))) {
+          const anchor = this.#anchorId;
+          this.#setSelection(
+            [...this.selection].filter((id) => visible.has(id)),
+            this.selectedId,
+            anchor !== null && visible.has(anchor) ? anchor : this.selectedId,
+            new Set([...this.#base].filter((id) => visible.has(id))),
+          );
+        }
         return;
       }
       const fallback = rows[Math.min(this.#lastIndex, rows.length - 1)];
