@@ -421,6 +421,51 @@ describe("完了の条件5：右下の「＋」と n では小さな追加欄が
   });
 });
 
+describe("小さな詳細", () => {
+  it("タスクを押すと小さな詳細が開き、予定の日付を変えて別のマスへ移っても、移った先のタスクから開いたまま", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "詳細A", bucket: "scheduled", scheduledOn: "2026-09-30" }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { store } = await openCalendar(server);
+
+    await user.click(within(cell("2026-09-30")).getByRole("button", { name: "詳細A" }));
+    expect(await screen.findByRole("dialog", { name: "「詳細A」の詳細" })).toBeInTheDocument();
+
+    act(() => {
+      store.actions.moveTasks([task.id], { bucket: "scheduled", on: "2026-10-02" });
+    });
+
+    // 押した要素は 9/30 のマスから消えたが、10/2 のマスのタスクから開き直している（閉じない）
+    const moved = within(cell("2026-10-02")).getByRole("button", { name: "詳細A" });
+    await waitFor(() =>
+      expect(screen.getByRole("dialog", { name: "「詳細A」の詳細" })).toBeInTheDocument(),
+    );
+    expect(moved).toHaveClass("row-selected");
+  });
+
+  it("開いたタスクがカレンダーから消えたら（完了したなど）、小さな詳細は閉じる", async () => {
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "詳細B", bucket: "scheduled", scheduledOn: "2026-09-30" }),
+    );
+    const user = userEvent.setup({ advanceTimers: vi.advanceTimersByTime });
+    const { store } = await openCalendar(server);
+
+    await user.click(within(cell("2026-09-30")).getByRole("button", { name: "詳細B" }));
+    await screen.findByRole("dialog", { name: "「詳細B」の詳細" });
+
+    act(() => {
+      store.actions.completeTasks([task.id]);
+    });
+
+    await waitFor(() =>
+      expect(screen.queryByRole("dialog", { name: "「詳細B」の詳細" })).toBeNull(),
+    );
+  });
+});
+
 describe("完了の条件6：その他（6・[ ]・⌘K）", () => {
   it("6 でカレンダーが開く", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
