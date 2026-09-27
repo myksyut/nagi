@@ -70,7 +70,6 @@ describe("右下の「＋」", () => {
 
     await user.click(addButton());
     expect(screen.getByRole("textbox", { name: "受信箱に追加" })).toBeInTheDocument();
-    void store;
   });
 
   it("完了ログで押すと「受信箱に追加」が開く（n と同じ）", async () => {
@@ -81,7 +80,6 @@ describe("右下の「＋」", () => {
 
     await user.click(addButton());
     expect(screen.getByRole("textbox", { name: "受信箱に追加" })).toBeInTheDocument();
-    void store;
   });
 
   it("プロジェクトで押すと、そのプロジェクトの「あとで」に追加欄が開く", async () => {
@@ -136,7 +134,6 @@ describe("右下の「＋」", () => {
     await user.pointer({ target: addButton(), keys: "[MouseLeft>]" });
     expect(input).toHaveFocus();
     await user.pointer({ target: addButton(), keys: "[/MouseLeft]" });
-    void store;
   });
 
   it("マウスを乗せたときの「N」は Kbd（aria-hidden）で、キーマップの先頭のキーから作る", async () => {
@@ -150,7 +147,6 @@ describe("右下の「＋」", () => {
     expect(kbd).not.toBeNull();
     expect(kbd).toHaveAttribute("aria-hidden", "true");
     expect(kbd?.textContent).toBe("N");
-    void store;
   });
 });
 
