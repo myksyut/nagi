@@ -42,7 +42,7 @@ export function WaitingInput({
       data-keymap="off"
       data-slot="waiting-input"
       className={cn(
-        "z-50 flex flex-col gap-1.5 rounded-lg border bg-popover p-2 text-popover-foreground text-sm shadow-lg/5",
+        "glass z-50 flex flex-col gap-1.5 rounded-lg border border-glass-edge bg-popover p-2 text-popover-foreground text-sm shadow-xl/30",
         className,
       )}
       style={style}
@@ -76,7 +76,7 @@ export function WaitingInput({
           読み込めませんでした・
           <button
             type="button"
-            className="rounded-sm text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+            className="rounded-sm text-primary-text outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
             onClick={onRetry}
           >
             もう一度
@@ -128,7 +128,7 @@ export function LoadFailedNote({ what, onRetry }: { what: string; onRetry: () =>
       {what}を読み込めませんでした・
       <button
         type="button"
-        className="rounded-sm text-primary outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
+        className="rounded-sm text-primary-text outline-none hover:underline focus-visible:ring-2 focus-visible:ring-ring"
         onClick={onRetry}
       >
         もう一度

@@ -19,7 +19,13 @@ export function LoginScreen() {
   return (
     <main className="flex min-h-dvh items-center justify-center px-4">
       <div className="flex w-full max-w-64 flex-col items-center gap-6">
-        <h1 className="font-semibold text-2xl tracking-tight">nagi</h1>
+        <div className="flex items-center gap-2.5">
+          <span
+            aria-hidden="true"
+            className="size-6 rounded-lg bg-(image:--brand) shadow-[0_0_18px_var(--brand-glow)]"
+          />
+          <h1 className="font-semibold text-2xl tracking-tight">nagi</h1>
+        </div>
         {/* GitHub へは画面ごと移る（/auth/login は Worker が返すリダイレクト） */}
         <Button className="w-full" render={<a href="/auth/login" />}>
           GitHub でログイン

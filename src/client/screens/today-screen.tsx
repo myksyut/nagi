@@ -1,6 +1,7 @@
 import { observer } from "mobx-react-lite";
 import { useStore } from "@/data";
 import { formatDayHeading } from "@/lib/format-date";
+import { AddHint } from "@/tasks/add-hint";
 import { TaskList } from "@/tasks/task-list";
 import { useListView } from "@/tasks/ui-context";
 import { ListScreen } from "./list-screen";
@@ -27,7 +28,12 @@ export const TodayScreen = observer(function TodayScreen() {
   }));
 
   return (
-    <ListScreen title="今日" subtitle={formatDayHeading(store.today)}>
+    <ListScreen
+      title="今日"
+      list="today"
+      date={formatDayHeading(store.today)}
+      count={() => store.lists.todayCount}
+    >
       <TaskList view={view} label="今日" empty={<TodayEmpty />} />
     </ListScreen>
   );
@@ -39,6 +45,7 @@ const TodayEmpty = observer(function TodayEmpty() {
   return (
     <>
       <p>今日のタスクはまだありません</p>
+      <AddHint />
       {lists.inboxCount > 0 && <p className="mt-1 text-xs">受信箱に {lists.inboxCount} 件</p>}
     </>
   );

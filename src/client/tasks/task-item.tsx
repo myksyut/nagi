@@ -79,10 +79,12 @@ const TaskRowView = observer(function TaskRowView({
         // 開いている行（タイトルの入力欄がある）と完了した行はつかめない
         draggable={present && !open && !done}
         className={cn(
-          "relative flex min-h-9 cursor-default items-center gap-2.5 rounded-md px-2.5 py-1.5 text-sm",
-          selected && "bg-primary/12",
+          "relative flex min-h-10 cursor-default items-center gap-3 rounded-[10px] px-3 py-2 text-sm",
+          // 選んだ行は紫の淡い背景と細い輪郭の光。ホバーは白をわずかに重ねる（どちらも即時。動かさない）
+          selected ? "row-selected" : "hover:bg-(--row-hover)",
           drag.isDragging(task.id) && "opacity-50",
-          "group-focus-visible/list:data-cursor:ring-1 group-focus-visible/list:data-cursor:ring-ring/70",
+          // フォーカスの輪郭は outline で、選んだ行の光（box-shadow）の外側に別に出す
+          "group-focus-visible/list:data-cursor:outline-2 group-focus-visible/list:data-cursor:outline-offset-2 group-focus-visible/list:data-cursor:outline-ring",
         )}
         onClick={(event) => {
           // ⌘クリックで1行ずつ選択に足す・外す
@@ -97,19 +99,13 @@ const TaskRowView = observer(function TaskRowView({
           <span
             aria-hidden="true"
             className={cn(
-              "pointer-events-none absolute inset-x-1 h-0.5 rounded-full bg-primary",
+              "pointer-events-none absolute inset-x-1 h-0.5 rounded-full bg-primary-text",
               dropEdge === "before" ? "-top-px" : "-bottom-px",
             )}
           />
         )}
-        {arrived && (
-          <span
-            role="img"
-            aria-label="今日来たタスク"
-            className="absolute top-1/2 -left-1 size-1.5 -translate-y-1/2 rounded-full bg-primary"
-          />
-        )}
         <CompleteButton
+          taskId={task.id}
           done={done}
           title={task.title}
           onToggle={() => toggleComplete(ui, [task.id])}
@@ -121,22 +117,41 @@ const TaskRowView = observer(function TaskRowView({
             {task.title}
           </span>
         )}
-        <RowMeta task={task} view={view} />
+        <RowMeta task={task} view={view} arrived={arrived} />
       </div>
       {open && present && <TaskDetail task={task} view={view} />}
     </>
   );
 });
 
-/** 行の右側の情報の枠。項目は registerRowMeta で足す（extensions.ts） */
-function RowMeta({ task, view }: { task: TaskRow; view: ListView }) {
+/**
+ * 行の右側の情報の枠。項目は registerRowMeta で足す（extensions.ts）。
+ * 先頭に「今日来た」の印（日付の到来や締切で今日に入った日のあいだ）
+ */
+function RowMeta({ task, view, arrived }: { task: TaskRow; view: ListView; arrived: boolean }) {
   const items = rowMetaItems();
-  if (items.length === 0) return null;
+  if (items.length === 0 && !arrived) return null;
   return (
-    <span className="ml-auto flex flex-none items-center gap-3 whitespace-nowrap text-muted-foreground text-xs empty:hidden">
+    <span className="ml-auto flex flex-none items-center gap-2.5 whitespace-nowrap text-muted-foreground text-xs empty:hidden">
+      {arrived && <ArrivedMark />}
       {items.map(({ id, Component }) => (
         <Component key={id} task={task} view={view} />
       ))}
     </span>
+  );
+}
+
+/**
+ * 「今日来た」の小さな印（琥珀の枠）。文字は CSS で出す（行の文字（textContent）はタイトルと右側の情報のまま）。
+ * 読み上げは「今日来たタスク」
+ */
+function ArrivedMark() {
+  return (
+    <span
+      role="img"
+      aria-label="今日来たタスク"
+      data-label="今日来た"
+      className="rounded-md border border-(--list-today)/35 px-1.5 text-(--list-today) text-[10px] leading-4 after:content-[attr(data-label)]"
+    />
   );
 }

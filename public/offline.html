@@ -4,18 +4,21 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <meta name="color-scheme" content="dark" />
-    <meta name="theme-color" content="#141416" />
+    <meta name="theme-color" content="#0a0b10" />
     <title>オフライン — nagi</title>
     <!--
       オフラインで開いたときに Service Worker（sw.js）が出すページ。「オフラインです」とだけ出し、
       つながったら自動で読み込み直す。ほかのファイルに頼らないよう、すべてここに書く
-      （色は src/client/styles.css の .dark の --background・--muted-foreground とそろえる）
+      （色は src/client/styles.css の .dark の --background・--muted-foreground・--glow とそろえる）
     -->
     <style>
       :root {
         color-scheme: dark;
-        background: #141416;
-        color: #8b8b93;
+        background:
+          radial-gradient(900px 380px at 62% -120px, rgb(124 92 255 / 28%), transparent 70%),
+          radial-gradient(600px 300px at 110% 110%, rgb(56 189 248 / 10%), transparent 70%),
+          #0a0b10;
+        color: #7d8197;
         font-family: "Hiragino Sans", "Hiragino Kaku Gothic ProN", system-ui, sans-serif;
         -webkit-font-smoothing: antialiased;
       }

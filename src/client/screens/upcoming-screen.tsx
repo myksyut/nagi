@@ -1,6 +1,7 @@
 import { observer } from "mobx-react-lite";
 import { useStore } from "@/data";
 import { sectionsByDate } from "@/features/dates/labels";
+import { AddHint } from "@/tasks/add-hint";
 import { TaskList } from "@/tasks/task-list";
 import { useListView } from "@/tasks/ui-context";
 import { ListScreen } from "./list-screen";
@@ -19,8 +20,17 @@ export const UpcomingScreen = observer(function UpcomingScreen() {
   }));
 
   return (
-    <ListScreen title="予定">
-      <TaskList view={view} label="予定" empty={<p>予定のタスクはありません</p>} />
+    <ListScreen title="予定" list="upcoming" count={() => store.lists.scheduled.length}>
+      <TaskList view={view} label="予定" empty={<Empty />} />
     </ListScreen>
   );
 });
+
+function Empty() {
+  return (
+    <>
+      <p>予定のタスクはありません</p>
+      <AddHint />
+    </>
+  );
+}

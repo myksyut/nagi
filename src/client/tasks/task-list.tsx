@@ -114,7 +114,7 @@ export const TaskList = observer(function TaskList({
         }
       }}
       className={cn(
-        "group/list relative mt-5 rounded-lg outline-none",
+        "group/list relative mt-6.5 flex flex-col gap-0.5 rounded-lg outline-none",
         // 選ぶ前に Tab で入ったときは一覧そのものに輪郭を出す（選んでいれば、選択中の行に出す）
         "[&:focus-visible:not([aria-activedescendant])]:ring-2 [&:focus-visible:not([aria-activedescendant])]:ring-ring/60 [&:focus-visible:not([aria-activedescendant])]:ring-offset-4 [&:focus-visible:not([aria-activedescendant])]:ring-offset-background",
       )}
@@ -234,7 +234,7 @@ function ItemView({ item, view, empty }: { item: Item; view: ListView; empty?: R
       return (
         <h2
           className={cn(
-            "mb-1 px-2.5 font-medium text-muted-foreground text-xs",
+            "mb-1 px-3 font-medium text-faint-foreground text-xs",
             !item.first && "mt-6",
           )}
         >
@@ -256,11 +256,11 @@ const FoldHeader = observer(function FoldHeader({
 }) {
   const ui = useUi();
   return (
-    <div className="mt-4 border-t pt-2">
+    <div className="mt-3">
       <button
         type="button"
         aria-expanded={open}
-        className="flex items-center gap-1 rounded-md px-2.5 py-1 text-muted-foreground text-sm outline-none hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/70"
+        className="flex items-center gap-1 rounded-md px-3 py-1.5 text-faint-foreground text-sm outline-none hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring"
         onClick={() => ui.toggleFold(section.key)}
       >
         <ChevronRightIcon

@@ -13,7 +13,7 @@ const logbook = defer(() => import("./logbook-screen"));
 export function LazyLogbookScreen() {
   const { module, failed, retry } = useDeferred(logbook);
   return (
-    <ListScreen title="完了ログ">
+    <ListScreen title="完了ログ" list="logbook">
       {module ? (
         <module.LogbookList />
       ) : (

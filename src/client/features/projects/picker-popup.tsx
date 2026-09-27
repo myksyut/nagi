@@ -10,6 +10,7 @@ import {
 } from "@/components/ui/combobox";
 import type { TaskRow } from "@/data";
 import { isComposingKey } from "@/keyboard/keys";
+import { projectColorOf } from "@/lib/project-color";
 import { taskRowId } from "@/tasks/task-item";
 import { useUi } from "@/tasks/ui-context";
 import { createProjectFor, setTaskProject } from "./commands";
@@ -21,6 +22,7 @@ import {
   pickerItems,
   pickerPlaceholder,
 } from "./picker";
+import { ProjectDot } from "./project-dot";
 
 /**
  * p（プロジェクト）の候補のポップアップ（coss ui の Combobox）。Base UI の Combobox を含むので、
@@ -147,7 +149,12 @@ export const ProjectPickerPopup = observer(function ProjectPickerPopup({
               value={item}
               className={item.kind === "project" ? undefined : "text-muted-foreground"}
             >
-              <span className="block truncate">{item.label}</span>
+              <span className="flex min-w-0 items-center gap-2">
+                {item.kind === "project" && (
+                  <ProjectDot color={projectColorOf(ui.store, item.id)} className="size-2" />
+                )}
+                <span className="block truncate">{item.label}</span>
+              </span>
             </ComboboxItem>
           )}
         </ComboboxList>

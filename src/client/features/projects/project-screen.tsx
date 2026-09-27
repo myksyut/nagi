@@ -1,20 +1,25 @@
 import { observer } from "mobx-react-lite";
-import { useEffect, useRef, useState } from "react";
+import { type CSSProperties, useEffect, useRef, useState } from "react";
 import { useLocation } from "wouter";
 import { type AppStore, type ProjectRow, type ProjectTaskGroups, useStore } from "@/data";
 import { isComposingKey } from "@/keyboard/keys";
+import { projectColorOf, projectColorVar } from "@/lib/project-color";
 import { HOME_PATH } from "@/navigation";
+import { ScreenHeading } from "@/screens/list-screen";
+import { AddHint } from "@/tasks/add-hint";
 import type { AddTarget, TaskSection } from "@/tasks/list-ui";
 import { TaskList } from "@/tasks/task-list";
 import { useListView, useUi } from "@/tasks/ui-context";
 import { archiveProject, renameProject, unarchiveProject } from "./commands";
 import { projectNameDraftsOf } from "./name-drafts";
+import { ProjectDot } from "./project-dot";
 
 /**
  * プロジェクトの画面：そのプロジェクトのタスクを「今日／予定／あとで／受信箱」のまとまりで並べ、
  * 一番下に、そのプロジェクトで完了したもの（全期間）の「完了 N件」（最初は閉じている）。
  * n で追加すると、そのプロジェクトの「あとで」に入る。
- * 見出しの名前を押すと名前を直せる。見出しの右の小さなボタンから、名前の変更とアーカイブ
+ * 見出しの名前を押すと名前を直せる。見出しの右の小さなボタンから、名前の変更とアーカイブ。
+ * 見出しの左にはプロジェクトの色の点（色の選び直しはチケット 11）
  */
 
 function liveProject(store: AppStore, id: string): ProjectRow | undefined {
@@ -74,9 +79,6 @@ export const ProjectScreen = observer(function ProjectScreen({ id }: { id: strin
   return (
     <>
       <ProjectHeading project={project} />
-      {project.archivedAt !== null && (
-        <p className="mt-0.5 text-muted-foreground text-sm">アーカイブ済み</p>
-      )}
       <TaskList view={view} label={project.name} empty={<ProjectEmpty id={id} />} />
     </>
   );
@@ -84,30 +86,66 @@ export const ProjectScreen = observer(function ProjectScreen({ id }: { id: strin
 
 const ProjectEmpty = observer(function ProjectEmpty({ id }: { id: string }) {
   const { lists } = useStore();
-  if (lists.project(id).completed.length > 0) return <p>未完了のタスクはありません</p>;
-  return <p>このプロジェクトのタスクはまだありません</p>;
-});
-
-/** 見出し：名前（押すと直せる）と、右の小さな「名前を変更」「アーカイブ」 */
-const ProjectHeading = observer(function ProjectHeading({ project }: { project: ProjectRow }) {
-  const [editing, setEditing] = useState(false);
-  if (editing) return <RenameInput project={project} onDone={() => setEditing(false)} />;
   return (
-    <div className="flex min-w-0 items-center gap-3">
-      <h1 className="min-w-0 font-semibold text-[22px] tracking-tight">
-        <button
-          type="button"
-          title="名前を変更"
-          className="-mx-1 max-w-full cursor-text truncate rounded-sm px-1 text-left outline-none focus-visible:ring-1 focus-visible:ring-ring/70"
-          onClick={() => setEditing(true)}
-        >
-          {project.name}
-        </button>
-      </h1>
-      <ProjectActions project={project} onRename={() => setEditing(true)} />
-    </div>
+    <>
+      <p>
+        {lists.project(id).completed.length > 0
+          ? "未完了のタスクはありません"
+          : "このプロジェクトのタスクはまだありません"}
+      </p>
+      <AddHint />
+    </>
   );
 });
+
+/**
+ * 見出し：色の点、名前（押すと直せる）、その下に未完了の件数（アーカイブ済みなら「アーカイブ済み」）、
+ * 右に小さな「名前を変更」「アーカイブ」（名前を直しているあいだは出さない）
+ */
+const ProjectHeading = observer(function ProjectHeading({ project }: { project: ProjectRow }) {
+  const store = useStore();
+  const [editing, setEditing] = useState(false);
+  const count = store.lists.openTaskCountOfProject(project.id);
+  const color = projectColorOf(store, project.id);
+  const subtitle =
+    project.archivedAt !== null ? "アーカイブ済み" : count > 0 ? `${count} 件` : undefined;
+  return (
+    <ScreenHeading
+      leading={
+        // リストの見出しのアイコンの台と同じ形で、プロジェクトの色を淡く敷く
+        <span
+          aria-hidden="true"
+          className="list-tile grid size-7.5 flex-none place-items-center rounded-[9px]"
+          style={{ "--tile": projectColorVar(color) } as CSSProperties}
+        >
+          <ProjectDot color={color} className="size-2.5" />
+        </span>
+      }
+      subtitle={subtitle}
+      actions={
+        editing ? undefined : <ProjectActions project={project} onRename={() => setEditing(true)} />
+      }
+    >
+      {editing ? (
+        <RenameInput project={project} onDone={() => setEditing(false)} />
+      ) : (
+        <h1 className={headingTextClassName}>
+          <button
+            type="button"
+            title="名前を変更"
+            className="-mx-1 max-w-full cursor-text truncate rounded-sm px-1 text-left outline-none focus-visible:outline-2 focus-visible:outline-ring"
+            onClick={() => setEditing(true)}
+          >
+            {project.name}
+          </button>
+        </h1>
+      )}
+    </ScreenHeading>
+  );
+});
+
+/** 見出しの名前の文字（リストの画面の見出しと同じ） */
+const headingTextClassName = "min-w-0 font-[650] text-[26px] leading-tight tracking-[-0.01em]";
 
 /**
  * 名前の入力欄。Enter かフォーカスが外れたら保存、Esc でやめる。空の名前は保存しない（元の名前に戻る）。
@@ -169,7 +207,7 @@ function RenameInput({ project, onDone }: { project: ProjectRow; onDone: () => v
     <input
       ref={input}
       aria-label="プロジェクト名"
-      className="-mx-1 w-full rounded-sm bg-transparent px-1 font-semibold text-[22px] tracking-tight outline-none ring-1 ring-ring/70"
+      className={`-mx-1 w-full rounded-sm bg-transparent px-1 outline-none ring-1 ring-ring/70 ${headingTextClassName}`}
       value={value}
       onChange={(event) => setValue(event.target.value)}
       onKeyDown={(event) => {
@@ -200,7 +238,7 @@ const ProjectActions = observer(function ProjectActions({
   const [, navigate] = useLocation();
   const archived = project.archivedAt !== null;
   return (
-    <div className="ms-auto flex flex-none items-center gap-0.5 text-muted-foreground/80 text-xs">
+    <div className="ms-auto flex flex-none items-center gap-0.5 self-center text-muted-foreground text-xs">
       <button type="button" className={actionClassName} onClick={onRename}>
         名前を変更
       </button>
@@ -230,4 +268,4 @@ const ProjectActions = observer(function ProjectActions({
 });
 
 const actionClassName =
-  "rounded-md px-2 py-1 outline-none hover:bg-accent hover:text-foreground focus-visible:ring-1 focus-visible:ring-ring/70";
+  "rounded-md px-2 py-1 outline-none hover:bg-accent hover:text-foreground focus-visible:outline-2 focus-visible:outline-ring";

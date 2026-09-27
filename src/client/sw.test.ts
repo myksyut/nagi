@@ -26,7 +26,7 @@ function loadSw() {
   );
   const fakeCache = { add: cacheAdd };
   const cachesOpen = vi.fn(async (_name: string) => fakeCache);
-  const cachesKeys = vi.fn(async () => ["nagi-offline-v1", "nagi-offline-v2"]);
+  const cachesKeys = vi.fn(async () => ["nagi-offline-v2", "nagi-offline-v3"]);
   const cachesDelete = vi.fn(async (_name: string) => true);
   const fakeCaches = {
     open: cachesOpen,
@@ -68,7 +68,7 @@ describe("install：offline.html だけをキャッシュする", () => {
   it("そのキャッシュに、offline.html だけを add する", async () => {
     const { handlers, cachesOpen, cacheAdd } = loadSw();
     await fireInstall(handlers);
-    expect(cachesOpen).toHaveBeenCalledWith("nagi-offline-v2");
+    expect(cachesOpen).toHaveBeenCalledWith("nagi-offline-v3");
     expect(cacheAdd).toHaveBeenCalledTimes(1);
     const request = cacheAdd.mock.calls[0]?.[0] as Request;
     expect(new URL(request.url).pathname).toBe("/offline.html");
@@ -76,11 +76,11 @@ describe("install：offline.html だけをキャッシュする", () => {
 });
 
 describe("activate：古い版のキャッシュだけを消す", () => {
-  it("今の版（nagi-offline-v2）以外を削除する", async () => {
+  it("今の版（nagi-offline-v3）以外を削除する", async () => {
     const { handlers, cachesDelete } = loadSw();
     await fireActivate(handlers);
-    expect(cachesDelete).toHaveBeenCalledWith("nagi-offline-v1");
-    expect(cachesDelete).not.toHaveBeenCalledWith("nagi-offline-v2");
+    expect(cachesDelete).toHaveBeenCalledWith("nagi-offline-v2");
+    expect(cachesDelete).not.toHaveBeenCalledWith("nagi-offline-v3");
   });
 });
 
@@ -124,7 +124,7 @@ describe("fetch：ページを開くとき（navigate）だけを受ける", () 
     const response = await responded;
     expect(response?.status).toBe(200);
     expect(await response?.text()).toBe("<p>オフラインです</p>");
-    expect(cacheMatch).toHaveBeenCalledWith("/offline.html", { cacheName: "nagi-offline-v2" });
+    expect(cacheMatch).toHaveBeenCalledWith("/offline.html", { cacheName: "nagi-offline-v3" });
   });
 });
 

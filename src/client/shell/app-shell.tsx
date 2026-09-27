@@ -15,11 +15,12 @@ import { followReducedMotion } from "@/lib/reduced-motion";
 import { ListUi } from "@/tasks/list-ui";
 import { ToastHost } from "@/tasks/toast-host";
 import { UiProvider } from "@/tasks/ui-context";
+import { AddButton } from "./add-button";
 import { Sidebar } from "./sidebar";
 import { StatusBar } from "./status-bar";
 
 /**
- * 左にサイドバー、右にリスト。形と色は index.html の外枠の CSS とそろえる。
+ * 左にサイドバー、右にリスト、右下に「＋」。形と色は index.html の外枠の CSS とそろえる。
  * 一覧の状態（選択・開いているタスク・追加欄）、キーの割り当て、トースト、⌘K と `?`、上部の帯（オフライン・新しいバージョン）もここで持つ。
  * キー操作の状況（`{ store, ui, navigate }`）は React の context として出す（⌘K からもキーと同じ run を呼ぶ）。
  * ⌘K・`?`・完了ログ・カレンダー・p の候補などは後から読み込む部品で、起動のあとの空いた時間に先読みする
@@ -56,8 +57,9 @@ export function AppShell({ children }: { children: ReactNode }) {
             <EditingLock ui={ui}>
               <Sidebar />
               <main className="min-h-dvh pl-(--sidebar-width)">
-                <div className="mx-auto max-w-3xl px-10 pt-9 pb-24">{children}</div>
+                <div className="mx-auto max-w-3xl px-12 pt-9 pb-28">{children}</div>
               </main>
+              <AddButton />
             </EditingLock>
             <LazyCommandPalette />
             <LazyShortcutsDialog />

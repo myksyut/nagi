@@ -81,7 +81,7 @@ const DeadlineLabel = observer(function DeadlineLabel({ deadlineOn }: { deadline
     <span
       title={`締切 ${formatLongDate(deadlineOn, today)}`}
       className={cn(
-        (tone === "soon" || tone === "today") && "text-primary",
+        (tone === "soon" || tone === "today") && "text-primary-text",
         // 赤は締切を過ぎたときの文字にだけ使う（行全体は赤くしない）
         tone === "overdue" && "text-destructive-foreground",
       )}

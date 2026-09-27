@@ -208,6 +208,8 @@ const ChecklistItemRow = observer(function ChecklistItemRow({
 }) {
   const ui = useUi();
   const controls = useDragControls();
+  // 運んでいるあいだだけ不透明の面にする（開いたタスクの欄は半透明なので、下の項目が透けないように）
+  const [dragging, setDragging] = useState(false);
   const field = useItemTitle(task, item, drafts);
   const name = field.value.trim() === "" ? item.title : field.value;
 
@@ -272,8 +274,15 @@ const ChecklistItemRow = observer(function ChecklistItemRow({
       transition={LAYOUT_TRANSITION}
       dragMomentum={false}
       dragTransition={SETTLE_TRANSITION}
-      onDragEnd={onDragEnd}
-      className="group/item relative flex min-h-7 items-center gap-2.5 bg-card"
+      onDragStart={() => setDragging(true)}
+      onDragEnd={() => {
+        setDragging(false);
+        onDragEnd();
+      }}
+      className={cn(
+        "group/item relative flex min-h-7 items-center gap-2.5 rounded-md",
+        dragging && "bg-surface",
+      )}
       onKeyDown={onKeyDown}
     >
       <DragHandle controls={controls} />

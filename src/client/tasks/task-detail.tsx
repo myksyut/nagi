@@ -71,7 +71,8 @@ export const TaskDetail = observer(function TaskDetail({
     <div
       role="group"
       aria-label={`「${task.title}」の詳細`}
-      className="mt-0.5 mb-2 ml-9 flex flex-col gap-3 rounded-lg border bg-card px-4 py-3"
+      // 左の端はタイトルの位置（行の左の余白 12px ＋ 丸 17px ＋ 間 12px）にそろえる
+      className="mt-1 mb-2 ml-[41px] flex flex-col gap-3 rounded-[10px] border bg-card px-4 py-3"
     >
       <MemoEditor task={task} />
       {sections.map(({ id, Component }) => (

@@ -1,14 +1,18 @@
 import { cn } from "@/lib/utils";
+import { COMPLETE_FOR_ATTRIBUTE } from "./completion-ring";
 
 /**
  * 行の左の丸（完了ボタン）。完了すると丸が埋まり、チェックが描かれる（約 150ms）。
+ * 同時に丸から光の輪が広がる（completion-ring.ts。丸の位置をこの印で探す）。
  * キーボードでは x を使うので、Tab では止まらない
  */
 export function CompleteButton({
+  taskId,
   done,
   title,
   onToggle,
 }: {
+  taskId: string;
   done: boolean;
   title: string;
   onToggle: () => void;
@@ -19,15 +23,16 @@ export function CompleteButton({
       tabIndex={-1}
       aria-label={done ? `「${title}」の完了を外す` : `「${title}」を完了にする`}
       aria-pressed={done}
+      {...{ [COMPLETE_FOR_ATTRIBUTE]: taskId }}
       onClick={(event) => {
         event.stopPropagation();
         onToggle();
       }}
       className={cn(
-        "relative grid size-4 flex-none place-items-center rounded-full border-[1.5px] transition-colors",
+        "relative grid size-[17px] flex-none place-items-center rounded-full border-[1.6px] transition-colors",
         done
           ? "border-primary bg-primary text-primary-foreground"
-          : "border-muted-foreground/45 hover:border-primary",
+          : "border-(--circle) hover:border-primary-text",
       )}
     >
       <svg viewBox="0 0 16 16" className="size-3" aria-hidden="true">

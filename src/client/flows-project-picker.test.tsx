@@ -66,7 +66,7 @@ describe("p で候補を開いて、名前で絞り込んで付ける", () => {
     expect(store.lists.inbox[0]?.projectId).toBe(project?.id);
     // サイドバーにも出る
     const sidebarNav = screen.getByRole("navigation", { name: "リスト" });
-    expect(within(sidebarNav).getByRole("link", { name: "新プロジェクト" })).toBeInTheDocument();
+    expect(within(sidebarNav).getByRole("link", { name: /^新プロジェクト/ })).toBeInTheDocument();
 
     // 作成と付けるが1つの操作：⌘Z 1回で両方戻る
     expect(store.lists.inbox[0]?.projectId).not.toBeNull();

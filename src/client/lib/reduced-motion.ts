@@ -31,11 +31,12 @@ function subscribe(onChange: () => void): () => void {
   return () => query?.removeEventListener("change", onChange);
 }
 
-function isReduced(): boolean {
+/** 今 prefers-reduced-motion か（部品の外で、動く飾りを置くかどうかを決めるとき） */
+export function prefersReducedMotion(): boolean {
   return window.matchMedia?.(QUERY).matches ?? false;
 }
 
 /** prefers-reduced-motion か（動きのある飾りを出すかどうかを決めるとき）。設定が変わったら描き直す */
 export function useReducedMotion(): boolean {
-  return useSyncExternalStore(subscribe, isReduced, () => false);
+  return useSyncExternalStore(subscribe, prefersReducedMotion, () => false);
 }

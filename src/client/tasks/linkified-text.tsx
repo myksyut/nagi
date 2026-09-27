@@ -49,7 +49,7 @@ export function LinkifiedText({ text }: { text: string }) {
             target="_blank"
             rel="noopener noreferrer"
             title={part.url}
-            className="text-primary underline-offset-2 hover:underline"
+            className="text-primary-text underline-offset-2 hover:underline"
             onClick={(event) => event.stopPropagation()}
           >
             {shortUrl(part.url)}
