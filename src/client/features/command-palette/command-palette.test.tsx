@@ -55,8 +55,10 @@ async function expectRunnableFromPalette(
     try {
       await openPalette(user);
       const item = findItemByExactLabel(binding.label);
-      const expectedKey = formatKey(binding.keys[0] ?? "");
-      expect(within(item).getByText(expectedKey)).toBeInTheDocument();
+      // キーのない操作（プロジェクトを作成）は、キーを出さない
+      const key = binding.keys[0];
+      if (key === undefined) expect(item.querySelector("kbd")).toBeNull();
+      else expect(within(item).getByText(formatKey(key))).toBeInTheDocument();
 
       await user.click(item);
       await waitFor(() => expect(spy).toHaveBeenCalledTimes(1));
@@ -96,7 +98,8 @@ describe("完了の条件3：キーマップのすべての割り当てを ⌘K 
       .filter((binding) => binding.id !== PALETTE_BINDING_ID && binding.scope === undefined);
     expect(bindings.length).toBeGreaterThan(5);
     await expectRunnableFromPalette(user, bindings);
-  });
+    // 割り当てをすべて1つずつ ⌘K から実行するので、割り当てが増えると長くなる（全部のテストを並べて回すと 5 秒を超える）
+  }, 15_000);
 
   it("ボードの場面の割り当て（←→）が、今日のボードで正しいキー表示で並び、選ぶと run が呼ばれる", async () => {
     localStorage.setItem("nagi:board-screens", JSON.stringify(["today"]));

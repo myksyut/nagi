@@ -2,7 +2,7 @@ import { MAX_MUTATIONS_PER_BATCH } from "@shared/mutations";
 import { runInAction } from "mobx";
 import type { OperationFailure, OperationResult, TaskRow } from "@/data";
 import { playCompletionRingAt, playCompletionRings } from "./completion-ring";
-import type { ListUi } from "./list-ui";
+import type { ListUi, TaskSection } from "./list-ui";
 import { planDrop, planStep } from "./reorder";
 
 /**
@@ -206,16 +206,26 @@ export function moveTasks(
   });
 }
 
+/** 並び方（手動以外）で並べ替えて見せているあいだに ⌥↑↓・ドラッグで並べ替えようとしたときの知らせ */
+export const MANUAL_ORDER_ONLY_MESSAGE = "手動の並びのときに使えます";
+
+/** 並び方で並べ替えて見せているまとまりなら、並べ替えずに知らせて true */
+function blockedBySort(ui: ListUi, section: TaskSection): boolean {
+  if (section.sorted) ui.toaster.error(MANUAL_ORDER_ONLY_MESSAGE);
+  return section.sorted === true;
+}
+
 /**
  * ⌥↑（delta = -1）・⌥↓（delta = 1）：選んでいる行を、まとめて1つ上・下へ。
- * 選んでいる行がすべて同じ並べ替えられるまとまりにあるときだけ動かす。トーストは出さない（⌘Z で戻る）
+ * 選んでいる行がすべて同じ並べ替えられるまとまりにあるときだけ動かす。トーストは出さない（⌘Z で戻る）。
+ * 並び方（手動以外）で並べ替えて見せているあいだは動かさず、「手動の並びのときに使えます」と知らせる
  */
 export function moveSelectedRows(ui: ListUi, delta: -1 | 1): OperationResult | undefined {
   const rows = selectionForOperation(ui);
   if (!rows || rows.length === 0) return undefined;
   const ids = rows.map((row) => row.id);
   const section = ui.reorderableSectionOf(ids);
-  if (!section) return undefined;
+  if (!section || blockedBySort(ui, section)) return undefined;
   const placements = planStep(
     section.rows.map((row) => row.id),
     new Set(ids),
@@ -225,7 +235,10 @@ export function moveSelectedRows(ui: ListUi, delta: -1 | 1): OperationResult | u
   return runTaskOperation(ui, { ids, perform: () => ui.store.actions.reorderTasks(placements) });
 }
 
-/** ドラッグで落とした：ids の行を、同じまとまりの target の行の前か後ろへまとめて入れる */
+/**
+ * ドラッグで落とした：ids の行を、同じまとまりの target の行の前か後ろへまとめて入れる。
+ * 並び方で並べ替えて見せているまとまりなら、入れずに「手動の並びのときに使えます」と知らせる
+ */
 export function dropRows(
   ui: ListUi,
   ids: readonly string[],
@@ -233,7 +246,7 @@ export function dropRows(
   edge: "before" | "after",
 ): OperationResult | undefined {
   const section = ui.reorderableSectionOf([...ids, target]);
-  if (!section) return undefined;
+  if (!section || blockedBySort(ui, section)) return undefined;
   const placements = planDrop(
     section.rows.map((row) => row.id),
     ids,

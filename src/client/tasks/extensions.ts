@@ -5,7 +5,8 @@ import type { ListView } from "./list-ui";
 /**
  * 行と開いたタスクに項目を足すための登録口。4 は枠だけを作り、中身は各チケットが登録する
  * （登録は features/<名前>/register.ts から。features/index.ts が自動で読み込む）。
- * - 行の右側の情報（registerRowMeta）：Core Flows の並び「プロジェクト名・チェックリストの進み具合・メモの印・締切」
+ * - 行の右側の情報（registerRowMeta）：Core Flows の並び「プロジェクト名・チェックリストの進み具合・メモの印・締切」、
+ *   一番右に優先度の印と工数
  * - 開いたタスクの欄（registerDetailField）：メモの下に縦に並ぶ欄（section）と、一番下の小さなボタンの列（chip）。
  *   開いたタスクの欄は、リストの行の下（task-detail.tsx）と、小さな詳細（task-detail-popover.tsx。カレンダーと
  *   タイムラインでタスクを押したときのポップオーバー）の両方に出る
@@ -35,6 +36,8 @@ export const ROW_META_ORDER = {
   checklist: 20,
   memo: 30,
   deadline: 40,
+  /** 優先度の印と工数（一番右） */
+  priorityPoints: 50,
 } as const;
 
 export type RowMetaItem = Registered<TaskSlotProps>;
@@ -53,6 +56,8 @@ export const DETAIL_ORDER = {
   when: 10,
   deadline: 20,
   project: 30,
+  priority: 40,
+  points: 50,
 } as const;
 
 class Registry<T extends { id: string; order: number }> {

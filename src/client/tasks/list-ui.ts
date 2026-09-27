@@ -57,6 +57,11 @@ export type TaskSection = {
    */
   reorderable?: boolean;
   /**
+   * 並び方（features/sort。手動以外）で並べ替えて見せている、並べ替えられるまとまり。選択は表示の並びのとおりに動くが、
+   * ⌥↑↓ とドラッグの並べ替えは止め、「手動の並びのときに使えます」と知らせる（rank は表示の並びと違うため）
+   */
+  sorted?: boolean;
+  /**
    * ボードの列の名前（例：`notStarted`）。列のある一覧では、↑↓・⇧↑↓ は同じ列の中だけを動き、
    * ←→（moveColumn）で隣の列へ移る。1つの列に、見出しの付いたまとまりをいくつ並べてもよい
    */
@@ -123,6 +128,7 @@ function sameSections(a: readonly TaskSection[], b: readonly TaskSection[]): boo
         section.key === other.key &&
         section.heading === other.heading &&
         section.column === other.column &&
+        section.sorted === other.sorted &&
         section.fold?.label === other.fold?.label &&
         compareShallow(section.rows, other.rows)
       );
@@ -302,7 +308,10 @@ export class ListUi {
     return this.sectionOf(taskId)?.column;
   }
 
-  /** ids の行がすべて入っている、並べ替えられるまとまり（なければ undefined） */
+  /**
+   * ids の行がすべて入っている、並べ替えられるまとまり（なければ undefined）。並び方で並べ替えて見せているまとまり
+   * （sorted）も返す（⌥↑↓ とドラッグは、受けたうえで「手動の並びのときに使えます」と知らせる）
+   */
   reorderableSectionOf(ids: readonly string[]): TaskSection | undefined {
     const first = ids[0];
     const section = first === undefined ? undefined : this.sectionOf(first);
