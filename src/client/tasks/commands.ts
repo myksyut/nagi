@@ -1,7 +1,7 @@
 import { MAX_MUTATIONS_PER_BATCH } from "@shared/mutations";
 import { runInAction } from "mobx";
 import type { OperationFailure, OperationResult, TaskRow } from "@/data";
-import { playCompletionRings } from "./completion-ring";
+import { playCompletionRingAt, playCompletionRings } from "./completion-ring";
 import type { ListUi } from "./list-ui";
 import { planDrop, planStep } from "./reorder";
 
@@ -49,7 +49,8 @@ export type TaskOperation = {
    */
   advance?: boolean;
   /**
-   * 「元に戻す」付きのトーストの文言。left は一覧から抜けた行の id、changed は実際に変えたタスクの id
+   * 「元に戻す」付きのトーストの文言。left は一覧から抜けた行の id（操作の前は一覧にあって、あとにはない行。
+   * 小さな詳細など、一覧の外のタスクへの操作では入らない）、changed は実際に変えたタスクの id
    * （変えるものがなかった行や、同じ操作で作ったプロジェクトは入らない）。返さなければ出さない
    */
   toast?: (left: readonly string[], changed: readonly string[]) => string | undefined;
@@ -84,13 +85,15 @@ export function runTaskOperation(ui: ListUi, operation: TaskOperation): Operatio
   if (!withinBulkLimit(ui, ids.length)) return { ok: false, reason: "too-many" };
   const selectedBefore = ui.selectedId;
   const next = ui.neighborAfter(ids);
+  const visibleBefore = new Set(ui.rows.map((row) => row.id));
   const result = perform();
   if (!result.ok) {
     notifyFailure(ui, result.reason);
     return result;
   }
   const visible = new Set(ui.rows.map((row) => row.id));
-  const left = ids.filter((id) => !visible.has(id));
+  // 一覧から抜けた行：前は一覧にあって、今はない行（小さな詳細など、一覧の外のタスクへの操作は数えない）
+  const left = ids.filter((id) => visibleBefore.has(id) && !visible.has(id));
   const targets = new Set(ids);
   const changed = result.ids.filter((id) => targets.has(id));
   runInAction(() => {
@@ -126,8 +129,18 @@ export function toastSubject(
   return left.length === 1 ? `「${ui.store.task(id)?.title ?? ""}」` : `${left.length}件`;
 }
 
+/** 完了の操作の追加の指定 */
+export type CompleteOptions = {
+  /** 光の輪を出す丸（小さな詳細の丸）。省くと、完了にしたタスクの一覧の行の丸から出す */
+  ringFrom?: Element;
+};
+
 /** 完了。今日以外のリストで完了したら「完了しました・元に戻す」。2件以上なら今日でも「3件を完了しました」 */
-export function completeTasks(ui: ListUi, ids: readonly string[]): OperationResult {
+export function completeTasks(
+  ui: ListUi,
+  ids: readonly string[],
+  { ringFrom }: CompleteOptions = {},
+): OperationResult {
   const result = runTaskOperation(ui, {
     ids,
     perform: () => ui.store.actions.completeTasks(ids),
@@ -141,7 +154,10 @@ export function completeTasks(ui: ListUi, ids: readonly string[]): OperationResu
   });
   // 丸から光の輪が広がる（受け付けられたときだけ。prefers-reduced-motion では出さない）。
   // 受け付けた直後は React がまだ描き直していないので、丸は元の位置にある
-  if (result.ok) playCompletionRings(ids);
+  if (result.ok) {
+    if (ringFrom) playCompletionRingAt(ringFrom);
+    else playCompletionRings(ids);
+  }
   return result;
 }
 
@@ -158,10 +174,14 @@ export function uncompleteTasks(ui: ListUi, ids: readonly string[]): OperationRe
 }
 
 /** x と丸：未完了のものがあれば完了、すべて完了済みなら完了を外す */
-export function toggleComplete(ui: ListUi, ids: readonly string[]): OperationResult {
+export function toggleComplete(
+  ui: ListUi,
+  ids: readonly string[],
+  options?: CompleteOptions,
+): OperationResult {
   const rows = rowsOf(ui, ids);
   const open = rows.filter((row) => row.completedAt === null).map((row) => row.id);
-  if (open.length > 0) return completeTasks(ui, open);
+  if (open.length > 0) return completeTasks(ui, open, options);
   return uncompleteTasks(
     ui,
     rows.map((row) => row.id),

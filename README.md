@@ -58,10 +58,40 @@ components.json  # shadcn / coss ui の設定
 - 色は `styles.css` の `.dark` のトークンから取り、部品に色の値を直接書かない。リストの色は `--list-*`（アイコンは `shell/list-icons.ts`）、プロジェクトの 8 色は `--project-*`
 - すりガラス（`glass`。`backdrop-filter`）は、サイドバーとポップオーバー・ダイアログだけに使う。スクロールする一覧・カード・トーストには使わない（トーストは不透明の `bg-surface`）
 - 選んだ行は `row-selected`（紫の淡い背景と輪郭の光）、フォーカスの輪郭は `outline` で別に出す。上からの光は `body::before` に固定して置くだけで動かさない
-- プロジェクトの色は `lib/project-color.ts` の `projectColorOf` から取る（今は作成順で決める一時の形。データに色が入ったら中身だけを差し替える）
+- プロジェクトの色は `lib/project-color.ts` の `projectColorOf` から取る（中身はデータ層の `store.lists.projectColor(id)`。選んだ色 `color` があればその色、空なら作成順の色）。色の値は `projectColorVar(color)`（`var(--project-<名前>)`）、点は `features/projects/project-dot.tsx` の `ProjectDot`
 - 右下の「＋」（`shell/add-button.tsx`）は、キーマップの `task.add`（n）をそのまま呼ぶ。完了の光の輪（`tasks/completion-ring.ts`）は、完了にする操作（`completeTasks`）が受け付けられた直後に、丸をタスクの id から引いて（見えている丸を最大 20 個）、その位置へ画面に固定した要素を置いて 300ms で外す。途中で reduced motion に変わったらすぐ外す
 - 画面の部品で件数などの変わりやすい値を読まない（完了のたびに画面ごと描き直し、一覧の全行を描き直してしまう）。見出しの件数は `ListScreen` に関数で渡し、見出しの一行の中だけで読む。サイドバーの件数も `NavCountOf` の中だけで読む
 - 小さい補助の文字（`--muted-foreground`・`--faint-foreground`）は、地・面・サイドバーの上で 4.5:1 以上を保つ
+
+進行中とプロジェクトの色・小さな詳細（11）：
+
+- s（`features/status`）で、選んでいる未完了の行を進行中にする／やめる。選んだ中に未着手が1つでもあれば未着手のものを進行中にし（`store.actions.startTasks`）、全部が進行中のときだけ未着手に戻す（`stopTasks`）。今日以外の行は今日の一番上へ移り、一覧から抜けたら「「A」を今日へ」、2件以上なら「3件を進行中にしました」「3件を未着手に戻しました」を出す。画面から呼ぶときは `features/status/commands.ts` の `toggleStarted(ui, ids)`・`startTasks`・`stopTasks`（どれも `runTaskOperation` を通す）
+- 進行中の印は、完了の丸（`tasks/complete-button.tsx` の `CompleteButton` に `inProgress`）の半分を紫で塗る（`styles.css` の `status-in-progress` と `--in-progress`）。状態は `TaskRow.status`・`isInProgress` で読む（項目ごとの観測）。開いたタスクの一番下の列の先頭に、状態のボタン（未着手・進行中。押すと切り替わる）
+- プロジェクトの画面の見出しの色の点（`features/projects/color-palette.tsx`）を押すと、パレットの 8 色が開き、選ぶと `store.actions.updateProject(id, { color })`（⌘Z で戻る）。パレットの中身は後から読み込む
+- ⌘Z がほかの画面の変更とぶつかって戻せなかったときは「ほかの画面で先に変更されていたため、元に戻せませんでした」（`tasks/list-ui.ts`。知らせの `discarded` が「元に戻す」の操作だけのとき）
+- 開いたタスクの欄の部品（`registerDetailField`）は `DetailFieldProps` を受ける（`view` は小さな詳細では null のことがある）。行の右側（`registerRowMeta`）はこれまでどおり `TaskSlotProps`
+- 欄の中の入力欄で Esc（タイトルは Enter も）を押したときは `useDetailSurface().close()`（`tasks/detail-surface.tsx`）で閉じる。一覧の中では開いたタスクを閉じて一覧へ、小さな詳細ではポップオーバーを閉じて押した場所へフォーカスを戻す
+- `runTaskOperation` のトーストの `left`（一覧から抜けた行）は、操作の前に一覧にあって、あとにはない行だけ（小さな詳細など、一覧の外のタスクへの操作では入らない）
+
+小さな詳細（`tasks/task-detail-popover.tsx`。カレンダーとタイムラインでタスクを押したときに開く。13・14 がつなぐ）：
+
+```tsx
+import { TaskDetailPopoverHost, taskDetailPopoverOf } from "@/tasks/task-detail-popover";
+
+// 画面に1つ置く（画面が消えると、開いていた小さな詳細も閉じる）。view は省略してよい
+<TaskDetailPopoverHost />
+
+// タスクを押したとき（ui は useUi()）。押した要素から広がる
+<button onClick={(event) => taskDetailPopoverOf(ui).open(task.id, event.currentTarget)}>…</button>
+```
+
+- 中身はリストで開く詳細と同じ（完了の丸・タイトル・メモ・チェックリスト・状態・いつやる・締切・プロジェクト）。保存と ⌘Z の決まりもリストと同じ
+- Esc で閉じて、押した要素へフォーカスを戻す。外を押すと閉じる（フォーカスは押した先に任せる）。`taskDetailPopoverOf(ui).close()` で閉じる。開いているのは一度に1つで、別のタスクを `open` すると入れ替わる。タスクが削除されたとき・新しいバージョンへ読み込み直すときは閉じる
+- 押した要素が画面から消えるとき（日付を変えて別のマスへ移るなど）は、画面の側で新しい要素から `open` し直すか、閉じる
+- 中ではアプリの1文字のキーを止める（`data-keymap="off"`）。そのかわり完了の丸は Tab で止まり、Enter・Space で押せる（一覧の行の丸は止まらない）。欄には、効かないキーの案内（状態のボタンの s、日付の入力の t・l）を出さない
+- 欄から開く日付の入力と p の候補は、小さな詳細の中に描く（`registerDetachedHost` で、dates と projects が自分の描き方を登録している）。欄からポップオーバーを開く機能を足すときは、`useDetailSurface().detached` を見て、同じように登録する
+- 欄の中の要素の id には `useDetailSurface().idScope`（一覧の中は ""、小さな詳細は詳細ごとの接頭辞）を付ける。同じタスクが一覧と小さな詳細の両方に出ても id が重ならず、id で探すフォーカスの移し先が相手の側へ飛ばないように。欄に id を持つ要素を足すときも同じようにする
+- 小さな詳細のモジュールは Base UI の Popover を使う。起動の道筋から import せず、後から読み込む画面（カレンダー・タイムライン）から使う
 
 オフラインと失敗のとき（8）：
 
@@ -133,7 +163,7 @@ ssh -L 5317:localhost:5317 <M7 のホスト>
   ```sh
   api() {
     curl -X POST "http://localhost:5317$1" -H 'Origin: http://localhost:5317' \
-      -H 'Content-Type: application/json' -H 'X-Api-Version: 1' -d "$2"
+      -H 'Content-Type: application/json' -H 'X-Api-Version: 2' -d "$2"
   }
   api /api/mutate '{"id":"0199a000-0000-7000-8000-000000000001","mutations":[{"type":"task.create","task":{"id":"0199a000-0000-7000-8000-000000000002","title":"見積もりの確認","bucket":"inbox","rank":"a0"}}]}'
   api /api/sync '{"cursor":0,"baseCursor":0}'

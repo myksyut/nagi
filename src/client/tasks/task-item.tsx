@@ -107,6 +107,7 @@ const TaskRowView = observer(function TaskRowView({
         <CompleteButton
           taskId={task.id}
           done={done}
+          inProgress={task.isInProgress}
           title={task.title}
           onToggle={() => toggleComplete(ui, [task.id])}
         />

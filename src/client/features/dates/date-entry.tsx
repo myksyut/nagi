@@ -16,7 +16,10 @@ import { useUi } from "@/tasks/ui-context";
  * （複数なら先頭）の行の右側の枠（register.tsx の締切の表示）が描く。行に合わせて開き、小さなボタンから開いたときは
  * ボタンに合わせる。閉じたときは、消えるときのフェード（150ms）が終わるまで描き続ける（leaving）。
  * 対象の行が一覧から消えたとき（同期・完了・振り分け）や画面を切り替えたときは、フェードなしで閉じて、
- * 一覧にフォーカスを戻す（あとで同じ行が出てきても、前の入力を開き直さない）
+ * 一覧にフォーカスを戻す（あとで同じ行が出てきても、前の入力を開き直さない）。
+ *
+ * 小さな詳細（tasks/task-detail-popover.tsx）の中の小さなボタンから開いたときは detached にする。そのときは
+ * 行ではなく小さな詳細が描き（一覧に行がなくてよい）、閉じたら押したボタンへフォーカスを戻す
  */
 
 export type DateEntryKind = "schedule" | "deadline";
@@ -26,10 +29,15 @@ export type DateEntryRequest = {
   id: number;
   kind: DateEntryKind;
   taskIds: readonly string[];
-  /** 開いた画面。ほかの画面に同じタスクの行があっても、そこには描かない */
-  view: ListView;
+  /**
+   * 開いた画面。ほかの画面に同じタスクの行があっても、そこには描かない。
+   * 小さな詳細から開いたとき（detached）は使わない（null のことがある）
+   */
+  view: ListView | null;
   /** ポップオーバーを合わせる要素。null なら対象の行 */
   anchor: Element | null;
+  /** 小さな詳細の中から開いた（行ではなく小さな詳細が描く） */
+  detached: boolean;
 };
 
 export class DateEntry {
@@ -52,18 +60,20 @@ export class DateEntry {
     });
   }
 
+  /** 開く。detached は小さな詳細の中から開いたとき（そのときは view が null でもよい） */
   open(
     kind: DateEntryKind,
     taskIds: readonly string[],
     view: ListView | null,
     anchor: Element | null = null,
+    detached = false,
   ): void {
     const host = taskIds[0];
     this.close();
-    if (host === undefined || view === null) return;
+    if (host === undefined || (view === null && !detached)) return;
     // 同じ行で開き直すときは、前の入力のフェードを待たずに入れ替える（1つの行に描けるのは1つだけ）
     if (this.leaving?.taskIds[0] === host) this.leaving = null;
-    this.request = { id: this.#nextId++, kind, taskIds: [...taskIds], view, anchor };
+    this.request = { id: this.#nextId++, kind, taskIds: [...taskIds], view, anchor, detached };
     this.#syncHosts();
   }
 
@@ -118,6 +128,19 @@ export function dateEntryOf(ui: ListUi): DateEntry {
   return entry;
 }
 
+/**
+ * 閉じたあとのフォーカスの戻し先。小さな詳細から開いたときは押したボタン（消えていたら何もしない）、
+ * 一覧の行から開いたときは一覧（キーの操作を続けられるように）
+ */
+export function returnFocusAfterDateEntry(ui: ListUi, request: DateEntryRequest): void {
+  if (!request.detached) {
+    ui.focusList();
+    return;
+  }
+  const { anchor } = request;
+  if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus();
+}
+
 /** 入力欄の読み上げ名 */
 export function dateEntryLabel(kind: DateEntryKind): string {
   return kind === "schedule" ? "予定の日付" : "締切";
@@ -131,9 +154,10 @@ export function dateEntryPlaceholder(kind: DateEntryKind): string {
  * 入力の後始末：対象の行が今の画面の一覧から消えたら閉じる。行ごと外れた（画面の切り替え、抜けていく動きの終わり）
  * ときも閉じる。どちらも一覧にフォーカスを戻す（ポップオーバーの入力欄にあったフォーカスが行き場を失うため）。
  * 外れたかどうかは、StrictMode の付け直しと区別するため、外れた直後の microtask で確かめる。
- * 行の枠（DateEntryPopover）で使う（待ちの欄から本物の入力へ替わるときに閉じないように）
+ * 行の枠（DateEntryPopover）で使う（待ちの欄から本物の入力へ替わるときに閉じないように）。
+ * 小さな詳細の中（detached）では、小さな詳細ごと閉じたときだけ閉じ、フォーカスは小さな詳細の閉じ方に任せる
  */
-function useDismissWhenGone(requestId: number | null, inList: boolean) {
+function useDismissWhenGone(requestId: number | null, inList: boolean, detached: boolean) {
   const ui = useUi();
   const mounted = useRef(false);
   useEffect(() => {
@@ -145,35 +169,43 @@ function useDismissWhenGone(requestId: number | null, inList: boolean) {
     return () => {
       mounted.current = false;
       queueMicrotask(() => {
-        if (!mounted.current && dateEntryOf(ui).dismiss(requestId)) ui.focusList();
+        if (!mounted.current && dateEntryOf(ui).dismiss(requestId) && !detached) ui.focusList();
       });
     };
-  }, [ui, requestId]);
+  }, [ui, requestId, detached]);
 }
 
 const panel = defer(() => import("./date-entry-panel"));
 
 /**
  * 行の右側の枠から描く。開いていないとき・開いた画面の行でないときは何も描かない。
+ * 小さな詳細は detached を付けて自分の中に置き、小さな詳細から開いた入力だけを描く（一覧に行がなくてよい）。
  * 開いている入力を先に、なければ閉じる途中の入力を描く。
  * 入力（カレンダーを含む）が届く前は、待ちの欄がキーを受け止め、打った文字は届いたら入力欄へ移す
  */
 export const DateEntryPopover = observer(function DateEntryPopover({
   task,
   view,
+  detached = false,
 }: {
   task: TaskRow;
-  view: ListView;
+  view: ListView | null;
+  /** 小さな詳細の中に置いた枠（小さな詳細から開いた入力だけを描く） */
+  detached?: boolean;
 }) {
   const ui = useUi();
   const entry = dateEntryOf(ui);
   const shown =
     [entry.request, entry.leaving].find(
-      (request) => request !== null && request.taskIds[0] === task.id && request.view === view,
+      (request) =>
+        request !== null &&
+        request.taskIds[0] === task.id &&
+        (detached ? request.detached : !request.detached && request.view === view),
     ) ?? null;
   const inList =
-    shown !== null && ui.view === shown.view && ui.rows.some((row) => row.id === task.id);
-  useDismissWhenGone(shown?.id ?? null, inList);
+    shown !== null &&
+    (detached || (ui.view === shown.view && ui.rows.some((row) => row.id === task.id)));
+  useDismissWhenGone(shown?.id ?? null, inList, detached);
   // 届く前に打った文字（入力ごと）
   const [typed, setTyped] = useState<{ id: number; text: string } | null>(null);
   const { module, failed, retry } = useDeferred(panel, shown !== null, shown?.id);
@@ -228,7 +260,7 @@ const DateEntryWaiting = observer(function DateEntryWaiting({
       onChange={onText}
       onCancel={() => {
         dateEntryOf(ui).close();
-        ui.focusList();
+        returnFocusAfterDateEntry(ui, request);
       }}
       failed={failed}
       onRetry={onRetry}

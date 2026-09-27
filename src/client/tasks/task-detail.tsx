@@ -3,10 +3,10 @@ import { type KeyboardEvent, useEffect, useRef, useState } from "react";
 import type { TaskRow } from "@/data";
 import { isComposingKey } from "@/keyboard/keys";
 import { cn } from "@/lib/utils";
+import { useDetailSurface } from "./detail-surface";
 import { detailFieldsOf } from "./extensions";
 import { LinkifiedText } from "./linkified-text";
 import type { ListView } from "./list-ui";
-import { useUi } from "./ui-context";
 import { useAutosave } from "./use-autosave";
 
 /** 開いたタスクのタイトルの入力欄の id（Enter でここにフォーカスを移す） */
@@ -18,26 +18,37 @@ export function titleInputId(taskId: string): string {
 export const fieldFocusClassName =
   "-mx-1 rounded-sm px-1 outline-none focus-visible:ring-1 focus-visible:ring-ring/70";
 
-/** 入力欄で Enter・Esc を押したら保存して閉じ、一覧にフォーカスを戻す（変換を確定するキーでは閉じない） */
+/**
+ * 入力欄で Enter・Esc を押したら保存して閉じる（変換を確定するキーでは閉じない）。
+ * 一覧の中なら開いたタスクを閉じて一覧へ、小さな詳細ならポップオーバーを閉じて押した場所へフォーカスを戻す
+ */
 function useCloseKeys(flush: () => void, keys: readonly string[]) {
-  const ui = useUi();
+  const surface = useDetailSurface();
   return (event: KeyboardEvent) => {
     if (isComposingKey(event.nativeEvent) || !keys.includes(event.key)) return;
     if (event.metaKey || event.ctrlKey || event.altKey || event.shiftKey) return;
     event.preventDefault();
     flush();
-    ui.close();
-    ui.focusList();
+    surface.close();
   };
 }
 
-/** 開いた行のタイトル。行の中で、そのまま直せる */
-export const TitleInput = observer(function TitleInput({ task }: { task: TaskRow }) {
+/**
+ * 開いた行のタイトル。行の中で、そのまま直せる（小さな詳細では、ポップオーバーの一番上）。
+ * id は、Enter でフォーカスを移す先（一覧の行）。小さな詳細では同じタスクの行と重ならないよう付けない
+ */
+export const TitleInput = observer(function TitleInput({
+  task,
+  id = titleInputId(task.id),
+}: {
+  task: TaskRow;
+  id?: string;
+}) {
   const field = useAutosave(task, "title");
   const onKeyDown = useCloseKeys(field.flush, ["Enter", "Escape"]);
   return (
     <input
-      id={titleInputId(task.id)}
+      id={id}
       aria-label="タイトル"
       className={cn(
         "min-w-0 flex-1 bg-transparent placeholder:text-muted-foreground",
@@ -64,8 +75,6 @@ export const TaskDetail = observer(function TaskDetail({
   task: TaskRow;
   view: ListView;
 }) {
-  const sections = detailFieldsOf("section");
-  const chips = detailFieldsOf("chip");
   return (
     // biome-ignore lint/a11y/useSemanticElements: 一覧（listbox）の中の、開いたタスクの欄のまとまり
     <div
@@ -74,6 +83,26 @@ export const TaskDetail = observer(function TaskDetail({
       // 左の端はタイトルの位置（行の左の余白 12px ＋ 丸 17px ＋ 間 12px）にそろえる
       className="mt-1 mb-2 ml-[41px] flex flex-col gap-3 rounded-[10px] border bg-card px-4 py-3"
     >
+      <TaskDetailFields task={task} view={view} />
+    </div>
+  );
+});
+
+/**
+ * 開いたタスクの欄の中身（メモ、登録された欄、一番下の小さなボタンの列）。
+ * リストの行の下（TaskDetail）と小さな詳細（task-detail-popover.tsx）の両方で使う。縦に並べる枠は使う側が持つ
+ */
+export const TaskDetailFields = observer(function TaskDetailFields({
+  task,
+  view,
+}: {
+  task: TaskRow;
+  view: ListView | null;
+}) {
+  const sections = detailFieldsOf("section");
+  const chips = detailFieldsOf("chip");
+  return (
+    <>
       <MemoEditor task={task} />
       {sections.map(({ id, Component }) => (
         <Component key={id} task={task} view={view} />
@@ -85,7 +114,7 @@ export const TaskDetail = observer(function TaskDetail({
           ))}
         </div>
       )}
-    </div>
+    </>
   );
 });
 

@@ -5,9 +5,12 @@ import { registerKeyBindings } from "@/keyboard/keymap";
 import { projectColorOf } from "@/lib/project-color";
 import { cn } from "@/lib/utils";
 import { selectionForOperation } from "@/tasks/commands";
+import { useDetailSurface } from "@/tasks/detail-surface";
 import {
   DETAIL_ORDER,
+  type DetailFieldProps,
   ROW_META_ORDER,
+  registerDetachedHost,
   registerDetailField,
   registerRowMeta,
   type TaskSlotProps,
@@ -65,9 +68,13 @@ const ProjectName = observer(function ProjectName({ task, view }: TaskSlotProps)
 
 registerRowMeta({ id: "project", order: ROW_META_ORDER.project, Component: ProjectName });
 
-/** 開いたタスクの一番下の列：プロジェクト。押すと p と同じ候補が、このボタンから広がる */
-const ProjectChip = observer(function ProjectChip({ task }: TaskSlotProps) {
+/**
+ * 開いたタスクの一番下の列：プロジェクト。押すと p と同じ候補が、このボタンから広がる
+ * （小さな詳細の中では、候補を小さな詳細の中に開く）
+ */
+const ProjectChip = observer(function ProjectChip({ task }: DetailFieldProps) {
   const ui = useUi();
+  const { detached } = useDetailSurface();
   const project = useProjectOf(task.projectId);
   const store = useStore();
   return (
@@ -81,7 +88,7 @@ const ProjectChip = observer(function ProjectChip({ task }: TaskSlotProps) {
       )}
       onClick={(event) => {
         event.stopPropagation();
-        projectPickerOf(ui).open(task.id, event.currentTarget);
+        projectPickerOf(ui).open(task.id, event.currentTarget, detached);
       }}
     >
       {project ? (
@@ -99,4 +106,12 @@ registerDetailField({
   placement: "chip",
   order: DETAIL_ORDER.project,
   Component: ProjectChip,
+});
+
+// 小さな詳細（カレンダーとタイムラインのポップオーバー）の中のプロジェクトのボタンから開いた候補は、
+// 小さな詳細の中に描く（一覧に行がなくてよい）
+registerDetachedHost({
+  id: "project-picker",
+  order: 20,
+  Component: ({ task }) => <ProjectPickerHost task={task} detached />,
 });

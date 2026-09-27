@@ -76,11 +76,14 @@ export const ProjectPickerPopup = observer(function ProjectPickerPopup({
   );
   const current = items.find((item) => item.kind === "project" && item.id === shared);
 
-  /** 閉じて、開いた元へフォーカスを戻す（ボタンから開いたらボタンへ。ボタンが消えていたら一覧へ） */
+  /**
+   * 閉じて、開いた元へフォーカスを戻す（ボタンから開いたらボタンへ。ボタンが消えていたら一覧へ。
+   * 小さな詳細から開いた候補なら、一覧へは戻さない）
+   */
   const close = () => {
     picker.close();
     if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus();
-    else ui.focusList();
+    else if (!session.detached) ui.focusList();
   };
 
   const choose = (item: PickerItem) => {

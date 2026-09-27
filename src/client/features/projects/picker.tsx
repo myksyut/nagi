@@ -1,6 +1,6 @@
 import { action, makeObservable, observable, observableRef, reaction } from "mobx";
 import { observer } from "mobx-react-lite";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useAnchoredStyle, WaitingInput } from "@/components/waiting-input";
 import type { ProjectRow, TaskRow } from "@/data";
 import { defer, useDeferred } from "@/lib/deferred";
@@ -14,7 +14,9 @@ import { normalizeName } from "./commands";
  * 起動に要らないので後から読み込む（Base UI の Combobox を最初の JS から外す）。
  * 名前を打って絞り込み、Enter で決める。当てはまる名前がなければ「「◯◯」を作成」が出て、その場で作って付けられる。
  * アーカイブ済みのプロジェクトは候補に出さない。付けても置き場は変わらない（受信箱なら受信箱に残る）。
- * 候補は、対象のタスクの行の右側の枠（register.tsx）から描き、行（p のとき）か押したボタンから広がる
+ * 候補は、対象のタスクの行の右側の枠（register.tsx）から描き、行（p のとき）か押したボタンから広がる。
+ * 小さな詳細（tasks/task-detail-popover.tsx）の中のボタンから開いたときは detached にし、小さな詳細が自分の中に描く
+ * （一覧に行がなくてよい）
  */
 
 /** 候補の1つ */
@@ -58,6 +60,8 @@ export type PickerSession = {
   taskIds: readonly string[];
   /** 広げる元の要素（開いたタスクのボタン）。null なら行から広げる */
   anchor: Element | null;
+  /** 小さな詳細の中から開いた（行ではなく小さな詳細が描く） */
+  detached: boolean;
 };
 
 /**
@@ -65,7 +69,8 @@ export type PickerSession = {
  * 複数のタスクにかけるとき（7 の複数選択）は、候補を1回だけ開き、決めたものをすべてに付ける。
  * 候補は先頭のタスク（taskId）の行から広がる。閉じたときは、消えるときのフェード（150ms）が終わるまで描き続ける（leaving）。
  * 画面が変わったときと、そのタスクが一覧からなくなったとき（同期・ほかのタブ）は、フェードなしで閉じる
- * （候補の部品は行と一緒に消えるので、閉じたことを自分では知らせられない）
+ * （候補の部品は行と一緒に消えるので、閉じたことを自分では知らせられない）。
+ * 小さな詳細から開いた候補（detached）は一覧の行と関係がないので、どちらでも閉じない（小さな詳細と一緒に消える）
  */
 export class ProjectPicker {
   /** 開いている候補 */
@@ -83,16 +88,21 @@ export class ProjectPicker {
       open: action,
       close: action,
       dismiss: action,
+      dismissDetached: action,
       left: action,
     });
     reaction(
       () => ui.view,
-      () => this.dismiss(),
+      () => {
+        if (!this.session?.detached) this.dismiss();
+      },
     );
     reaction(
       () => {
-        const taskId = this.session?.taskId;
-        return taskId !== undefined && !ui.rows.some((row) => row.id === taskId);
+        const session = this.session;
+        return (
+          session !== null && !session.detached && !ui.rows.some((row) => row.id === session.taskId)
+        );
       },
       (gone) => {
         if (gone) this.dismiss();
@@ -105,15 +115,18 @@ export class ProjectPicker {
     return this.#hosts.has(taskId);
   }
 
-  /** 候補を開く。taskIds は1つの id か、上から見えている順の id の列 */
-  open(taskIds: string | readonly string[], anchor: Element | null = null): void {
+  /**
+   * 候補を開く。taskIds は1つの id か、上から見えている順の id の列。
+   * detached は小さな詳細の中から開いたとき
+   */
+  open(taskIds: string | readonly string[], anchor: Element | null = null, detached = false): void {
     const ids = typeof taskIds === "string" ? [taskIds] : [...taskIds];
     const host = ids[0];
     this.close();
     if (host === undefined) return;
     // 同じ行で開き直すときは、前の候補のフェードを待たずに入れ替える（1つの行に描けるのは1つだけ）
     if (this.leaving?.taskId === host) this.leaving = null;
-    this.session = { id: this.#nextId++, taskId: host, taskIds: ids, anchor };
+    this.session = { id: this.#nextId++, taskId: host, taskIds: ids, anchor, detached };
     this.#syncHosts();
   }
 
@@ -128,6 +141,16 @@ export class ProjectPicker {
   dismiss(): void {
     this.session = null;
     this.leaving = null;
+    this.#syncHosts();
+  }
+
+  /**
+   * 小さな詳細から開いたそのタスクの候補を、フェードなしで閉じる（小さな詳細が閉じて、描く枠ごと消えたとき。
+   * 残しておくと、次にそのタスクの小さな詳細を開いたときに候補まで開いてしまう）
+   */
+  dismissDetached(taskId: string): void {
+    if (this.session?.detached && this.session.taskId === taskId) this.session = null;
+    if (this.leaving?.detached && this.leaving.taskId === taskId) this.leaving = null;
     this.#syncHosts();
   }
 
@@ -170,18 +193,33 @@ export function pickerPlaceholder(taskIds: readonly string[]): string {
 
 /**
  * 行の右側の枠に置く。そのタスクの候補を開いているとき（と、閉じる途中）だけ描く。
+ * 小さな詳細は detached を付けて自分の中に置き、小さな詳細から開いた候補だけを描く。
  * ほかの行は自分の「描くか」だけを観測するので、候補を開いても描き直さない。
  * 候補が届く前は、待ちの欄がキーを受け止め、打った文字は届いたら候補の入力欄へ移す
  */
-export const ProjectPickerHost = observer(function ProjectPickerHost({ task }: { task: TaskRow }) {
+export const ProjectPickerHost = observer(function ProjectPickerHost({
+  task,
+  detached = false,
+}: {
+  task: TaskRow;
+  /** 小さな詳細の中に置いた枠（小さな詳細から開いた候補だけを描く） */
+  detached?: boolean;
+}) {
   const ui = useUi();
   const picker = projectPickerOf(ui);
   const session = picker.isHost(task.id)
-    ? ([picker.session, picker.leaving].find((candidate) => candidate?.taskId === task.id) ?? null)
+    ? ([picker.session, picker.leaving].find(
+        (candidate) => candidate?.taskId === task.id && candidate.detached === detached,
+      ) ?? null)
     : null;
   // 届く前に打った文字（候補を開くたびに）
   const [typed, setTyped] = useState<{ id: number; text: string } | null>(null);
   const { module, failed, retry } = useDeferred(popup, session !== null, session?.id);
+  // 小さな詳細の中の枠は、小さな詳細と一緒に消える。そのとき開いていた候補も閉じる
+  useEffect(() => {
+    if (!detached) return;
+    return () => picker.dismissDetached(task.id);
+  }, [picker, task.id, detached]);
   if (session === null) return null;
   const text = typed?.id === session.id ? typed.text : "";
   if (module) {
@@ -209,7 +247,7 @@ export const ProjectPickerHost = observer(function ProjectPickerHost({ task }: {
         picker.close();
         const { anchor } = session;
         if (anchor instanceof HTMLElement && anchor.isConnected) anchor.focus();
-        else ui.focusList();
+        else if (!session.detached) ui.focusList();
       }}
     />
   );

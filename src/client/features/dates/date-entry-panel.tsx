@@ -19,6 +19,7 @@ import {
   dateEntryLabel,
   dateEntryOf,
   dateEntryPlaceholder,
+  returnFocusAfterDateEntry,
 } from "./date-entry";
 import { formatLongDate } from "./labels";
 
@@ -87,10 +88,10 @@ export const DateEntryPanel = observer(function DateEntryPanel({
   /** 閉じる途中なら false（フェードが終わったら entry.left で描くのをやめる） */
   const open = entry.request?.id === request.id;
 
-  /** 閉じて一覧にフォーカスを戻す（キーの操作を続けられるように） */
+  /** 閉じて一覧にフォーカスを戻す（キーの操作を続けられるように。小さな詳細から開いたときは押したボタンへ） */
   const finish = () => {
     entry.close();
-    ui.focusList();
+    returnFocusAfterDateEntry(ui, request);
   };
 
   const commit = (date: string | null) => {
@@ -216,24 +217,35 @@ export const DateEntryPanel = observer(function DateEntryPanel({
             // 選び直しで選択が外れる（undefined）ときも、押した日で決める
             onSelect={(_: Date | undefined, day: Date) => commit(fromLocalDate(day))}
           />
-          <Footer kind={kind} task={task} taskIds={taskIds} onDone={finish} />
+          <Footer
+            kind={kind}
+            task={task}
+            taskIds={taskIds}
+            onDone={finish}
+            showKeys={!request.detached}
+          />
         </div>
       </PopoverPopup>
     </Popover>
   );
 });
 
-/** 下の小さなボタン：予定では「今日」「あとで」、締切では「締切を外す」 */
+/**
+ * 下の小さなボタン：予定では「今日」「あとで」、締切では「締切を外す」。
+ * 「今日」「あとで」にはキー（t・l）を添える。小さな詳細から開いたときは、キーが効かないので添えない（showKeys）
+ */
 const Footer = observer(function Footer({
   kind,
   task,
   taskIds,
   onDone,
+  showKeys,
 }: {
   kind: DateEntryKind;
   task: TaskRow;
   taskIds: readonly string[];
   onDone: () => void;
+  showKeys: boolean;
 }) {
   const ui = useUi();
   const buttonClassName =
@@ -276,7 +288,7 @@ const Footer = observer(function Footer({
           }}
         >
           {label}
-          {key !== undefined && <Kbd>{key}</Kbd>}
+          {showKeys && key !== undefined && <Kbd>{key}</Kbd>}
         </button>
       ))}
     </div>

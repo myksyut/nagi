@@ -3,9 +3,12 @@ import { useStore } from "@/data";
 import { type KeyBinding, type KeyContext, registerKeyBindings } from "@/keyboard/keymap";
 import { cn } from "@/lib/utils";
 import { openRowsOf, selectionForOperation } from "@/tasks/commands";
+import { useDetailSurface } from "@/tasks/detail-surface";
 import {
   DETAIL_ORDER,
+  type DetailFieldProps,
   ROW_META_ORDER,
+  registerDetachedHost,
   registerDetailField,
   registerRowMeta,
   type TaskSlotProps,
@@ -107,10 +110,12 @@ const chipButtonClassName = cn(
 
 /**
  * 開いたタスクの一番下の列：いつやる（置き場と予定の日付）。押すと日付の入力が開く（今日・あとでも選べる）。
- * 完了したタスクでは「完了」と出すだけ（d・⇧D と同じく、日付の入力は開けない）
+ * 完了したタスクでは「完了」と出すだけ（d・⇧D と同じく、日付の入力は開けない）。
+ * 小さな詳細の中では、日付の入力を小さな詳細の中に開く（detached）
  */
-const WhenChip = observer(function WhenChip({ task, view }: TaskSlotProps) {
+const WhenChip = observer(function WhenChip({ task, view }: DetailFieldProps) {
   const ui = useUi();
+  const { detached } = useDetailSurface();
   const today = useStore().today;
   if (task.completedAt !== null) return <span className={chipClassName}>完了</span>;
   const label =
@@ -123,7 +128,9 @@ const WhenChip = observer(function WhenChip({ task, view }: TaskSlotProps) {
       aria-haspopup="dialog"
       aria-label={`いつやる：${label}`}
       className={chipButtonClassName}
-      onClick={(event) => dateEntryOf(ui).open("schedule", [task.id], view, event.currentTarget)}
+      onClick={(event) =>
+        dateEntryOf(ui).open("schedule", [task.id], view, event.currentTarget, detached)
+      }
     >
       {label}
     </button>
@@ -141,8 +148,9 @@ registerDetailField({
  * 開いたタスクの一番下の列：締切（「締切 10/2(金)」）。押すと日付の入力が開く。
  * 完了したタスクでは出さない（行の右側と同じく、完了したタスクと完了ログには締切を出さない）
  */
-const DeadlineChip = observer(function DeadlineChip({ task, view }: TaskSlotProps) {
+const DeadlineChip = observer(function DeadlineChip({ task, view }: DetailFieldProps) {
   const ui = useUi();
+  const { detached } = useDetailSurface();
   const today = useStore().today;
   if (task.completedAt !== null) return null;
   const deadlineOn = task.deadlineOn;
@@ -154,7 +162,9 @@ const DeadlineChip = observer(function DeadlineChip({ task, view }: TaskSlotProp
       aria-haspopup="dialog"
       aria-label={deadlineOn === null ? "締切を付ける" : label}
       className={cn(chipButtonClassName, deadlineOn === null && "border-dashed")}
-      onClick={(event) => dateEntryOf(ui).open("deadline", [task.id], view, event.currentTarget)}
+      onClick={(event) =>
+        dateEntryOf(ui).open("deadline", [task.id], view, event.currentTarget, detached)
+      }
     >
       {label}
     </button>
@@ -166,4 +176,12 @@ registerDetailField({
   placement: "chip",
   order: DETAIL_ORDER.deadline,
   Component: DeadlineChip,
+});
+
+// 小さな詳細（カレンダーとタイムラインのポップオーバー）の中の「いつやる」「締切」から開いた日付の入力は、
+// 小さな詳細の中に描く（一覧に行がなくてよい）
+registerDetachedHost({
+  id: "date-entry",
+  order: 10,
+  Component: ({ task }) => <DateEntryPopover task={task} view={null} detached />,
 });

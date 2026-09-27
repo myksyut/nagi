@@ -17,6 +17,7 @@ import { isComposingKey } from "@/keyboard/keys";
 import { LAYOUT_TRANSITION } from "@/lib/motion";
 import { cn } from "@/lib/utils";
 import { runTaskOperation } from "@/tasks/commands";
+import { useDetailSurface } from "@/tasks/detail-surface";
 import type { ListUi } from "@/tasks/list-ui";
 import { fieldFocusClassName } from "@/tasks/task-detail";
 import { useUi } from "@/tasks/ui-context";
@@ -38,6 +39,7 @@ import {
  * - 並べ替えは、左のつまみのドラッグか、項目の中で ⌥↑／⌥↓
  * - 全部チェックしても、タスクは完了にしない
  * 項目の欄のキー：Enter で次の項目へ、↑↓ で上下の項目へ、空の欄で ⌫ を押すと項目を消す、Esc でタスクを閉じる
+ * （小さな詳細では、ポップオーバーを閉じる）
  */
 
 /**
@@ -49,12 +51,14 @@ const SETTLE_TRANSITION = { bounceStiffness: 1000, bounceDamping: 64 } as const;
 /** 打つのが止まってから保存するまでの時間（タイトルとメモと同じ） */
 const AUTOSAVE_DELAY_MS = 500;
 
-export function checklistItemInputId(taskId: string, itemId: string): string {
-  return `checklist-${taskId}-${itemId}`;
+/** 項目の欄の id。scope は欄のいる場所の接頭辞（useDetailSurface().idScope。一覧の中は ""） */
+export function checklistItemInputId(taskId: string, itemId: string, scope = ""): string {
+  return `${scope}checklist-${taskId}-${itemId}`;
 }
 
-export function checklistAddInputId(taskId: string): string {
-  return `checklist-${taskId}-add`;
+/** 「項目を追加」の欄の id */
+export function checklistAddInputId(taskId: string, scope = ""): string {
+  return `${scope}checklist-${taskId}-add`;
 }
 
 function newItemId(): string {
@@ -84,6 +88,8 @@ function focusField(id: string, caret: "start" | "end" = "end"): void {
 
 export const ChecklistEditor = observer(function ChecklistEditor({ task }: { task: TaskRow }) {
   const ui = useUi();
+  // 同じタスクが一覧と小さな詳細の両方に出ても、欄の id（フォーカスの移し先）が重ならないように
+  const { idScope } = useDetailSurface();
   const drafts = checklistDraftsOf(ui.store);
   const items = task.checklist;
   /** ドラッグしているあいだの並び（離したときに送る） */
@@ -105,8 +111,8 @@ export const ChecklistEditor = observer(function ChecklistEditor({ task }: { tas
 
   const current = () => task.peek().checklist;
   const shown = dragOrder ? orderItems(items, dragOrder) : items;
-  const inputOf = (itemId: string) => checklistItemInputId(task.id, itemId);
-  const addInput = checklistAddInputId(task.id);
+  const inputOf = (itemId: string) => checklistItemInputId(task.id, itemId, idScope);
+  const addInput = checklistAddInputId(task.id, idScope);
 
   const toggle = (itemId: string) => performChecklist(ui, task, toggleItem(current(), itemId));
 
@@ -206,7 +212,7 @@ const ChecklistItemRow = observer(function ChecklistItemRow({
   onFocusSibling: (delta: -1 | 1) => void;
   onDragEnd: () => void;
 }) {
-  const ui = useUi();
+  const surface = useDetailSurface();
   const controls = useDragControls();
   // 運んでいるあいだだけ不透明の面にする（開いたタスクの欄は半透明なので、下の項目が透けないように）
   const [dragging, setDragging] = useState(false);
@@ -251,8 +257,7 @@ const ChecklistItemRow = observer(function ChecklistItemRow({
       case "Escape":
         event.preventDefault();
         field.flush();
-        ui.close();
-        ui.focusList();
+        surface.close();
         return;
       case "Backspace":
         if (field.value === "") {
@@ -352,6 +357,7 @@ const AddItemInput = observer(function AddItemInput({
   onFocusLast: () => void;
 }) {
   const ui = useUi();
+  const surface = useDetailSurface();
   const value = drafts.addDraft(task.id);
 
   const add = () => {
@@ -392,8 +398,7 @@ const AddItemInput = observer(function AddItemInput({
             onFocusLast();
           } else if (event.key === "Escape") {
             event.preventDefault();
-            ui.close();
-            ui.focusList();
+            surface.close();
           }
         }}
       />
