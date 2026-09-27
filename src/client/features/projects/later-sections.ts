@@ -13,8 +13,9 @@ export function laterSections(store: AppStore): TaskSection[] {
   const byProject = new Map<string, TaskRow[]>();
   const none: TaskRow[] = [];
   for (const task of store.lists.later) {
-    // タスクの中身は観測しない（プロジェクトの付け替えは、リストの側が知らせる）
-    const { projectId } = task.peek();
+    // プロジェクトは行ごとに観測する。付け替えても あとで の中身と並びは変わらないので、
+    // store.lists.later は知らせてこない（まとまりの見た目が変わらなければ、一覧は描き直さない）
+    const { projectId } = task;
     const project = projectId === null ? undefined : store.project(projectId);
     if (projectId === null || !project || project.deletedAt !== null) {
       none.push(task);

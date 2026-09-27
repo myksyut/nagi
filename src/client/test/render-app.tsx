@@ -33,3 +33,15 @@ export function optionTitles(name: string): (string | null)[] {
     .queryAllByRole("option")
     .map((option) => option.textContent);
 }
+
+/**
+ * p（プロジェクト）の候補の listbox（coss ui の Combobox）。行の一覧も role=listbox なので、
+ * 名前（aria-label）が付いていないほうを候補として探す
+ */
+export function pickerListbox(): HTMLElement {
+  const listbox = screen
+    .getAllByRole("listbox")
+    .find((element) => element.getAttribute("aria-label") === null);
+  if (!listbox) throw new Error("p の候補（listbox）が見つかりません");
+  return listbox;
+}
