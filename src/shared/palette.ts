@@ -59,10 +59,3 @@ export function resolveProjectColors(
   });
   return colors;
 }
-
-/** 次に作るプロジェクトの色（作成順で最後に入るので、削除済みを除いた数が i になる） */
-export function nextProjectColor(projects: Iterable<ColoredProject>): ProjectColor {
-  let count = 0;
-  for (const project of projects) if (project.deletedAt === null) count++;
-  return autoProjectColor(count);
-}

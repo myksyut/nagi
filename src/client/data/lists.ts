@@ -1,6 +1,6 @@
 import { logicalDate } from "@shared/logical-date";
 import type { Bucket } from "@shared/model";
-import { type ProjectColor, resolveProjectColors } from "@shared/palette";
+import { autoProjectColor, orderForAutoColor, type ProjectColor } from "@shared/palette";
 import { compareRank } from "@shared/rank";
 import { compareShallow, computed, type IComputedValue, makeObservable } from "mobx";
 import { addDays, dayStart, type LogicalDay } from "./logical-day";
@@ -144,6 +144,23 @@ export class TaskLists {
   readonly #day: LogicalDay;
   readonly #projectGroups = new Map<string, IComputedValue<ProjectTaskGroups>>();
   readonly #projectBoards = new Map<string, IComputedValue<ProjectBoard>>();
+  readonly #projectColors = new Map<string, IComputedValue<ProjectColor | undefined>>();
+  /**
+   * 作成順の色を決める並び：削除済みを除くプロジェクトの id を、作成の時刻の順（同じなら id の順）に。
+   * 行の出入りと、各行の createdAt・deletedAt だけを観測する（名前や色の変更では並べ直さない）
+   */
+  readonly #autoColorOrder: IComputedValue<readonly string[]> = computed(
+    () =>
+      orderForAutoColor(
+        this.#replica.projectRows().map((row) => ({
+          id: row.id,
+          color: null,
+          createdAt: row.field("createdAt"),
+          deletedAt: row.field("deletedAt"),
+        })),
+      ).map((project) => project.id),
+    { equals: compareShallow },
+  );
 
   constructor(replica: Replica, day: LogicalDay) {
     this.#replica = replica;
@@ -278,17 +295,32 @@ export class TaskLists {
   }
 
   /**
-   * 各プロジェクトの色（id → パレットの名前）。color があればその色、空なら作成順で決まる色
-   * （削除済みを除くすべてのプロジェクトを、アーカイブ済みも含めて作成順に並べた i 番目に、i を 8 で割った余りの色）。
+   * 各プロジェクトの色（id → パレットの名前。作成順に並ぶ）。値は projectColor(id) と同じ。
    * 削除済みのプロジェクトは入らない
    */
   get projectColors(): ReadonlyMap<string, ProjectColor> {
-    return resolveProjectColors(this.#replica.allProjects().map((project) => project.peek()));
+    const colors = new Map<string, ProjectColor>();
+    for (const id of this.#autoColorOrder.get()) {
+      const color = this.projectColor(id);
+      if (color !== undefined) colors.set(id, color);
+    }
+    return colors;
   }
 
-  /** プロジェクトの色（パレットの名前）。削除済みか、ないプロジェクトなら undefined */
+  /**
+   * プロジェクトの色（パレットの名前）。color があればその色、空なら作成順で決まる色
+   * （削除済みを除くすべてのプロジェクトを、アーカイブ済みも含めて作成順に並べた i 番目に、i を 8 で割った余りの色）。
+   * 削除済みか、ないプロジェクトなら undefined。
+   * ID ごとの計算で、そのプロジェクトの color・deletedAt と作成順の並びだけを観測する
+   * （ほかのプロジェクトの色や名前が変わっても知らせない）
+   */
   projectColor(projectId: string): ProjectColor | undefined {
-    return this.projectColors.get(projectId);
+    let color = this.#projectColors.get(projectId);
+    if (!color) {
+      color = computed(() => this.#computeProjectColor(projectId));
+      this.#projectColors.set(projectId, color);
+    }
+    return color.get();
   }
 
   /** プロジェクトの画面のタスク */
@@ -318,6 +350,15 @@ export class TaskLists {
 
   #open(bucket: Bucket): TaskRow[] {
     return sorted(this.#rows(bucket), BUCKET_ORDER[bucket]);
+  }
+
+  #computeProjectColor(projectId: string): ProjectColor | undefined {
+    const row = this.#replica.project(projectId);
+    if (!row || row.field("deletedAt") !== null) return undefined;
+    const color = row.field("color");
+    if (color !== null) return color;
+    const index = this.#autoColorOrder.get().indexOf(projectId);
+    return index < 0 ? undefined : autoProjectColor(index);
   }
 
   #computeProjectBoard(projectId: string): ProjectBoard {

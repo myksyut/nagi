@@ -1,9 +1,15 @@
-import type { Bucket, ChecklistItem, Project, Task } from "@shared/model";
+import {
+  type Bucket,
+  type ChecklistItem,
+  isScheduleConsistent,
+  isStartConsistent,
+  type Project,
+  type Task,
+} from "@shared/model";
 import type { Mutation } from "@shared/mutations";
-import { nextProjectColor } from "@shared/palette";
 import { arrivalRanks, rankBetween, ranksBetween } from "@shared/rank";
 import type { LogicalDay } from "./logical-day";
-import { targetOf } from "./overlay";
+import { applyTaskMutation, isTaskMutation, targetOf } from "./overlay";
 import type { OperationKind, Replica } from "./replica";
 import type { TaskRow } from "./rows";
 import type { UndoStack } from "./undo";
@@ -27,6 +33,11 @@ export type OperationFailure =
   | "has-open-tasks"
   /** 1回の操作の対象が 500（サーバーの上限）を超えた。分けずに断る */
   | "too-many"
+  /**
+   * 元に戻す操作が、ほかの画面の変更とぶつかった（戻すと「進行中なら今日」などが崩れる）。
+   * 戻さずに、その操作を元に戻すの対象から外し、ぶつかりを知らせて同期し直す
+   */
+  | "conflict"
   /** 元に戻す操作がない */
   | "nothing-to-undo";
 
@@ -84,6 +95,8 @@ type ActionsOptions = {
   now: () => Date;
   newId: () => string;
   perform: Perform;
+  /** 元に戻す操作がぶつかって、戻さなかったとき（ストアが知らせを出し、同期し直す） */
+  onUndoConflict?: () => void;
 };
 
 const OPEN_PARTITIONS = ["inbox", "today", "scheduled", "later"] as const;
@@ -107,10 +120,15 @@ function sameValue(key: string, a: unknown, b: unknown): boolean {
  * 変える項目だけを残し、bucket と scheduledOn の対応、進行中と今日の対応を満たすようにそろえる。
  * - scheduled にするときは scheduledOn も、scheduled から外すときは scheduledOn: null も、同じ changes に入れる
  * - 進行中（startedAt あり）のタスクを今日から出すときは、同じ changes で startedAt: null にする（未着手に戻る）。
- *   今日の外で startedAt を入れようとしたら受け付けない
+ *   今日の外で startedAt を入れようとしたら（今と同じ値でも）受け付けない
  * 受け付けられない内容なら null
  */
 export function normalizeTaskChanges(current: Task, changes: TaskChanges): TaskChanges | null {
+  // 明示した startedAt と変えたあとの bucket の組み合わせを、同じ値を取り除く前に確かめる
+  // （今と同じ startedAt を明示して今日から出すと、取り除いたあとでは「未着手への移動」に見えてしまうため。
+  // 進行中を保つつもりの操作を、黙って別の操作にしない）
+  const startedAtGiven = changes.startedAt !== undefined && changes.startedAt !== null;
+  if (startedAtGiven && (changes.bucket ?? current.bucket) !== "today") return null;
   const next: Record<string, unknown> = {};
   for (const [key, value] of Object.entries(changes)) {
     if (value === undefined) continue;
@@ -127,26 +145,30 @@ export function normalizeTaskChanges(current: Task, changes: TaskChanges): TaskC
     if ("scheduledOn" in next) return null;
     next.scheduledOn = null;
   }
-  const startedAt = "startedAt" in next ? (next.startedAt as string | null) : current.startedAt;
-  if (startedAt !== null && bucket !== "today") {
-    if ("startedAt" in next) return null;
+  if (current.startedAt !== null && changes.startedAt === undefined && bucket !== "today") {
     next.startedAt = null;
   }
   return next as TaskChanges;
 }
 
 /**
- * 元に戻す操作を、今の表示に重ねても「進行中なら今日」が崩れないようにそろえる。
- * 1つのタブの中の操作では崩れないが、戻すまでのあいだにほかのタブが同じタスクを動かしていると、
- * 今日の外で進行中に戻そうとしてサーバーに断られるため、そのときは未着手のまま戻す
+ * 操作を今の表示に順に重ねると、タスクの決まり（「進行中なら今日」「予定なら日付あり」）が崩れるか。
+ * 元に戻す操作は、戻すまでのあいだにほかの画面が同じタスクを動かしていると崩れることがある
+ * （サーバーも断る）。そのときは直して送らず、戻せなかったことにする
  */
-function keepStartedInToday(mutation: Mutation, current: Task | undefined): Mutation {
-  if (mutation.type !== "task.update" || !current) return mutation;
-  const { changes } = mutation;
-  const bucket = changes.bucket ?? current.bucket;
-  const startedAt = changes.startedAt !== undefined ? changes.startedAt : current.startedAt;
-  if (startedAt === null || bucket === "today") return mutation;
-  return { ...mutation, changes: { ...changes, startedAt: null } };
+function breaksTaskRules(
+  mutations: readonly Mutation[],
+  read: (id: string) => Task | undefined,
+): boolean {
+  const tasks = new Map<string, Task | undefined>();
+  for (const mutation of mutations) {
+    if (!isTaskMutation(mutation)) continue;
+    const { id } = targetOf(mutation);
+    const next = applyTaskMutation(tasks.has(id) ? tasks.get(id) : read(id), mutation, "");
+    tasks.set(id, next);
+    if (next && !(isScheduleConsistent(next) && isStartConsistent(next))) return true;
+  }
+  return false;
 }
 
 export class TaskActions {
@@ -156,14 +178,24 @@ export class TaskActions {
   readonly #now: () => Date;
   readonly #newId: () => string;
   readonly #perform: Perform;
+  readonly #onUndoConflict: () => void;
 
-  constructor({ replica, day, undoStack, now, newId, perform }: ActionsOptions) {
+  constructor({
+    replica,
+    day,
+    undoStack,
+    now,
+    newId,
+    perform,
+    onUndoConflict = () => {},
+  }: ActionsOptions) {
     this.#replica = replica;
     this.#day = day;
     this.#undoStack = undoStack;
     this.#now = now;
     this.#newId = newId;
     this.#perform = perform;
+    this.#onUndoConflict = onUndoConflict;
   }
 
   // --- 並び順キー -------------------------------------------------------------------------
@@ -410,11 +442,10 @@ export class TaskActions {
   createProject(name: string, assignTo: readonly string[] = []): OperationResult {
     if (!isNonBlank(name)) return { ok: false, reason: "invalid" };
     const id = this.#newId();
-    // 色は作るときに決めて入れる（作成順で次に来る色。あとから前のプロジェクトが消えても変わらないように）
-    const color = nextProjectColor(this.#replica.allProjects().map((project) => project.peek()));
-    const mutations: Mutation[] = [
-      { type: "project.create", project: { id, name: name.trim(), color } },
-    ];
+    // 色は入れない（空のまま作り、表示は作成順の色に任せる。lists.projectColor）。作るときに手元の件数で
+    // 決めると、同期の前・ほかのタブの作成・同じ時刻の作成で、作成順とずれた色が保存されて直らないため。
+    // color を入れるのは、利用者が色を選んだとき（updateProject）だけ
+    const mutations: Mutation[] = [{ type: "project.create", project: { id, name: name.trim() } }];
     for (const task of this.#rows(assignTo)) {
       if (task.deletedAt === null) {
         mutations.push({ type: "task.update", id: task.id, changes: { projectId: id } });
@@ -473,22 +504,26 @@ export class TaskActions {
 
   // --- 元に戻す ---------------------------------------------------------------------------
 
-  /** 一番新しい操作を、逆向きの操作のまとまり1つで戻す */
+  /**
+   * 一番新しい操作を、逆向きの操作のまとまり1つで戻す。
+   * 戻すまでのあいだにほかの画面が同じタスクを動かしていて、戻すとタスクの決まりが崩れるときは、
+   * 直して送ることはせずに戻さない（conflict）。その操作は戻せないので元に戻すの対象から外し、
+   * ぶつかりを知らせて同期し直す（onUndoConflict）
+   */
   undo(): OperationResult {
     const entry = this.#undoStack.pop();
     if (!entry) return { ok: false, reason: "nothing-to-undo" };
     // 戻す先の行がもうない（削除から 30 日たって捨てた）操作は送らない
-    const mutations = entry
-      .inverse(this.#now().toISOString())
-      .filter((mutation) => {
-        const target = targetOf(mutation);
-        return target.kind === "task"
-          ? this.#replica.task(target.id) !== undefined
-          : this.#replica.project(target.id) !== undefined;
-      })
-      .map((mutation) =>
-        keepStartedInToday(mutation, this.#replica.task(targetOf(mutation).id)?.peek()),
-      );
+    const mutations = entry.inverse(this.#now().toISOString()).filter((mutation) => {
+      const target = targetOf(mutation);
+      return target.kind === "task"
+        ? this.#replica.task(target.id) !== undefined
+        : this.#replica.project(target.id) !== undefined;
+    });
+    if (breaksTaskRules(mutations, (id) => this.#replica.task(id)?.peek())) {
+      this.#onUndoConflict();
+      return { ok: false, reason: "conflict" };
+    }
     const result = this.#perform("undo", mutations, { undoable: false });
     if (result.ok) {
       this.#undoStack.undoing(result.operationId, entry);

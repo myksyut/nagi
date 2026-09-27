@@ -335,6 +335,20 @@ describe("normalizeTaskChanges（進行中と今日の対応）", () => {
     });
   });
 
+  it("10-修正1：進行中のタスクに、今と同じ startedAt を明示して bucket を今日の外へ変えると invalid（黙って未着手への移動にしない）", () => {
+    const startedAt = "2026-01-01T00:00:00.000Z";
+    const task = makeTask({ bucket: "today", startedAt });
+    expect(normalizeTaskChanges(task, { bucket: "later", startedAt })).toBeNull();
+    // 予定へ移すときも同じ
+    expect(
+      normalizeTaskChanges(task, { bucket: "scheduled", scheduledOn: "2026-02-01", startedAt }),
+    ).toBeNull();
+    // 進行中を保つつもりで、別の時刻を明示しても invalid
+    expect(
+      normalizeTaskChanges(task, { bucket: "inbox", startedAt: "2026-01-02T00:00:00.000Z" }),
+    ).toBeNull();
+  });
+
   it("bucket が today のままなら startedAt をそのまま渡す", () => {
     const task = makeTask({ bucket: "today" });
     expect(normalizeTaskChanges(task, { startedAt: "2026-01-01T00:00:00.000Z" })).toEqual({
@@ -685,24 +699,19 @@ describe("createProject / updateProject", () => {
     expect(result).toEqual({ ok: false, reason: "has-open-tasks" });
   });
 
-  it("プロジェクトがまだなければ作成順の0番目（violet）が付く", () => {
-    const { actions, performed } = setup();
-    actions.createProject("1つ目");
-    const mutation = performed[0]?.mutations[0];
-    expect(mutation?.type === "project.create" && mutation.project.color).toBe("violet");
-  });
-
-  it("アーカイブ済みも作成順の数に入る。削除済みは数に入らない", () => {
+  it("10-修正1：作るときに色を入れない（color は空。表示は作成順の色に任せる）", () => {
     const { replica, actions, performed } = setup();
+    actions.createProject("1つ目");
     const archived = makeProject({ archivedAt: "2026-01-01T00:00:00.000Z" });
-    const deleted = makeProject({ deletedAt: "2026-01-01T00:00:00.000Z" });
-    replica.replaceConfirmed([archived, deleted].map((row) => ({ kind: "project" as const, row })));
+    replica.replaceConfirmed([{ kind: "project", row: archived }]);
+    actions.createProject("2つ目");
 
-    actions.createProject("次");
-
-    const mutation = performed[0]?.mutations[0];
-    // 生きているプロジェクトは archived の1件だけ（deleted は数に入らない）→ i=1 → sky
-    expect(mutation?.type === "project.create" && mutation.project.color).toBe("sky");
+    for (const { mutations } of performed) {
+      const mutation = mutations[0];
+      if (mutation?.type !== "project.create") throw new Error("project.create ではありません");
+      expect(mutation.project.color ?? null).toBeNull();
+    }
+    expect(performed).toHaveLength(2);
   });
 
   it("updateProject で色を変えられる", () => {

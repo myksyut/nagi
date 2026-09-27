@@ -1,5 +1,5 @@
 import { autorun, reaction } from "mobx";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { makeProject, makeTask } from "../test/fixtures";
 import { PROJECT_BOARD_COMPLETED_DAYS, TaskLists } from "./lists";
 import { LogicalDay } from "./logical-day";
@@ -333,6 +333,101 @@ describe("projectColors / projectColor", () => {
     expect(lists.projectColor(withColor.id)).toBe("pink");
     expect(lists.projectColor(deleted.id)).toBeUndefined();
     expect(lists.projectColors.size).toBe(3);
+  });
+});
+
+describe("10-修正1：projectColor(id) は ID ごとに、色に効く項目だけを観測する", () => {
+  function coloredSetup() {
+    const { replica, lists } = setup();
+    const a = makeProject({ createdAt: "2026-01-01T00:00:00.000Z", seq: nextSeq() });
+    const b = makeProject({ createdAt: "2026-01-02T00:00:00.000Z", seq: nextSeq() });
+    replica.replaceConfirmed([a, b].map((row) => ({ kind: "project" as const, row })));
+    return { replica, lists, a, b };
+  }
+
+  it("A の色を読む autorun は、B の色が変わっても再実行されない。A の色が変わると再実行される", () => {
+    const { replica, lists, a, b } = coloredSetup();
+    let runs = 0;
+    let seen: string | undefined;
+    const dispose = autorun(() => {
+      seen = lists.projectColor(a.id);
+      runs++;
+    });
+    expect([runs, seen]).toEqual([1, "violet"]);
+
+    replica.mergeConfirmed([{ kind: "project", row: { ...b, color: "amber", seq: nextSeq() } }]);
+    expect(lists.projectColor(b.id)).toBe("amber");
+    expect(runs).toBe(1);
+
+    replica.mergeConfirmed([{ kind: "project", row: { ...a, color: "teal", seq: nextSeq() } }]);
+    expect([runs, seen]).toEqual([2, "teal"]);
+    dispose();
+  });
+
+  it("A の名前やアーカイブを変えても、色の計算は B を読み直さない（作成順の並べ直しも色の一覧の計算もしない）", () => {
+    const { replica, lists, a, b } = coloredSetup();
+    let runs = 0;
+    const dispose = autorun(() => {
+      void [lists.projectColor(a.id), lists.projectColor(b.id), lists.projectColors];
+      runs++;
+    });
+    const rowA = replica.project(a.id);
+    const rowB = replica.project(b.id);
+    if (!rowA || !rowB) throw new Error("row が見つかりません");
+    // 行の読み方（peek と field）は共通の親クラスにある
+    const base = Object.getPrototypeOf(Object.getPrototypeOf(rowB));
+    const peek = vi.spyOn(base, "peek");
+    const field = vi.spyOn(base, "field");
+
+    replica.mergeConfirmed([
+      { kind: "project", row: { ...a, name: "新しい名前", seq: nextSeq() } },
+    ]);
+    replica.mergeConfirmed([
+      {
+        kind: "project",
+        row: { ...a, name: "新しい名前", archivedAt: "2026-01-05T00:00:00.000Z", seq: nextSeq() },
+      },
+    ]);
+
+    const readsOfB = [...peek.mock.contexts, ...field.mock.contexts].filter(
+      (context) => context === rowB,
+    );
+    expect(readsOfB).toEqual([]);
+    expect(runs).toBe(1);
+    peek.mockRestore();
+    field.mockRestore();
+    dispose();
+  });
+
+  it("作成順が変わる変更（前のプロジェクトの削除・作成の時刻）には追いつく", () => {
+    const { replica, lists, a, b } = coloredSetup();
+    const seen: (string | undefined)[] = [];
+    const dispose = reaction(
+      () => lists.projectColor(b.id),
+      (color) => seen.push(color),
+    );
+    expect(lists.projectColor(b.id)).toBe("sky");
+
+    // A を B より後に作ったことにする → B が先頭
+    replica.mergeConfirmed([
+      { kind: "project", row: { ...a, createdAt: "2026-01-03T00:00:00.000Z", seq: nextSeq() } },
+    ]);
+    expect(seen).toEqual(["violet"]);
+    expect(lists.projectColor(a.id)).toBe("sky");
+
+    // 新しいプロジェクトが先頭に入ると、B は2番目に戻る
+    const c = makeProject({ createdAt: "2025-12-31T00:00:00.000Z", seq: nextSeq() });
+    replica.mergeConfirmed([{ kind: "project", row: c }]);
+    expect(seen).toEqual(["violet", "sky"]);
+
+    // 先頭（C）を削除すると、B はまた先頭。削除したプロジェクトの色は undefined
+    replica.mergeConfirmed([
+      { kind: "project", row: { ...c, deletedAt: "2026-01-06T00:00:00.000Z", seq: nextSeq() } },
+    ]);
+    expect(seen).toEqual(["violet", "sky", "violet"]);
+    expect(lists.projectColor(c.id)).toBeUndefined();
+    expect(lists.projectColor("no-such-project")).toBeUndefined();
+    dispose();
   });
 });
 

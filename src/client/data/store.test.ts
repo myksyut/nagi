@@ -903,48 +903,206 @@ describe("10. 進行中（startTasks・stopTasks）と、元に戻す", () => {
     expect(stopResult).toEqual({ ok: false, reason: "too-many" });
   });
 
-  it("⌘Z で「今日の外で進行中」に戻りそうなときは、startedAt を null にして送る（サーバーに断られないように）", async () => {
+  it("10-修正1：移動を戻す前に、ほかのタブが進行中にしていたら、⌘Z は戻さずにぶつかりを知らせる（進行中は消さない）", async () => {
     const server = new FakeServer();
     const task = server.putTask(makeTask({ bucket: "later", rank: "a0" }));
     const store = makeStore(server);
     await store.start();
+    const notices: Notice[] = [];
+    store.subscribe((notice) => notices.push(notice));
 
-    // 今日以外 → 今日へ移す（進行中にはしない）。この操作の元に戻すは bucket・rank だけを戻し、startedAt は触らない
-    store.actions.moveTasks([task.id], { bucket: "today" });
+    // A：あとで → 今日へ移す（この操作を戻すと、あとでへ戻る）
+    const moved = store.actions.moveTasks([task.id], { bucket: "today" });
     await store.idle();
     expect(store.task(task.id)?.bucket).toBe("today");
 
-    // ほかのタブが、今日にあるあいだにこのタスクを進行中にした
-    server.putTask({ id: task.id, startedAt: "2026-01-14T00:00:00.000Z" });
+    // B（ほかのタブ）：今日にあるあいだに進行中にした
+    const startedAt = "2026-01-14T00:00:00.000Z";
+    server.putTask({ id: task.id, startedAt });
     await store.sync();
-    expect(store.task(task.id)?.startedAt).not.toBeNull();
-    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.task(task.id)?.startedAt).toBe(startedAt);
+    const mutateCount = server.requestsTo("/api/mutate").length;
+    const syncCount = server.requestsTo("/api/sync").length;
 
-    // ここで元に戻す（今日以外へ戻す）と、崩れないように startedAt: null が同じ changes に入る
+    // A：移動を戻す → あとでへ戻すと「今日の外で進行中」になるので、戻さない
     const result = store.actions.undo();
-    expect(result.ok).toBe(true);
+    expect(result).toEqual({ ok: false, reason: "conflict" });
     await store.idle();
 
-    const lastRequest = server.requestsTo("/api/mutate").at(-1);
-    const body = lastRequest?.body as { mutations: { changes?: Record<string, unknown> }[] };
-    expect(body.mutations[0]?.changes?.startedAt).toBeNull();
+    // 何も送らず、進行中は黙って消えず、今日のまま
+    expect(server.requestsTo("/api/mutate")).toHaveLength(mutateCount);
+    expect(store.task(task.id)?.bucket).toBe("today");
+    expect(store.task(task.id)?.startedAt).toBe(startedAt);
+    expect(server.tasks.get(task.id)?.startedAt).toBe(startedAt);
+    // ぶつかりとして知らせる（中身の空な「元に戻す」の操作を1つ捨てた形）
+    expect(notices).toEqual([
+      {
+        type: "save-failed",
+        reason: "conflict",
+        discarded: [{ operationId: expect.any(String), kind: "undo", mutations: [] }],
+        failedCreates: [],
+      },
+    ]);
+    const discarded = notices[0]?.type === "save-failed" ? notices[0].discarded[0] : undefined;
+    expect(moved.ok && discarded?.operationId).not.toBe(moved.ok && moved.operationId);
+    // 戻せないので履歴から取り除く。同期し直す
+    expect(store.canUndo).toBe(false);
+    expect(server.requestsTo("/api/sync").length).toBeGreaterThan(syncCount);
+  });
+
+  it("10-修正1：進行中をやめたのを戻す前に、ほかのタブが今日から出していたら、⌘Z は戻さずにぶつかりを知らせる（何も変えずに成功しない）", async () => {
+    const server = new FakeServer();
+    const startedAt = "2026-01-14T00:00:00.000Z";
+    const task = server.putTask(makeTask({ bucket: "today", rank: "a0", startedAt }));
+    const store = makeStore(server);
+    await store.start();
+    const notices: Notice[] = [];
+    store.subscribe((notice) => notices.push(notice));
+
+    // A：進行中をやめる（この操作を戻すと、進行中に戻る）
+    store.actions.stopTasks([task.id]);
+    await store.idle();
+    expect(store.task(task.id)?.startedAt).toBeNull();
+
+    // B（ほかのタブ）：あとでへ移した
+    server.putTask({ id: task.id, bucket: "later" });
+    await store.sync();
+    expect(store.task(task.id)?.bucket).toBe("later");
+    const mutateCount = server.requestsTo("/api/mutate").length;
+
+    // A：やめたのを戻す → あとでのまま進行中になるので、戻さない
+    const result = store.actions.undo();
+    expect(result).toEqual({ ok: false, reason: "conflict" });
+    await store.idle();
+
+    expect(server.requestsTo("/api/mutate")).toHaveLength(mutateCount);
     expect(store.task(task.id)?.bucket).toBe("later");
     expect(store.task(task.id)?.startedAt).toBeNull();
+    expect(notices).toHaveLength(1);
+    expect(notices[0]).toMatchObject({ type: "save-failed", reason: "conflict" });
+    expect(store.canUndo).toBe(false);
+  });
+
+  it("10-修正1：ぶつからない ⌘Z は、これまでどおり戻る（ぶつかった操作だけを履歴から取り除く）", async () => {
+    const server = new FakeServer();
+    const first = server.putTask(makeTask({ bucket: "later", rank: "a0" }));
+    const second = server.putTask(makeTask({ bucket: "inbox", rank: "a0" }));
+    const store = makeStore(server);
+    await store.start();
+
+    // 1つ目の操作：second を今日へ。2つ目の操作：first を今日へ
+    store.actions.moveTasks([second.id], { bucket: "today" });
+    store.actions.moveTasks([first.id], { bucket: "today" });
+    await store.idle();
+    // ほかのタブが first を進行中にした → 2つ目の操作は戻せない
+    server.putTask({ id: first.id, startedAt: "2026-01-14T00:00:00.000Z" });
+    await store.sync();
+
+    expect(store.actions.undo()).toEqual({ ok: false, reason: "conflict" });
+    // 1つ目の操作は戻せる
+    expect(store.canUndo).toBe(true);
+    expect(store.actions.undo().ok).toBe(true);
+    await store.idle();
+    expect(store.task(second.id)?.bucket).toBe("inbox");
+    expect(store.task(first.id)?.bucket).toBe("today");
   });
 });
 
 describe("10. プロジェクトの色（Store 統合）", () => {
-  it("続けて作ると作成順で色が violet → sky → pink … と進む", async () => {
+  it("続けて作ると、表示の色が作成順で violet → sky → pink … と進む（保存する color は空）", async () => {
+    // 作成の時刻がそろわないように、画面とサーバーの時計を1秒ずつ進める
+    let clock = Date.parse("2026-01-10T00:00:00.000Z");
     const server = new FakeServer();
+    server.now = () => new Date(clock);
+    const store = makeStore(server, () => new Date(clock));
+    await store.start();
+
+    const ids = ["1つ目", "2つ目", "3つ目"].map((name) => {
+      clock += 1000;
+      const result = store.actions.createProject(name);
+      if (!result.ok) throw new Error("作れませんでした");
+      return result.ids[0] ?? "";
+    });
+    expect(ids.map((id) => store.lists.projectColor(id))).toEqual(["violet", "sky", "pink"]);
+    await store.idle();
+    expect([...server.projects.values()].map((project) => project.color)).toEqual([
+      null,
+      null,
+      null,
+    ]);
+    expect(ids.map((id) => store.lists.projectColor(id))).toEqual(["violet", "sky", "pink"]);
+  });
+
+  it("10-修正1：全件の同期が終わる前に作っても、そろったあとの色は作成順どおり", async () => {
+    const server = new FakeServer();
+    let clock = Date.parse("2026-01-10T00:00:00.000Z");
+    server.now = () => new Date(clock);
+    server.putProject(makeProject({ name: "既存1" }));
+    clock += 1000;
+    server.putProject(makeProject({ name: "既存2" }));
+    clock += 1000;
+    const store = makeStore(server);
+    // 手元の控えを読んだあと、最初の同期を止める（画面は loaded で開き、操作できる）
+    const release = server.hold("/api/sync");
+    const started = store.start();
+    await vi.waitFor(() => expect(store.loaded).toBe(true));
+
+    const created = store.actions.createProject("新しい");
+    if (!created.ok) throw new Error("作れませんでした");
+    const id = created.ids[0] ?? "";
+    await store.idle();
+    release();
+    await started;
+
+    expect(server.projects.get(id)?.color).toBeNull();
+    // 作成順で3番目 → pink
+    expect(store.lists.projectColor(id)).toBe("pink");
+  });
+
+  it("10-修正1：ほかのタブで作ったプロジェクトがまだ届いていなくても、そろったあとの色は作成順どおり", async () => {
+    const server = new FakeServer();
+    let clock = Date.parse("2026-01-10T00:00:00.000Z");
+    server.now = () => new Date(clock);
     const store = makeStore(server);
     await store.start();
 
-    const r1 = store.actions.createProject("1つ目");
-    const r2 = store.actions.createProject("2つ目");
-    const r3 = store.actions.createProject("3つ目");
-    expect(r1.ok && store.project(r1.ids[0] ?? "")?.color).toBe("violet");
-    expect(r2.ok && store.project(r2.ids[0] ?? "")?.color).toBe("sky");
-    expect(r3.ok && store.project(r3.ids[0] ?? "")?.color).toBe("pink");
+    const mine1 = store.actions.createProject("このタブ1");
+    await store.idle();
+    clock += 1000;
+    // ほかのタブが作った（このタブにはまだ届いていない）。作成の時刻はサーバーの時計
+    const other = server.putProject({ id: crypto.randomUUID(), name: "ほかのタブ" });
+    clock += 1000;
+    const mine2 = store.actions.createProject("このタブ2");
+    await store.idle();
+    await store.sync();
+
+    if (!mine1.ok || !mine2.ok) throw new Error("作れませんでした");
+    expect(store.lists.projectColor(mine1.ids[0] ?? "")).toBe("violet");
+    expect(store.lists.projectColor(other.id)).toBe("sky");
+    expect(store.lists.projectColor(mine2.ids[0] ?? "")).toBe("pink");
+  });
+
+  it("10-修正1：2つのタブが同じ時刻に作っても、そろったあとの色はどちらのタブでも作成順（同じ時刻なら id の順）どおり", async () => {
+    const server = new FakeServer();
+    server.now = () => new Date("2026-01-10T00:00:00.000Z");
+    const tabA = makeStore(server);
+    const tabB = makeStore(server);
+    await tabA.start();
+    await tabB.start();
+
+    const a = tabA.actions.createProject("A");
+    const b = tabB.actions.createProject("B");
+    await tabA.idle();
+    await tabB.idle();
+    await tabA.sync();
+    await tabB.sync();
+
+    if (!a.ok || !b.ok) throw new Error("作れませんでした");
+    const [firstId, secondId] = [a.ids[0] ?? "", b.ids[0] ?? ""].sort();
+    for (const tab of [tabA, tabB]) {
+      expect(tab.lists.projectColor(firstId ?? "")).toBe("violet");
+      expect(tab.lists.projectColor(secondId ?? "")).toBe("sky");
+    }
   });
 
   it("色を変えて ⌘Z すると前の色に戻る", async () => {

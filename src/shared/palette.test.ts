@@ -2,7 +2,6 @@ import { describe, expect, it } from "vitest";
 import {
   autoProjectColor,
   isProjectColor,
-  nextProjectColor,
   orderForAutoColor,
   PROJECT_COLORS,
   type ProjectColor,
@@ -41,7 +40,7 @@ describe("isProjectColor", () => {
   });
 });
 
-describe("orderForAutoColor / resolveProjectColors / nextProjectColor", () => {
+describe("orderForAutoColor / resolveProjectColors", () => {
   it("削除済みを除き、createdAt の順（同じなら id の順）に並べる。アーカイブは数に入る（この型に archivedAt はないので、渡す側で除かない）", () => {
     const a = project({ id: "a", createdAt: "2026-01-02T00:00:00.000Z" });
     const b = project({ id: "b", createdAt: "2026-01-01T00:00:00.000Z" });
@@ -73,17 +72,5 @@ describe("orderForAutoColor / resolveProjectColors / nextProjectColor", () => {
     const colors = resolveProjectColors([first, second]);
     expect(colors.get("first")).toBe(autoProjectColor(0));
     expect(colors.get("second")).toBe("pink");
-  });
-
-  it("nextProjectColor は削除済みを除いた数を i にする（前のプロジェクトが消えても続く）", () => {
-    expect(nextProjectColor([])).toBe(autoProjectColor(0));
-    const p1 = project({ id: "p1", createdAt: "2026-01-01T00:00:00.000Z" });
-    expect(nextProjectColor([p1])).toBe(autoProjectColor(1));
-    const deleted = project({
-      id: "deleted",
-      createdAt: "2026-01-01T00:00:00.000Z",
-      deletedAt: "2026-01-02T00:00:00.000Z",
-    });
-    expect(nextProjectColor([p1, deleted])).toBe(autoProjectColor(1));
   });
 });
