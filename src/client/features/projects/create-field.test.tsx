@@ -28,6 +28,33 @@ afterEach(() => {
   vi.unstubAllGlobals();
 });
 
+/** 同じストアのまま画面を作り直して、今日を開く（部品は新しく作られ、ストアと送信はそのまま） */
+async function rerenderWithStore(store: AppStore) {
+  cleanup();
+  const location = memoryLocation({ path: "/today", record: true });
+  render(
+    <StoreProvider store={store}>
+      <Router hook={location.hook} searchHook={location.searchHook}>
+        <App />
+      </Router>
+    </StoreProvider>,
+  );
+  await screen.findByRole("listbox", { name: "今日" });
+}
+
+/** ⌘K の「ログアウト」（POST /auth/logout だけを受ける。ストアは server.fetch を使う） */
+async function logoutFromPalette(user: ReturnType<typeof userEvent.setup>) {
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(async () => new Response(null, { status: 204 })),
+  );
+  await user.keyboard("{Meta>}k{/Meta}");
+  await user.type(
+    await screen.findByRole("combobox", { name: "検索とコマンド" }),
+    "ログアウト{Enter}",
+  );
+}
+
 /** 控えの列（localStorage）の中身 */
 function returnedNames(): string[] {
   return new DraftStorage().loadProjectNames();
@@ -552,16 +579,7 @@ describe("名前の欄がなくなるとき（17-修正3 の R1-a・R1-c）", ()
     await screen.findByRole("listbox", { name: "今日" });
 
     // 同じストアのまま画面を作り直す（ログアウトしてログインし直した、などと同じ）
-    cleanup();
-    const location = memoryLocation({ path: "/today", record: true });
-    render(
-      <StoreProvider store={store}>
-        <Router hook={location.hook} searchHook={location.searchHook}>
-          <App />
-        </Router>
-      </StoreProvider>,
-    );
-    await screen.findByRole("listbox", { name: "今日" });
+    await rerenderWithStore(store);
 
     server.fail("/api/mutate", 400);
     await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
@@ -570,6 +588,86 @@ describe("名前の欄がなくなるとき（17-修正3 の R1-a・R1-c）", ()
       await store.idle();
     });
     expect(returnedNames()).toEqual(["1件だけ断られる"]);
+  });
+});
+
+describe("送った作成の返事を待つあいだに部品がなくなる（17-修正4）", () => {
+  /** 作成を送って返事を止めておく。fail を渡すと、止めを外したときにその返事になる */
+  async function createAndHold(
+    user: ReturnType<typeof userEvent.setup>,
+    server: FakeServer,
+    name: string,
+    fail?: 400,
+  ) {
+    const release = server.hold("/api/mutate");
+    if (fail !== undefined) server.fail("/api/mutate", fail);
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    await user.type(nameField(), `${name}{Enter}`);
+    await screen.findByRole("listbox", { name });
+    return release;
+  }
+
+  it("作成の返事を待つあいだに ⌘K でログアウトし、ログイン画面で断られても、作り直すと名前が控えから出る", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const { store, location } = await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+
+    const release = await createAndHold(user, server, "送信待ちの名前", 400);
+    await logoutFromPalette(user);
+    await waitFor(() => expect(location.history?.at(-1)).toBe("/login"));
+    expect(screen.queryByRole("button", { name: "プロジェクトを作成" })).toBeNull();
+    expect(returnedNames()).toEqual([]);
+
+    // ログイン画面になってから断られる（ストアと送信はログイン画面でも動いている）
+    release();
+    await act(async () => {
+      await store.idle();
+    });
+    expect(returnedNames()).toEqual(["送信待ちの名前"]);
+
+    cleanup();
+    await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("送信待ちの名前");
+  });
+
+  it("同じ順で作成が通ったときは、控えに何も入らない", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const { store, location } = await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+
+    const release = await createAndHold(user, server, "通る名前");
+    await logoutFromPalette(user);
+    await waitFor(() => expect(location.history?.at(-1)).toBe("/login"));
+
+    release();
+    await act(async () => {
+      await store.idle();
+    });
+    expect(returnedNames()).toEqual([]);
+    expect([...server.projects.values()].map((project) => project.name)).toEqual(["通る名前"]);
+  });
+
+  it("断られる前に部品を何回作り直しても、控えには1件だけ入る", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const { store } = await open("/today", server);
+    await screen.findByRole("listbox", { name: "今日" });
+
+    const release = await createAndHold(user, server, "作り直しても1件", 400);
+    for (let i = 0; i < 3; i++) await rerenderWithStore(store);
+
+    release();
+    await act(async () => {
+      await store.idle();
+    });
+    expect(returnedNames()).toEqual(["作り直しても1件"]);
+    await user.click(screen.getByRole("button", { name: "プロジェクトを作成" }));
+    expect(nameField()).toHaveValue("作り直しても1件");
+    expect(screen.queryByText(/ほかに/)).toBeNull();
   });
 });
 

@@ -3,7 +3,7 @@ import { PlusIcon } from "lucide-react";
 import { action, makeObservable, observable, runInAction, when } from "mobx";
 import { observer } from "mobx-react-lite";
 import { useEffect, useId, useRef } from "react";
-import { type AppStore, type Notice, useStore } from "@/data";
+import { type AppStore, useStore } from "@/data";
 import { FIELD_SCENE_ORDER, registerFieldKeys } from "@/keyboard/field-keys";
 import { useKeyContext } from "@/keyboard/key-context";
 import { type KeyContext, keymap } from "@/keyboard/keymap";
@@ -37,14 +37,71 @@ import { projectScreenKey } from "./project-view";
 /** ＋ と ⌘K が呼ぶ割り当て（キーはなし。register.tsx） */
 export const PROJECT_CREATE_BINDING_ID = "project.create";
 
+/** 捨てられた作成を控えの列へ入れたとき、動いている名前の欄へ知らせること */
+type RecoveryEvent = {
+  /** 控えの列へ入れた名前の数 */
+  added: number;
+  /** ログインが切れた・版が古い（この画面ではもう作れない） */
+  stopped: boolean;
+};
+
+/**
+ * 送ったあとに捨てられた作成の名前を、控えの列へ入れる係。ストアごとに1つだけで、ストアが動いているあいだずっと
+ * ストアの知らせを受ける（名前の欄の部品の寿命とは分ける。⌘K のログアウトで部品がなくなっても、ストアと送信は
+ * ログイン画面で動き続け、あとから「作れなかった」が届くことがあるため）。
+ * 名前の欄の部品が動いているあいだは、その部品（ProjectCreator）に知らせて、数や欄を合わせてもらう
+ */
+class FailedCreateRecovery {
+  readonly #listeners = new Set<(event: RecoveryEvent) => void>();
+
+  constructor(store: AppStore, drafts: DraftStorage) {
+    store.subscribe((notice) => {
+      if (notice.type === "offline-blocked") return;
+      const names = notice.discarded.flatMap((operation) =>
+        operation.mutations.flatMap((mutation) =>
+          mutation.type === "project.create" ? [mutation.project.name] : [],
+        ),
+      );
+      if (names.length > 0) drafts.appendProjectNames(names);
+      const event: RecoveryEvent = {
+        added: names.length,
+        stopped: notice.type !== "save-failed",
+      };
+      if (event.added === 0 && !event.stopped) return;
+      for (const listener of this.#listeners) listener(event);
+    });
+  }
+
+  /** 名前の欄の部品が知らせを受ける。戻り値を呼ぶとやめる */
+  listen(listener: (event: RecoveryEvent) => void): () => void {
+    this.#listeners.add(listener);
+    return () => {
+      this.#listeners.delete(listener);
+    };
+  }
+}
+
+const recoveries = new WeakMap<AppStore, FailedCreateRecovery>();
+
+/** ストアごとに1つの回収係（最初に名前の欄の状態を作るときに作る。そのあとは同じものを返す） */
+function failedCreateRecoveryOf(store: AppStore, drafts: DraftStorage): FailedCreateRecovery {
+  let recovery = recoveries.get(store);
+  if (!recovery) {
+    recovery = new FailedCreateRecovery(store, drafts);
+    recoveries.set(store, recovery);
+  }
+  return recovery;
+}
+
 /**
  * 名前の欄の開閉と、打った名前。一覧の状態（ListUi）ごとに1つ。
  * 控えの列は、一覧の下書きと同じ置き場（ui.drafts。localStorage）に、名前を1件ずつ別のキーで置く
  * （ほかのタブが同時に足した・取った名前を消さない。draft-storage.ts）。欄に打っている名前はこのタブのメモリだけに持ち、
  * localStorage の共有の場所には書かない（書くと、ほかのタブが空の欄を閉じる・別の名前で作るだけで消えたり
- * 上書きされたりするため）。ストアの知らせ（保存の失敗・ログインが切れた・版が古い）で捨てられた作成は、
- * 何件あってもすべて控えの列へ入れる。知らせ・pagehide・ほかのタブの変更を受けるのは start から止めるまで
- * （名前の欄を持つ部品の寿命。止めるときに打っている名前を控えへ移す）
+ * 上書きされたりするため）。
+ * 送ったあとに捨てられた作成の名前を控えへ入れるのは、ストアごとに1つの回収係（FailedCreateRecovery。ストアの寿命）。
+ * この部品が回収係・pagehide・ほかのタブの変更を受けるのは start から止めるまで（名前の欄を持つ部品の寿命。
+ * 止めるときに打っている名前を控えへ移す）
  */
 export class ProjectCreator {
   open = false;
@@ -53,11 +110,13 @@ export class ProjectCreator {
   focusRequest = 0;
   /** 控えの列の残り（まだ欄に入れていない、保存できなかった名前）の数 */
   returnedCount = 0;
-  readonly #store: AppStore;
+  readonly #recovery: FailedCreateRecovery;
   readonly #drafts: DraftStorage;
 
   constructor(store: AppStore, drafts: DraftStorage) {
-    this.#store = store;
+    // 回収係は、名前の欄の状態を最初に作るとき（起動してサイドバーを描くとき）に、ストアごとに1回だけ作る。
+    // どの作成も、送るより前に回収係がいる
+    this.#recovery = failedCreateRecoveryOf(store, drafts);
     this.#drafts = drafts;
     this.returnedCount = drafts.loadProjectNames().length;
     makeObservable(this, {
@@ -74,13 +133,14 @@ export class ProjectCreator {
   }
 
   /**
-   * 受け始める：ストアの知らせ、画面を離れるとき（pagehide）、ほかのタブの控えの列の変更。
+   * 受け始める：回収係の知らせ、画面を離れるとき（pagehide）、ほかのタブの控えの列の変更。
    * 戻り値を呼ぶと、打っている名前を控えへ移してから止める（名前の欄を持つ部品がなくなるとき。
    * ⌘K のログアウトのように pagehide の出ない移動でも名前を失わないように）。
-   * 先に pagehide や 401・409 で移していれば欄は空なので、二重には積まない
+   * 先に pagehide や 401・409 で移していれば欄は空なので、二重には積まない。
+   * 送った作成の回収は回収係（ストアの寿命）がするので、止めたあとに届いた「作れなかった」も控えに入る
    */
   start(win: Window = window): () => void {
-    const stopNotices = this.#store.subscribe((notice) => this.#onNotice(notice));
+    const stopNotices = this.#recovery.listen((event) => this.#onRecovered(event));
     const stash = () => this.stash();
     win.addEventListener("pagehide", stash);
     const stopDrafts = this.#drafts.subscribe((change) => {
@@ -136,21 +196,15 @@ export class ProjectCreator {
   }
 
   /**
-   * 捨てられた作成の名前を、すべて控えの列へ。開いていて空の欄には、すぐに先頭を入れる。
+   * 回収係が捨てられた作成を控えの列へ入れた。数を合わせ、開いていて空の欄には、すぐに先頭を入れる。
    * ログインが切れた・版が古いときは、この画面ではもう作れない（ログイン画面へ移る・読み込み直す）ので、
    * 欄に打っている名前も控えの列へ移す
    */
-  #onNotice(notice: Notice): void {
-    if (notice.type === "offline-blocked") return;
-    const names = notice.discarded.flatMap((operation) =>
-      operation.mutations.flatMap((mutation) =>
-        mutation.type === "project.create" ? [mutation.project.name] : [],
-      ),
-    );
+  #onRecovered({ added, stopped }: RecoveryEvent): void {
     runInAction(() => {
-      if (names.length > 0) this.returnedCount = this.#drafts.appendProjectNames(names);
-      if (notice.type !== "save-failed") this.stash();
-      else if (names.length > 0 && this.open) this.#fillFromReturned();
+      this.syncReturned();
+      if (stopped) this.stash();
+      else if (added > 0 && this.open) this.#fillFromReturned();
     });
   }
 }
