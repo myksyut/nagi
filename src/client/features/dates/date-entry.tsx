@@ -58,6 +58,8 @@ export class DateEntry {
     const host = taskIds[0];
     this.close();
     if (host === undefined || view === null) return;
+    // 同じ行で開き直すときは、前の入力のフェードを待たずに入れ替える（1つの行に描けるのは1つだけ）
+    if (this.leaving?.taskIds[0] === host) this.leaving = null;
     this.request = { id: this.#nextId++, kind, taskIds: [...taskIds], view, anchor };
     this.#syncHosts();
   }

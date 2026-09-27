@@ -108,6 +108,8 @@ export class ProjectPicker {
     const host = ids[0];
     this.close();
     if (host === undefined) return;
+    // 同じ行で開き直すときは、前の候補のフェードを待たずに入れ替える（1つの行に描けるのは1つだけ）
+    if (this.leaving?.taskId === host) this.leaving = null;
     this.session = { id: this.#nextId++, taskId: host, taskIds: ids, anchor };
     this.#syncHosts();
   }
