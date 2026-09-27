@@ -80,8 +80,8 @@ describe("IndexedDB：保存形式の版の切り替え", () => {
     expect(v2Store.task("0199a000-0000-7000-8000-000000000001")?.title).toBe("A");
   });
 
-  it("LOCAL_DB_VERSION は現在 2 である（回帰の目印。2 で startedAt と color を足した）", () => {
-    expect(LOCAL_DB_VERSION).toBe(2);
+  it("LOCAL_DB_VERSION は現在 3 である（回帰の目印。2 で startedAt と color、3 で priority と points を足した）", () => {
+    expect(LOCAL_DB_VERSION).toBe(3);
   });
 });
 

@@ -1,6 +1,7 @@
 import { z } from "zod";
 import { BUCKETS } from "./model";
 import { PROJECT_COLORS } from "./palette";
+import { POINTS, PRIORITIES } from "./priority-points";
 import { isValidRank } from "./rank";
 
 /**
@@ -26,6 +27,10 @@ export const bucketSchema = z.enum(BUCKETS);
 export const rankSchema = z.string().refine(isValidRank, "invalid_rank");
 /** プロジェクトの色。パレットの名前だけ（palette.ts） */
 export const projectColorSchema = z.enum(PROJECT_COLORS);
+/** 優先度。決まった値だけ（priority-points.ts） */
+export const prioritySchema = z.enum(PRIORITIES);
+/** 工数。決まった値だけ（priority-points.ts） */
+export const pointsSchema = z.literal(POINTS);
 /** 空白だけのタイトルや名前は不可 */
 const nonBlankSchema = z.string().refine((value) => value.trim().length > 0, "blank");
 
@@ -48,6 +53,10 @@ const taskFields = {
   completedAt: timestampSchema.nullable(),
   /** 進行中にした時刻。入れるときは、同じ操作のあとの bucket が today でなければならない（サーバーが検証する） */
   startedAt: timestampSchema.nullable(),
+  /** 優先度。完了済みのタスクにも付けられる */
+  priority: prioritySchema.nullable(),
+  /** 工数。完了済みのタスクにも付けられる */
+  points: pointsSchema.nullable(),
   deletedAt: timestampSchema.nullable(),
 };
 
@@ -67,6 +76,8 @@ export const taskCreateSchema = z.strictObject({
     rank: taskFields.rank,
     arrivedOn: taskFields.arrivedOn.default(null),
     checklist: taskFields.checklist.default(() => []),
+    priority: taskFields.priority.default(null),
+    points: taskFields.points.default(null),
   }),
 });
 

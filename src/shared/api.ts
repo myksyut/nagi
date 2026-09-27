@@ -6,8 +6,10 @@ import type { SyncRow } from "./model";
  * API の形を変えるときは互換を保ち、保てない変更のときだけ上げる（デプロイのたびには上げない）
  * - 2：進行中（tasks の startedAt）とプロジェクトの色（color）を足した。開いたままの古い画面が、
  *   新しい項目を知らずに書き込む（進行中のタスクを今日から出すなど）のを 409 で止めて、読み込み直させる
+ * - 3：タスクの優先度（priority）と工数（points）を足した。開いたままの古い画面が、新しい項目を知らずに
+ *   表示や書き込みをするのを 409 で止めて、読み込み直させる
  */
-export const API_VERSION = 2;
+export const API_VERSION = 3;
 export const API_VERSION_HEADER = "X-Api-Version";
 
 /**

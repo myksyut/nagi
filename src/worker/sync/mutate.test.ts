@@ -793,6 +793,99 @@ describe("プロジェクトの色（color）の検証", () => {
   );
 });
 
+describe("優先度（priority）と工数（points）の検証", () => {
+  it("★ task.create で省略すると null、決まった値なら入る。/api/sync の応答にも届く", async () => {
+    const { post } = apiApp();
+    const plain = crypto.randomUUID();
+    const withValues = crypto.randomUUID();
+    const res = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "task.create", task: taskInput({ id: plain }) },
+        {
+          type: "task.create",
+          task: taskInput({ id: withValues, priority: "high", points: 13 }),
+        },
+      ]),
+    );
+    expect(res.status).toBe(200);
+    const rows = (await mutateBody(res)).rows;
+    expect(asTaskRow(at(rows, 0))).toMatchObject({ priority: null, points: null });
+    expect(asTaskRow(at(rows, 1))).toMatchObject({ priority: "high", points: 13 });
+
+    const synced = (await syncBody(await post("/api/sync", { cursor: 0, baseCursor: 0 }))).rows;
+    const row = synced.find((r) => r.kind === "task" && r.row.id === withValues);
+    expect(row?.kind === "task" && [row.row.priority, row.row.points]).toEqual(["high", 13]);
+  });
+
+  it("★ task.update で変えられ、null で外せる。完了済みのタスクにも付けられる。ほかの項目は変わらない", async () => {
+    const { post } = apiApp();
+    const id = crypto.randomUUID();
+    await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "task.create", task: taskInput({ id, title: "そのまま", bucket: "today" }) },
+        { type: "task.update", id, changes: { completedAt: new Date().toISOString() } },
+      ]),
+    );
+
+    const setRes = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.update", id, changes: { priority: "low", points: 1 } }]),
+    );
+    expect(setRes.status).toBe(200);
+    const set = asTaskRow(at((await mutateBody(setRes)).rows, 0));
+    expect(set).toMatchObject({ priority: "low", points: 1, title: "そのまま", bucket: "today" });
+    expect(set.completedAt).not.toBeNull();
+
+    const clearRes = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.update", id, changes: { priority: null, points: null } }]),
+    );
+    expect(clearRes.status).toBe(200);
+    expect(asTaskRow(at((await mutateBody(clearRes)).rows, 0))).toMatchObject({
+      priority: null,
+      points: null,
+    });
+  });
+
+  it.each([
+    ["priority", "urgent"],
+    ["priority", "High"],
+    ["priority", ""],
+    ["priority", 1],
+    ["points", 0],
+    ["points", 4],
+    ["points", 21],
+    ["points", 2.5],
+    ["points", "3"],
+  ])(
+    "★ 決まった値でない %s: %j は 400（schema）で何も書かれない（作成でも更新でも）",
+    async (field, value) => {
+      const { post } = apiApp();
+      const before = await snapshot();
+      const createRes = await post(
+        "/api/mutate",
+        mutationBatch([{ type: "task.create", task: taskInput({ [field]: value }) }]),
+      );
+      expect(createRes.status).toBe(400);
+      expect((await errorBody(createRes)).reason).toBe("schema");
+      expect(await snapshot()).toEqual(before);
+
+      const id = crypto.randomUUID();
+      await post("/api/mutate", mutationBatch([{ type: "task.create", task: taskInput({ id }) }]));
+      const before2 = await snapshot();
+      const updateRes = await post(
+        "/api/mutate",
+        mutationBatch([{ type: "task.update", id, changes: { [field]: value } }]),
+      );
+      expect(updateRes.status).toBe(400);
+      expect((await errorBody(updateRes)).reason).toBe("schema");
+      expect(await snapshot()).toEqual(before2);
+    },
+  );
+});
+
 describe("/api/sync と /api/mutate の応答に startedAt・color が届く", () => {
   it("★ 進行中のタスクと色のあるプロジェクトを作ると、/api/mutate と /api/sync のどちらの応答にも startedAt・color が入る", async () => {
     const { post } = apiApp();

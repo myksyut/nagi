@@ -22,6 +22,8 @@ export type OperationKind =
   | "task.move"
   | "task.reorder"
   | "task.deadline"
+  | "task.priority"
+  | "task.points"
   | "task.delete"
   | "project.create"
   | "project.update"

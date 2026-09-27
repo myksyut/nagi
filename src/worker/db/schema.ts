@@ -3,6 +3,7 @@ import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-o
 // drizzle-kit もこのファイルを読むので、パスの別名（@shared）は使わない
 import { BUCKETS, type ChecklistItem } from "../../shared/model";
 import { PROJECT_COLORS } from "../../shared/palette";
+import { type Points, PRIORITIES } from "../../shared/priority-points";
 
 /** ログインのセッション。id はセッションのトークンの SHA-256（16進）。トークンそのものは保存しない */
 export const sessions = sqliteTable("sessions", {
@@ -33,6 +34,10 @@ export const tasks = sqliteTable(
     completedAt: text("completed_at"),
     /** 2 番目の版で追加（migrations/0002）。入っているときは bucket が today */
     startedAt: text("started_at"),
+    /** 3 番目の版で追加（migrations/0003）。high・medium・low（CHECK で守る）。なしは NULL */
+    priority: text("priority", { enum: PRIORITIES }),
+    /** 3 番目の版で追加（migrations/0003）。1・2・3・5・8・13（CHECK で守る）。なしは NULL */
+    points: integer("points").$type<Points>(),
     createdAt: text("created_at").notNull(),
     updatedAt: text("updated_at").notNull(),
     deletedAt: text("deleted_at"),
@@ -48,6 +53,9 @@ export const tasks = sqliteTable(
     check("tasks_scheduled_on_check", sql`(bucket = 'scheduled') = (scheduled_on IS NOT NULL)`),
     // started_at が入っているなら bucket は today（進行中のタスクは必ず今日にある）
     check("tasks_started_at_check", sql`started_at IS NULL OR bucket = 'today'`),
+    // 優先度と工数は決まった値だけ（値の一覧は src/shared/priority-points.ts。API の検証と二重に守る）
+    check("tasks_priority_check", sql`priority IS NULL OR priority IN ('high', 'medium', 'low')`),
+    check("tasks_points_check", sql`points IS NULL OR points IN (1, 2, 3, 5, 8, 13)`),
   ],
 );
 

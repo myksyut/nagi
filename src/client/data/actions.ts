@@ -7,6 +7,7 @@ import {
   type Task,
 } from "@shared/model";
 import type { Mutation } from "@shared/mutations";
+import { isPoints, isPriority, type Points, type Priority } from "@shared/priority-points";
 import { arrivalRanks, rankBetween, ranksBetween } from "@shared/rank";
 import { addDays, type LogicalDay } from "./logical-day";
 import { applyTaskMutation, isTaskMutation, targetOf } from "./overlay";
@@ -595,6 +596,32 @@ export class TaskActions {
       return { id: task.id, changes };
     });
     return this.#updateMany("task.move", updates);
+  }
+
+  /**
+   * 優先度を付ける・外す（null）。1つの操作として送り、元に戻す 1 回でまとめて戻る。
+   * 完了済みのタスクにも付けられる（削除済みは除く）。置き場も並び順キーも変えない（優先度で並べるのは表示だけ）。
+   * すでにその優先度のタスクは送らない（全部そうなら noop）
+   */
+  setPriority(ids: readonly string[], priority: Priority | null): OperationResult {
+    if (priority !== null && !isPriority(priority)) return { ok: false, reason: "invalid" };
+    const updates = this.#rows(ids)
+      .filter((task) => task.deletedAt === null)
+      .map((task) => ({ id: task.id, changes: { priority } }));
+    return this.#updateMany("task.priority", updates);
+  }
+
+  /**
+   * 工数を付ける・外す（null）。1つの操作として送り、元に戻す 1 回でまとめて戻る。
+   * 完了済みのタスクにも付けられる（削除済みは除く）。置き場も並び順キーも変えない。
+   * すでにその工数のタスクは送らない（全部そうなら noop）
+   */
+  setPoints(ids: readonly string[], points: Points | null): OperationResult {
+    if (points !== null && !isPoints(points)) return { ok: false, reason: "invalid" };
+    const updates = this.#rows(ids)
+      .filter((task) => task.deletedAt === null)
+      .map((task) => ({ id: task.id, changes: { points } }));
+    return this.#updateMany("task.points", updates);
   }
 
   /** 削除（論理削除）。確認は画面が出さない。元に戻すで戻る */
