@@ -42,7 +42,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "PUBKEY_PLACEHOLDER",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IEYzNTVBM0EwNjhGNEI5MDgKUldRSXVmUm9vS05WODBDMlQwRjBLd04vd2RsVkR4VlRXSVdvZi9UUXZYbEt1d0YwRnJyMS9nMVMK",
       "endpoints": ["https://github.com/myksyut/nagi/releases/latest/download/latest.json"]
     }
   }
