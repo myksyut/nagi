@@ -283,7 +283,7 @@ node scripts/seed-local.mjs fill 20000   # 完了ログを足して、タスク�
 | `pnpm test` | Vitest。worker と client の2つの project を回す |
 | `pnpm db:generate` | `src/worker/db/schema.ts` から、`migrations/` にマイグレーションを生成する |
 | `pnpm db:migrate:local` / `pnpm db:migrate:remote` | D1 のマイグレーションを、手元 / 本番に適用する |
-| `pnpm release` | ビルド → 本番の D1 にマイグレーション → `wrangler deploy` |
+| `pnpm release` | ビルド → 本番の D1 にマイグレーション → `wrangler deploy`（ふだんは main へのマージで CD が動かす） |
 
 ## テスト
 
@@ -298,13 +298,19 @@ Vitest は Workers 用テストプール（`@cloudflare/vitest-pool-workers` 0.2
 
 ## デプロイ
 
-事前準備が済んでいれば、M7 から次の1つで出せる。
+main にマージすると、GitHub Actions が本番に出す（`.github/workflows/deploy.yml`）。main の CI（`pnpm check` と `pnpm test`）が通ったあとに動き、マイグレーションの前に D1 の Time Travel のブックマークをログに残し、`pnpm release` を実行して、本番の応答（`/` が 200、`/api/session` が 401、`/auth/login` が 302）を確かめる。Actions の「deploy」を手で動かしても、main をそのまま出し直せる。
+
+使うもの：secret の `CLOUDFLARE_API_TOKEN`（環境 `production`。nagi の Worker と D1 だけを変えられるトークン）と、変数の `CLOUDFLARE_ACCOUNT_ID`。
+
+手で出すときは、M7 から次の1つで出せる（CD と同時には動かさない）。
 
 ```sh
 pnpm release
 ```
 
 中身は `pnpm build` → `pnpm db:migrate:remote`（本番の D1 にマイグレーション）→ `wrangler deploy`。`pnpm deploy` は pnpm の組み込みコマンドとぶつかるので使わない。
+
+デスクトップ版（`desktop/`）は、`desktop/` を変えて main にマージすると、GitHub Actions が Mac でビルドして GitHub の Releases に出す（`.github/workflows/desktop.yml`）。入っているアプリは、次に開いたときに自分で新しい版へ入れ替わる。くわしくは `desktop/README.md`。
 
 出す前に中身だけ確かめたいときは、`pnpm build` のあと `pnpm exec wrangler deploy --dry-run` を実行する（Cloudflare には何も送らない）。
 

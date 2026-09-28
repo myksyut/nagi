@@ -28,6 +28,7 @@
   "bundle": {
     "active": true,
     "targets": ["app"],
+    "createUpdaterArtifacts": true,
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -37,6 +38,12 @@
     ],
     "macOS": {
       "signingIdentity": "-"
+    }
+  },
+  "plugins": {
+    "updater": {
+      "pubkey": "PUBKEY_PLACEHOLDER",
+      "endpoints": ["https://github.com/myksyut/nagi/releases/latest/download/latest.json"]
     }
   }
 }

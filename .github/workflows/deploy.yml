@@ -1,0 +1,62 @@
+name: deploy
+
+# main の CI（check-and-test）が通ったら、本番（Cloudflare Workers）に出す。
+# pnpm release（build → 本番の D1 にマイグレーション → wrangler deploy）を動かす。
+# マイグレーションの前に D1 の Time Travel のブックマークをログに残す（戻すときに使う。無料プランは 7 日）
+on:
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 出している途中では止めない（マイグレーションの途中で切らないため）。待っているものは新しいほうだけが残る
+concurrency:
+  group: deploy-production
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    # push で動いた main の CI が通ったときだけ（PR の CI では動かさない）。手で動かしたときは main のときだけ
+    if: >-
+      (github.event_name == 'workflow_run' &&
+       github.event.workflow_run.conclusion == 'success' &&
+       github.event.workflow_run.event == 'push') ||
+      (github.event_name == 'workflow_dispatch' && github.ref == 'refs/heads/main')
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    environment:
+      name: production
+      url: https://nagi.wizard1026miya.workers.dev
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event.workflow_run.head_sha || github.sha }}
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      # pnpm の版は package.json の packageManager に従う
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: D1 の Time Travel のブックマークを残す（マイグレーションの前）
+        run: pnpm exec wrangler d1 time-travel info nagi
+      - run: pnpm release
+      - name: 本番の応答を確かめる
+        run: |
+          base=https://nagi.wizard1026miya.workers.dev
+          expect() {
+            actual=$(curl -s -o /dev/null -w '%{http_code}' "$base$1")
+            echo "$1 → $actual"
+            test "$actual" = "$2"
+          }
+          expect / 200
+          expect /api/session 401
+          expect /auth/login 302
