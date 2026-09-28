@@ -1,0 +1,91 @@
+name: desktop
+
+# デスクトップ版（Tauri）を GitHub の Mac（Apple シリコン）でビルドする。
+# - PR：ビルドできるかだけを確かめる（署名も公開もしない。フォークからの PR でも secrets は要らない）
+# - main：ビルドして GitHub の Releases に出す。アプリは起動のたびに releases/latest の latest.json を見て、
+#   新しい版があれば裏で入れ替える（次に開いたときから新しい版）。更新のファイルは
+#   secrets.TAURI_SIGNING_PRIVATE_KEY で署名し、アプリは tauri.conf.json の公開の鍵で確かめる
+on:
+  pull_request:
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+  push:
+    branches: [main]
+    paths:
+      - "desktop/**"
+      - ".github/workflows/desktop.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    if: github.event_name == 'pull_request'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    concurrency:
+      group: desktop-build-${{ github.ref }}
+      cancel-in-progress: true
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop/src-tauri
+      - name: Build nagi.app（更新のファイルは作らない）
+        working-directory: desktop
+        run: npx --yes @tauri-apps/cli@2.12.0 build --bundles app --config '{"bundle":{"createUpdaterArtifacts":false}}'
+
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    runs-on: macos-latest
+    timeout-minutes: 30
+    permissions:
+      contents: write
+    concurrency:
+      group: desktop-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: desktop/src-tauri
+      # 版は 0.1.<このワークフローの実行の番号>。更新は版の大小で決まるので、出すたびに上がるようにする
+      # （ワークフローの名前やファイル名を変えると番号が 1 に戻るので、変えない。Re-run では番号が増えないので、出し直すときは新しく手で動かす）
+      - name: Set version
+        working-directory: desktop/src-tauri
+        run: |
+          jq --arg v "0.1.${{ github.run_number }}" '.version = $v' tauri.conf.json > tauri.conf.json.tmp
+          mv tauri.conf.json.tmp tauri.conf.json
+      # まず下書きの Release にアプリと署名と latest.json を置き、そろってから次の手順で公開する
+      # （公開の Release を先に作ると、ファイルがそろうまで releases/latest が不完全な版を指すため）
+      - uses: tauri-apps/tauri-action@1deb371b0cd8bd54025b384f1cd735e725c4060f # v1.0.0
+        id: tauri
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ""
+        with:
+          projectPath: desktop
+          tauriScript: npx --yes @tauri-apps/cli@2.12.0
+          args: --bundles app
+          tagName: desktop-v__VERSION__
+          releaseName: nagi デスクトップ版 __VERSION__
+          releaseBody: |
+            nagi のデスクトップ版（Mac・Apple シリコン）。入っているアプリは、次に開いたときに自分でこの版へ入れ替わる。
+            初めて入れるときは、下の `.app.tar.gz` を展開して nagi.app を「アプリケーション」に置き、ターミナルで `xattr -dr com.apple.quarantine /Applications/nagi.app` を実行してから開く。
+          releaseDraft: true
+          prerelease: false
+          uploadUpdaterJson: true
+      - name: Release を公開して latest にする
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_ID: ${{ steps.tauri.outputs.releaseId }}
+        run: gh api -X PATCH "repos/${{ github.repository }}/releases/$RELEASE_ID" -F draft=false -f make_latest=true --jq '"公開した：\(.tag_name) \(.html_url)"'
