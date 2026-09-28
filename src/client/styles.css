@@ -187,24 +187,27 @@
   --fab: linear-gradient(135deg, #8b5cf6, #6366f1 55%, #38bdf8);
   --fab-shadow: rgb(99 102 241 / 45%);
   --fab-edge: rgb(255 255 255 / 12%);
-  /* リストの色（アイコン）。赤系は使わない */
-  --list-inbox: #60a5fa;
-  --list-today: #fbbf24;
-  --list-upcoming: #fb923c;
-  --list-later: #2dd4bf;
-  --list-calendar: #a78bfa;
-  --list-timeline: #34d399;
-  --list-logbook: #94a3b8;
-  --list-shortcuts: #94a3b8;
-  /* プロジェクトの 8 色（名前で持つ。src/shared/palette.ts の PROJECT_COLORS と同じ名前と順） */
-  --project-violet: #a78bfa;
-  --project-sky: #38bdf8;
-  --project-pink: #f472b6;
-  --project-amber: #fbbf24;
-  --project-emerald: #34d399;
-  --project-orange: #fb923c;
-  --project-teal: #2dd4bf;
-  --project-slate: #94a3b8;
+  /*
+   * サイドバーと見出しのアイコン。色は意味のあるところにだけ使う：ふだんは控えめな灰、
+   * 今いる場所（サイドバーで選んでいる行と、画面の見出しの台）だけ選択の紫。リストごとの色は付けない
+   */
+  --nav-icon: #8b8fa6;
+  --nav-icon-current: #c4b5fd;
+  /* 目を向けてほしい印の琥珀（今日来たタスク・優先度「高」）。赤は締切を過ぎたときだけに使う */
+  --attention: #fbbf24;
+  /*
+   * プロジェクトの 8 色（名前で持つ。src/shared/palette.ts の PROJECT_COLORS と同じ名前と順）。
+   * 彩度を落として明るさをそろえる（OKLCH の L 0.76・C 0.085。slate だけ C 0.022）。見分けは付くが、
+   * 鮮やかさで目を引かない。暗い地の上で 8:1 以上（カレンダーの締切の文字にも使う）
+   */
+  --project-violet: #b5a7e2;
+  --project-sky: #7abae0;
+  --project-pink: #db9bb9;
+  --project-amber: #caad71;
+  --project-emerald: #80c29f;
+  --project-orange: #dea280;
+  --project-teal: #6ac2c6;
+  --project-slate: #aab1c0;
   --info: var(--color-blue-500);
   --info-foreground: var(--color-blue-400);
   --success: var(--color-emerald-500);
@@ -283,11 +286,14 @@
     0 0 22px var(--selection-glow);
 }
 
-/* 見出しのアイコンの台。色は --tile（例：var(--list-today)）で渡し、その色を淡く敷いて光らせる */
+/*
+ * 見出しのアイコンの台。見出しは今いる場所なので、ふだんは選択の紫を淡く敷いて光らせる。
+ * プロジェクトの画面の見出し（色を選ぶボタン）だけ、--tile でプロジェクトの色を渡す
+ */
 @utility list-tile {
-  color: var(--tile);
-  background-color: color-mix(in srgb, var(--tile) 14%, transparent);
-  box-shadow: 0 0 20px color-mix(in srgb, var(--tile) 25%, transparent);
+  color: var(--tile, var(--nav-icon-current));
+  background-color: color-mix(in srgb, var(--tile, var(--nav-icon-current)) 14%, transparent);
+  box-shadow: 0 0 20px color-mix(in srgb, var(--tile, var(--nav-icon-current)) 25%, transparent);
 }
 
 /*
@@ -323,7 +329,7 @@
       center / contain no-repeat;
   }
   .priority-mark[data-priority="high"] {
-    color: var(--list-today);
+    color: var(--attention);
   }
   .priority-mark[data-priority="medium"] {
     mask-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 12 12'%3E%3Crect x='0.5' y='7' width='3' height='4' rx='1'/%3E%3Crect x='4.5' y='4' width='3' height='7' rx='1'/%3E%3Crect x='8.5' y='1' width='3' height='10' rx='1' fill-opacity='.3'/%3E%3C/svg%3E");

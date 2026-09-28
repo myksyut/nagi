@@ -12,25 +12,23 @@ import {
 import type { ListKey, ViewKey } from "../navigation";
 
 /**
- * リストごとのアイコンと色（lucide の線のアイコンを、リストの色で塗る）。サイドバーと見出しで使う。
- * 色の値は styles.css の --list-*（受信箱：青、今日：琥珀、予定：橙、あとで：青緑、完了ログ：灰）
+ * リスト・ビュー・ショートカットのページのアイコン（lucide の線のアイコン）。サイドバーと見出しで使う。
+ * アイコンにはリストごとの色を付けない。サイドバーでは控えめな灰（--nav-icon）、今いる場所だけ選択の紫
+ * （--nav-icon-current。nav-parts.tsx の navIconColor）。見出しの台（list-tile）はいつも選択の紫
  */
-export const LIST_ICONS: Record<ListKey, { Icon: LucideIcon; color: string }> = {
-  inbox: { Icon: InboxIcon, color: "var(--list-inbox)" },
-  today: { Icon: SunIcon, color: "var(--list-today)" },
-  upcoming: { Icon: CalendarDaysIcon, color: "var(--list-upcoming)" },
-  later: { Icon: LayersIcon, color: "var(--list-later)" },
-  logbook: { Icon: CheckIcon, color: "var(--list-logbook)" },
+export const LIST_ICONS: Record<ListKey, LucideIcon> = {
+  inbox: InboxIcon,
+  today: SunIcon,
+  upcoming: CalendarDaysIcon,
+  later: LayersIcon,
+  logbook: CheckIcon,
 };
 
-/** 「ビュー」のアイコンと色（カレンダー：紫、タイムライン：緑） */
-export const VIEW_ICONS: Record<ViewKey, { Icon: LucideIcon; color: string }> = {
-  calendar: { Icon: CalendarRangeIcon, color: "var(--list-calendar)" },
-  timeline: { Icon: ChartNoAxesGanttIcon, color: "var(--list-timeline)" },
+/** 「ビュー」のアイコン */
+export const VIEW_ICONS: Record<ViewKey, LucideIcon> = {
+  calendar: CalendarRangeIcon,
+  timeline: ChartNoAxesGanttIcon,
 };
 
-/** ショートカットのページのアイコンと色（キーボード。完了ログと同じ控えめな灰） */
-export const SHORTCUTS_ICON: { Icon: LucideIcon; color: string } = {
-  Icon: KeyboardIcon,
-  color: "var(--list-shortcuts)",
-};
+/** ショートカットのページのアイコン（キーボード） */
+export const SHORTCUTS_ICON: LucideIcon = KeyboardIcon;

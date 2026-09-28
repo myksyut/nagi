@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect } from "react";
 import { LoadFailedNote } from "@/components/waiting-input";
 import { defer, useDeferred } from "@/lib/deferred";
 import { TIMELINE } from "@/navigation";
@@ -33,14 +33,13 @@ export function LazyTimelineScreen() {
 
 /** 見出し（タイムラインの色のアイコンと名前）。読み込む前も、読み込んだあとも同じ形。actions に「今日」と絞り込み */
 export function TimelineHeading({ actions }: { actions?: ReactNode }) {
-  const { Icon, color } = VIEW_ICONS.timeline;
+  const Icon = VIEW_ICONS.timeline;
   return (
     <ScreenHeading
       leading={
         <span
           aria-hidden="true"
           className="list-tile grid size-7.5 flex-none place-items-center rounded-[9px]"
-          style={{ "--tile": color } as CSSProperties}
         >
           <Icon className="size-4.5" strokeWidth={1.75} />
         </span>

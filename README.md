@@ -73,7 +73,7 @@ registerFieldKeys({
 
 見た目の決まり（9。デザインの方向 A「夜の深み」）：
 
-- 色は `styles.css` の `.dark` のトークンから取り、部品に色の値を直接書かない。リストの色は `--list-*`（アイコンは `shell/list-icons.ts`）、プロジェクトの 8 色は `--project-*`
+- 色は `styles.css` の `.dark` のトークンから取り、部品に色の値を直接書かない。色は意味のあるところにだけ使う：アイコンにはリストごとの色を付けず、サイドバーでは控えめな灰（`--nav-icon`）、今いる場所だけ選択の紫（`--nav-icon-current`。`shell/nav-parts.tsx` の `navIconColor`）。見出しの台（`list-tile`）は選択の紫で、プロジェクトの画面だけ `--tile` でプロジェクトの色。目を向けてほしい印（今日来たタスク・優先度「高」）の琥珀は `--attention`、赤は締切を過ぎたときだけ。プロジェクトの 8 色は `--project-*`（彩度を落として明るさをそろえてある）
 - すりガラス（`glass`。`backdrop-filter`）は、サイドバーとポップオーバー・ダイアログだけに使う。スクロールする一覧・カード・トーストには使わない（トーストは不透明の `bg-surface`）
 - 選んだ行は `row-selected`（紫の淡い背景と輪郭の光）、フォーカスの輪郭は `outline` で別に出す。上からの光は `body::before` に固定して置くだけで動かさない
 - プロジェクトの色は `lib/project-color.ts` の `projectColorOf` から取る（中身はデータ層の `store.lists.projectColor(id)`。選んだ色 `color` があればその色、空なら作成順の色）。色の値は `projectColorVar(color)`（`var(--project-<名前>)`）、点は `features/projects/project-dot.tsx` の `ProjectDot`
@@ -113,7 +113,7 @@ import { TaskDetailPopoverHost, taskDetailPopoverOf } from "@/tasks/task-detail-
 
 ビュー（13・14）：
 
-- サイドバーの「ビュー」の見出しの下は `navigation.ts` の `VIEWS` を並べる。ビューを足すときは、`VIEWS` に1行（`{ key, path, label }`。`ViewKey` にも足す）、`shell/list-icons.ts` の `VIEW_ICONS` に1行（アイコンと `--list-*` の色）、`app.tsx` にルートを1行足す
+- サイドバーの「ビュー」の見出しの下は `navigation.ts` の `VIEWS` を並べる。ビューを足すときは、`VIEWS` に1行（`{ key, path, label }`。`ViewKey` にも足す）、`shell/list-icons.ts` の `VIEW_ICONS` に1行（アイコン）、`app.tsx` にルートを1行足す
 - 右の枠の幅の上限（`max-w-3xl`）は、画面の一番外の要素に `data-wide-view` を付けると外れる（`shell/app-shell.tsx`）
 - ビューはリストではないので、一覧の状態（`ui.view`）を持たない（`useListView` を使わない）。そのため一覧のキー（↑↓・x など）は効かない。画面の中だけで効くキーは、自分の場面（`scope`）で登録し、`when` で画面が出ているときだけにする
 - 「キーマップのすべての割り当てを ⌘K から実行できる」のテスト（`command-palette.test.tsx`）は、場面を分けていない割り当てだけを見る。場面を分けた割り当ては、その画面が出ているときだけ使えるので、その画面のテストで確かめる

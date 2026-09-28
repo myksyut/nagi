@@ -1,5 +1,5 @@
 import { observer } from "mobx-react-lite";
-import { type CSSProperties, type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect } from "react";
 import { useStore } from "@/data";
 import type { ListKey } from "@/navigation";
 import { LIST_ICONS } from "@/shell/list-icons";
@@ -36,7 +36,7 @@ export const ListScreen = observer(function ListScreen({
   useEffect(() => {
     document.title = `${title} — nagi`;
   }, [title]);
-  const { Icon, color } = LIST_ICONS[list];
+  const Icon = LIST_ICONS[list];
 
   return (
     <>
@@ -45,7 +45,6 @@ export const ListScreen = observer(function ListScreen({
           <span
             aria-hidden="true"
             className="list-tile grid size-7.5 flex-none place-items-center rounded-[9px]"
-            style={{ "--tile": color } as CSSProperties}
           >
             <Icon className="size-4.5" strokeWidth={1.75} />
           </span>

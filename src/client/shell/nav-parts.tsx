@@ -27,6 +27,14 @@ export function navLinkClassName(active: boolean, dropping = false): string {
 }
 
 /**
+ * サイドバーのアイコンの色。色は意味のあるところにだけ使う：ふだんは控えめな灰、今いる場所だけ選択の紫
+ * （リストごとの色は付けない。プロジェクトは色の点で見分ける）
+ */
+export function navIconColor(active: boolean): string {
+  return active ? "var(--nav-icon-current)" : "var(--nav-icon)";
+}
+
+/**
  * 件数を読んで出す（0 件なら出さない）。件数はここでだけ読むので、件数が変わっても描き直すのは数字だけ
  * （行のリンクやドラッグの受け口、色の点は描き直さない）
  */

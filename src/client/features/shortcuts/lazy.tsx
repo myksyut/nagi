@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect, useLayoutEffect } from "react";
+import { type ReactNode, useEffect, useLayoutEffect } from "react";
 import { LoadFailedNote } from "@/components/waiting-input";
 import { keymap } from "@/keyboard/keymap";
 import { formatKey } from "@/keyboard/keys";
@@ -53,7 +53,7 @@ export function LazyShortcutsScreen() {
 
 /** 見出し（キーボードのアイコンと名前、下に戻り方）。読み込む前も、読み込んだあとも同じ形 */
 export function ShortcutsHeading({ actions }: { actions?: ReactNode }) {
-  const { Icon, color } = SHORTCUTS_ICON;
+  const Icon = SHORTCUTS_ICON;
   // 戻るキーはキーマップから（「Esc か ? で前の画面に戻る」）
   const keys = [SHORTCUTS_ESCAPE_BINDING_ID, SHORTCUTS_CLOSE_BINDING_ID].flatMap(
     (id) => keymap.get(id)?.keys ?? [],
@@ -64,7 +64,6 @@ export function ShortcutsHeading({ actions }: { actions?: ReactNode }) {
         <span
           aria-hidden="true"
           className="list-tile grid size-7.5 flex-none place-items-center rounded-[9px]"
-          style={{ "--tile": color } as CSSProperties}
         >
           <Icon className="size-4.5" strokeWidth={1.75} />
         </span>
