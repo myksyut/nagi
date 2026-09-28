@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode, useEffect } from "react";
+import { type ReactNode, useEffect } from "react";
 import { LoadFailedNote } from "@/components/waiting-input";
 import { defer, useDeferred } from "@/lib/deferred";
 import { CALENDAR } from "@/navigation";
@@ -39,14 +39,13 @@ export function CalendarHeading({
   subtitle?: ReactNode;
   actions?: ReactNode;
 }) {
-  const { Icon, color } = VIEW_ICONS.calendar;
+  const Icon = VIEW_ICONS.calendar;
   return (
     <ScreenHeading
       leading={
         <span
           aria-hidden="true"
           className="list-tile grid size-7.5 flex-none place-items-center rounded-[9px]"
-          style={{ "--tile": color } as CSSProperties}
         >
           <Icon className="size-4.5" strokeWidth={1.75} />
         </span>

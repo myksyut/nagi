@@ -17,7 +17,7 @@ import {
   type ViewEntry,
 } from "../navigation";
 import { LIST_ICONS, SHORTCUTS_ICON, VIEW_ICONS } from "./list-icons";
-import { NavCountOf, navLinkClassName } from "./nav-parts";
+import { NavCountOf, navIconColor, navLinkClassName } from "./nav-parts";
 
 /**
  * 左のサイドバー（すりガラス）。上から、名前、受信箱・今日・予定・あとで（色の付いたアイコンと未完了の件数）、
@@ -119,7 +119,7 @@ const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
   const store = useStore();
   const [active] = useRoute(list.path);
   const { over, dropProps } = useListDrop(list.key);
-  const { Icon, color } = LIST_ICONS[list.key];
+  const Icon = LIST_ICONS[list.key];
   return (
     <Link
       href={list.path}
@@ -127,7 +127,12 @@ const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
       className={navLinkClassName(active, over)}
       {...dropProps}
     >
-      <Icon aria-hidden="true" className="size-4 flex-none" style={{ color }} strokeWidth={1.75} />
+      <Icon
+        aria-hidden="true"
+        className="size-4 flex-none"
+        style={{ color: navIconColor(active) }}
+        strokeWidth={1.75}
+      />
       <span className="min-w-0 flex-1 truncate">{list.label}</span>
       <NavCountOf count={() => countOf(store, list.key)} />
     </Link>
@@ -137,14 +142,19 @@ const NavItem = observer(function NavItem({ list }: { list: ListEntry }) {
 /** 一番下の「ショートカット」（キーボードのアイコン。件数は出さない。行を落とす先にもしない） */
 function ShortcutsNavItem() {
   const [active] = useRoute(SHORTCUTS.path);
-  const { Icon, color } = SHORTCUTS_ICON;
+  const Icon = SHORTCUTS_ICON;
   return (
     <Link
       href={SHORTCUTS.path}
       aria-current={active ? "page" : undefined}
       className={navLinkClassName(active)}
     >
-      <Icon aria-hidden="true" className="size-4 flex-none" style={{ color }} strokeWidth={1.75} />
+      <Icon
+        aria-hidden="true"
+        className="size-4 flex-none"
+        style={{ color: navIconColor(active) }}
+        strokeWidth={1.75}
+      />
       <span className="min-w-0 flex-1 truncate">{SHORTCUTS.label}</span>
     </Link>
   );
@@ -153,14 +163,19 @@ function ShortcutsNavItem() {
 /** 「ビュー」の1行（件数は出さない。行を落とす先にもしない） */
 function ViewNavItem({ view }: { view: ViewEntry }) {
   const [active] = useRoute(view.path);
-  const { Icon, color } = VIEW_ICONS[view.key];
+  const Icon = VIEW_ICONS[view.key];
   return (
     <Link
       href={view.path}
       aria-current={active ? "page" : undefined}
       className={navLinkClassName(active)}
     >
-      <Icon aria-hidden="true" className="size-4 flex-none" style={{ color }} strokeWidth={1.75} />
+      <Icon
+        aria-hidden="true"
+        className="size-4 flex-none"
+        style={{ color: navIconColor(active) }}
+        strokeWidth={1.75}
+      />
       <span className="min-w-0 flex-1 truncate">{view.label}</span>
     </Link>
   );

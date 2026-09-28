@@ -738,7 +738,8 @@ function barClassName(inProgress: boolean): string {
     "absolute top-[7px] h-[18px] rounded-md",
     inProgress
       ? "bg-[linear-gradient(90deg,color-mix(in_srgb,var(--bar)_70%,transparent),var(--bar))] shadow-[0_0_14px_color-mix(in_srgb,var(--bar)_40%,transparent)]"
-      : "bg-[color-mix(in_srgb,var(--bar)_50%,transparent)]",
+      : // 未着手の棒は色を薄めて敷く。55% は、落ち着いた 8 色のどれでも地の上で 3:1 以上（文字でない図形の基準）
+        "bg-[color-mix(in_srgb,var(--bar)_55%,transparent)]",
   );
 }
 

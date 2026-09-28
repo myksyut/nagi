@@ -152,7 +152,7 @@ function ArrivedMark() {
       role="img"
       aria-label="今日来たタスク"
       data-label="今日来た"
-      className="rounded-md border border-(--list-today)/35 px-1.5 text-(--list-today) text-[10px] leading-4 after:content-[attr(data-label)]"
+      className="rounded-md border border-(--attention)/35 px-1.5 text-(--attention) text-[10px] leading-4 after:content-[attr(data-label)]"
     />
   );
 }

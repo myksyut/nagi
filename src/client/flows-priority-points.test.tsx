@@ -634,7 +634,7 @@ describe("完了の条件2：行とボードのカードに、優先度の印と
     expectMarks(card("受信箱の"), "low", null);
   });
 
-  it("色：高は琥珀（今日の色のトークン）、中と低は置いた場所の控えめな灰のまま。赤（締切超過の色）は使わない", () => {
+  it("色：高は琥珀（目を向けてほしい印のトークン --attention）、中と低は置いた場所の控えめな灰のまま。赤（締切超過の色）は使わない", () => {
     const rules = [...stylesCss.matchAll(/\.priority-mark[^{]*\{[^}]*\}/g)].map((m) => m[0]);
     expect(rules.length).toBeGreaterThanOrEqual(4);
     const body = (selector: string) => {
@@ -644,8 +644,8 @@ describe("完了の条件2：行とボードのカードに、優先度の印と
       if (!found) throw new Error(`${selector} が見つかりません`);
       return found;
     };
-    expect(body('.priority-mark[data-priority="high"]')).toMatch(/color:\s*var\(--list-today\)/);
-    expect(stylesCss).toMatch(/--list-today:\s*#fbbf24/);
+    expect(body('.priority-mark[data-priority="high"]')).toMatch(/color:\s*var\(--attention\)/);
+    expect(stylesCss).toMatch(/--attention:\s*#fbbf24/);
     for (const level of ["medium", "low"]) {
       expect(body(`.priority-mark[data-priority="${level}"]`)).not.toMatch(/(^|[\s;{])color:/);
     }
