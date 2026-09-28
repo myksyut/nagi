@@ -5,7 +5,9 @@
 // メニューに ⌘Z や ⌘R を置いても、nagi のキーとぶつからない
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use tauri::menu::{Menu, MenuItem, PredefinedMenuItem, Submenu};
+use tauri::menu::{
+    Menu, MenuItem, PredefinedMenuItem, Submenu, HELP_SUBMENU_ID, WINDOW_SUBMENU_ID,
+};
 use tauri::webview::NewWindowResponse;
 use tauri::{AppHandle, Manager, Runtime, WebviewWindowBuilder};
 use tauri_plugin_opener::OpenerExt;
@@ -18,7 +20,12 @@ const RELOAD_MENU_ID: &str = "reload";
 
 fn main() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_opener::init())
+        // 画面のリンクのクリックを横取りする JS は入れない（開くのは on_new_window の1か所だけ）
+        .plugin(
+            tauri_plugin_opener::Builder::new()
+                .open_js_links_on_click(false)
+                .build(),
+        )
         .plugin(tauri_plugin_updater::Builder::new().build())
         .menu(build_menu)
         .on_menu_event(|app, event| {
@@ -45,7 +52,8 @@ fn main() {
 }
 
 /// nagi の窓を tauri.conf.json の設定から作る（設定では create: false にして、ここで作る）。
-/// 新しい窓を開こうとしたら（メモのリンクの target="_blank"・window.open）、既定のブラウザで開き、窓は開かない。
+/// 新しい窓を開こうとしたら（メモのリンクの target="_blank"・window.open）、http と https のときだけ既定のブラウザで
+/// 開き、窓はどれも開かない（opener は URL の種類を確かめずに OS に渡すので、file: やほかのアプリの URL は渡さない）。
 /// 画面の移動（on_navigation）は止めない。wry は埋め込みの枠の移動にも同じ判定を当てるので、止めると
 /// GitHub のログインの中の枠まで止めてしまう（nagi の外へのリンクは、どれも新しい窓で開く形）
 fn open_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
@@ -60,8 +68,10 @@ fn open_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     let opener = app.clone();
     WebviewWindowBuilder::from_config(app, &config)?
         .on_new_window(move |url, _features| {
-            if let Err(error) = opener.opener().open_url(url.as_str(), None::<&str>) {
-                eprintln!("リンクを開けませんでした: {error}");
+            if matches!(url.scheme(), "http" | "https") {
+                if let Err(error) = opener.opener().open_url(url.as_str(), None::<&str>) {
+                    eprintln!("リンクを開けませんでした: {error}");
+                }
             }
             NewWindowResponse::Deny
         })
@@ -69,7 +79,8 @@ fn open_main_window<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<()> {
     Ok(())
 }
 
-/// メニュー。編集・ウインドウ・アプリの項目は macOS の既定と同じもの。「表示」に「読み込み直す（⌘R）」を置く
+/// メニュー。編集・ウインドウ・ヘルプ・アプリの項目は macOS の既定と同じもの。「表示」に「読み込み直す（⌘R）」を置く。
+/// ウインドウとヘルプは Tauri の決まった ID で作る（macOS がウインドウの一覧とメニューの検索を足すため）
 fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
     let app_menu = Submenu::with_items(
         app,
@@ -106,13 +117,20 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
         "表示",
         true,
         &[
-            &MenuItem::with_id(app, RELOAD_MENU_ID, "読み込み直す", true, Some("CmdOrCtrl+R"))?,
+            &MenuItem::with_id(
+                app,
+                RELOAD_MENU_ID,
+                "読み込み直す",
+                true,
+                Some("CmdOrCtrl+R"),
+            )?,
             &PredefinedMenuItem::separator(app)?,
             &PredefinedMenuItem::fullscreen(app, Some("フルスクリーンにする"))?,
         ],
     )?;
-    let window_menu = Submenu::with_items(
+    let window_menu = Submenu::with_id_and_items(
         app,
+        WINDOW_SUBMENU_ID,
         "ウインドウ",
         true,
         &[
@@ -122,7 +140,11 @@ fn build_menu<R: Runtime>(app: &AppHandle<R>) -> tauri::Result<Menu<R>> {
             &PredefinedMenuItem::close_window(app, Some("閉じる"))?,
         ],
     )?;
-    Menu::with_items(app, &[&app_menu, &edit_menu, &view_menu, &window_menu])
+    let help_menu = Submenu::with_id_and_items(app, HELP_SUBMENU_ID, "ヘルプ", true, &[])?;
+    Menu::with_items(
+        app,
+        &[&app_menu, &edit_menu, &view_menu, &window_menu, &help_menu],
+    )
 }
 
 /// 起動のたびに GitHub の Releases の latest.json を見て、新しい版があれば裏で入れ替えておく。
