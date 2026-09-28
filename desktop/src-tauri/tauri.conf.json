@@ -9,6 +9,8 @@
   "app": {
     "windows": [
       {
+        "label": "main",
+        "create": false,
         "title": "nagi",
         "url": "https://nagi.wizard1026miya.workers.dev/",
         "width": 1280,

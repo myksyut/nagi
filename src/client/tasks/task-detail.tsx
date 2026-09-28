@@ -192,12 +192,20 @@ const MemoEditor = observer(function MemoEditor({ task }: { task: TaskRow }) {
         fieldFocusClassName,
         empty ? "text-muted-foreground/60" : "text-muted-foreground",
       )}
+      onMouseDown={(event) => {
+        // Safari の系統（デスクトップ版の中身も）は、リンクを押してもリンクにフォーカスを移さず、この枠に
+        // フォーカスを入れる。そのまま書き直す欄に切り替わると、押したリンクが消えて開けないので、
+        // リンクの上ではフォーカスを動かさない（クリックはそのままリンクに届いて開く）
+        if (event.target instanceof Element && event.target.closest("a")) event.preventDefault();
+      }}
       onClick={() => setEditing(true)}
       onFocus={(event) => {
         // リンクにフォーカスが入ったとき（クリックで開くとき）は書き直す欄にしない
         if (event.target === event.currentTarget) setEditing(true);
       }}
       onKeyDown={(event) => {
+        // リンクの上の Enter はリンクに任せる（開く）。書き直す欄にするのは、枠そのものの Enter だけ
+        if (event.target !== event.currentTarget) return;
         if (event.key === "Enter" && !isComposingKey(event.nativeEvent)) {
           event.preventDefault();
           setEditing(true);
