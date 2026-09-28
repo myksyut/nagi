@@ -300,7 +300,7 @@ Vitest は Workers 用テストプール（`@cloudflare/vitest-pool-workers` 0.2
 
 main にマージすると、GitHub Actions が本番に出す（`.github/workflows/deploy.yml`）。main の CI（`pnpm check` と `pnpm test`）が通ったあとに動き、マイグレーションの前に D1 の Time Travel のブックマークをログに残し、`pnpm release` を実行して、本番の応答（`/` が 200、`/api/session` が 401、`/auth/login` が 302）を確かめる。Actions の「deploy」を手で動かしても、main をそのまま出し直せる。
 
-使うもの：secret の `CLOUDFLARE_API_TOKEN`（環境 `production`。nagi の Worker と D1 だけを変えられるトークン）と、変数の `CLOUDFLARE_ACCOUNT_ID`。
+使うもの：secret の `CLOUDFLARE_API_TOKEN` と、変数の `CLOUDFLARE_ACCOUNT_ID`。トークンの権限は、このアカウントの Workers のスクリプトと D1 の編集（ほかにアカウントの設定とユーザーの情報の読み取り）で、nagi だけに絞ったものではない。トークンは環境 `production` の secret で、環境は main ブランチからしか使えない（トークンの権限とは別の守り）。出すのは main の最新のコミットだけ（古い CI をやり直しても、古い版で上書きしない）。
 
 手で出すときは、M7 から次の1つで出せる（CD と同時には動かさない）。
 

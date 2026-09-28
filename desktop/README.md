@@ -16,6 +16,9 @@
 - 更新のファイルは、secret の `TAURI_SIGNING_PRIVATE_KEY`（パスワードなし）で署名する。アプリは `tauri.conf.json` の `plugins.updater.pubkey` で確かめる。秘密の鍵の元は、利用者の Mac の `~/.tauri/nagi-updater.key`（M7 には置かない）
 - 鍵をなくしたときは、新しい鍵を作って secret と `pubkey` を差し替え、アプリを上の手順で入れ直す（古い鍵で署名した版しか受け付けないため）
 - PR では、Mac でビルドできるかだけを確かめる（署名も公開もしない）
+- Release は下書きで作り、アプリ・署名・`latest.json` がそろってから公開して latest にする（そろうまでは、アプリは前の版の `latest.json` を見る）
+- 出し直すときは、Actions の「desktop」を新しく手で動かす。失敗した実行のやり直し（Re-run）では実行の番号が増えず、同じ版になる
+- `releases/latest` はデスクトップ版の更新の入口なので、ほかの用途の Release を latest にしない
 
 ## 手元の Mac でビルドする
 

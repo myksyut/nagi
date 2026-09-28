@@ -31,9 +31,6 @@ jobs:
     environment:
       name: production
       url: https://nagi.wizard1026miya.workers.dev
-    env:
-      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
-      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
     steps:
       - uses: actions/checkout@v7
         with:
@@ -46,10 +43,35 @@ jobs:
         with:
           cache: true
       - run: pnpm install --frozen-lockfile
+      # 古い main の CI をやり直したときなどに、新しい版を出したあとで古い版で上書きしないよう、
+      # 出すのは main の最新のコミットだけにする（D1 は新しいまま Worker だけが古くなるのを防ぐ）
+      - name: main の最新か確かめる
+        id: latest
+        env:
+          CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
+        run: |
+          latest=$(git ls-remote origin refs/heads/main | cut -f1)
+          echo "出す候補：$CANDIDATE／main の最新：$latest"
+          if [ -n "$latest" ] && [ "$CANDIDATE" = "$latest" ]; then
+            echo "deploy=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::main の最新ではないので出さない（最新の版は、その版の CI のあとに出る）"
+            echo "deploy=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: D1 の Time Travel のブックマークを残す（マイグレーションの前）
+        if: steps.latest.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
         run: pnpm exec wrangler d1 time-travel info nagi
-      - run: pnpm release
+      - name: 本番に出す（pnpm release）
+        if: steps.latest.outputs.deploy == 'true'
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+        run: pnpm release
       - name: 本番の応答を確かめる
+        if: steps.latest.outputs.deploy == 'true'
         run: |
           base=https://nagi.wizard1026miya.workers.dev
           expect() {
