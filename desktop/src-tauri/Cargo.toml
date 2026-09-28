@@ -11,3 +11,5 @@ tauri-build = { version = "2.7", features = [] }
 [dependencies]
 tauri = { version = "2.12", features = [] }
 tauri-plugin-updater = "2.13"
+# tauri::generate_context! が plugins の設定を serde_json で埋め込むため
+serde_json = "1"
