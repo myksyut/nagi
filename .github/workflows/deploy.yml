@@ -47,6 +47,8 @@ jobs:
       # 出すのは main の最新のコミットだけにする（D1 は新しいまま Worker だけが古くなるのを防ぐ）
       - name: main の最新か確かめる
         id: latest
+        # pipefail を付ける（git ls-remote の失敗を cut の成功で隠さず、ジョブを失敗させる）
+        shell: bash
         env:
           CANDIDATE: ${{ github.event.workflow_run.head_sha || github.sha }}
         run: |
