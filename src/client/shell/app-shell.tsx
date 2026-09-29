@@ -18,10 +18,12 @@ import { ToastHost } from "@/tasks/toast-host";
 import { UiProvider } from "@/tasks/ui-context";
 import { AddButton } from "./add-button";
 import { Sidebar } from "./sidebar";
+import { sidebarOf } from "./sidebar-state";
 import { StatusBar } from "./status-bar";
 
 /**
  * 左にサイドバー、右にリスト、右下に「＋」。形と色は index.html の外枠の CSS とそろえる。
+ * サイドバーを畳むと（⌘\。shell/sidebar-state.ts）、サイドバーが細い帯に縮み、右の枠が同じ速さで左へ広がる。
  * 一覧の状態（選択・開いているタスク・追加欄）、キーの割り当て、トースト、⌘K、上部の帯（オフライン・新しいバージョン）もここで持つ。
  * キー操作の状況（`{ store, ui, navigate }`）は React の context として出す（⌘K からもキーと同じ run を呼ぶ）。
  * ⌘K・ショートカットのページ・完了ログ・カレンダー・p の候補などは後から読み込む部品で、起動のあとの空いた時間に先読みする。
@@ -42,6 +44,8 @@ export function AppShell({ children }: { children: ReactNode }) {
   // prefers-reduced-motion のときは動きを止める（色の変化は残る）
   useEffect(() => followReducedMotion(), []);
   useEffect(() => startDeferredLoading(), []);
+  // サイドバーを畳んでいるか（⌘\）を <html data-sidebar> に写す（CSS がサイドバーの幅と本文の余白を替える）
+  useEffect(() => sidebarOf(ui).mirrorTo(), [ui]);
   useKeymap(keyContext);
   useEffect(() => shortcutsPageOf(ui).noteLocation(location), [ui, location]);
   // ページを離れるとき（閉じる・読み込み直す）に、まだ送っていないタイトルとメモを下書きへ書く
@@ -60,7 +64,7 @@ export function AppShell({ children }: { children: ReactNode }) {
             <StatusBar />
             <EditingLock ui={ui}>
               <Sidebar />
-              <main className="min-h-dvh pl-(--sidebar-width)">
+              <main className="min-h-dvh pl-(--sidebar-width) transition-[padding-left] duration-(--duration-base) ease-out">
                 {/* 画面の一番外の要素に data-wide-view を付けると、幅の上限が外れる（カレンダー・タイムライン） */}
                 <div className="mx-auto max-w-3xl px-12 pt-9 pb-28 has-data-wide-view:max-w-none">
                   {children}

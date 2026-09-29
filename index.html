@@ -16,10 +16,23 @@
       crossorigin
     />
     <!--
+      サイドバーを畳んでいたら（localStorage の nagi:sidebar。src/client/shell/sidebar-state.ts）、
+      <html> に data-sidebar="rail" を付けて、最初の描画から帯の幅で描く（外枠も、アプリの CSS も）
+    -->
+    <script>
+      try {
+        if (localStorage.getItem("nagi:sidebar") === "rail") {
+          document.documentElement.dataset.sidebar = "rail";
+        }
+      } catch {
+        // 読めなければ、広げた幅で描く
+      }
+    </script>
+    <!--
       外枠の最小限の CSS。JavaScript が届く前から、深い紺の背景とサイドバーの形で描く
       （上からの光は styles.css の body::before。本番では CSS が先に届くので、最初の描画から出る）。
       色と幅は src/client/styles.css の .dark と :root のトークン
-      （--background・--foreground・--sidebar・--sidebar-border・--sidebar-width）と同じ値にそろえる。
+      （--background・--foreground・--sidebar・--sidebar-border・--sidebar-width・--sidebar-rail-width）と同じ値にそろえる。
     -->
     <style>
       :root {
@@ -38,6 +51,9 @@
         width: 232px;
         background: rgb(255 255 255 / 3.5%);
         border-right: 1px solid rgb(255 255 255 / 6%);
+      }
+      :root[data-sidebar="rail"] #root:empty::before {
+        width: 60px;
       }
     </style>
   </head>

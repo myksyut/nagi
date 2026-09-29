@@ -43,6 +43,11 @@ describe("外枠の値の一致", () => {
     expect(declaration(shellSidebar, "width")).toBe(declaration(stylesCss, "--sidebar-width"));
   });
 
+  it("畳んだサイドバー（帯）の幅（--sidebar-rail-width）", () => {
+    const shellRail = block(htmlStyle, ':root[data-sidebar="rail"] #root:empty::before');
+    expect(declaration(shellRail, "width")).toBe(declaration(stylesCss, "--sidebar-rail-width"));
+  });
+
   it("サイドバーの右の枠線（--sidebar-border）", () => {
     expect(declaration(shellSidebar, "border-right")).toBe(
       `1px solid ${declaration(darkTokens, "--sidebar-border")}`,

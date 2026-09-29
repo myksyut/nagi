@@ -2,6 +2,8 @@
 @import "./fonts.css";
 
 @custom-variant dark (&:is(.dark *));
+/* サイドバーを畳んでいるとき（アイコンだけの細い帯。<html data-sidebar="rail">。shell/sidebar-state.ts） */
+@custom-variant rail (&:is([data-sidebar="rail"] *));
 
 @theme inline {
   --font-sans:
@@ -73,10 +75,24 @@
   --duration-base: 200ms;
   --duration-exit: 150ms;
   --radius: 0.625rem;
-  /* index.html の外枠の CSS と同じ値にそろえる */
+  /* index.html の外枠の CSS と同じ値にそろえる。畳んだときは、下の規則で帯の幅に替わる */
   --sidebar-width: 232px;
+  /*
+   * 畳んだサイドバー（アイコンだけの細い帯）の幅。index.html の外枠の CSS と同じ値にそろえる。
+   * サイドバーの左右の余白（12px）と行の左の余白（10px）はそのままで、アイコン（16px）が帯の真ん中に来る幅
+   * （広げたときと同じ横の位置に残る）
+   */
+  --sidebar-rail-width: 60px;
   /* 完了の光の輪（動きのルールの例外。250ms を超える動きはこれだけ） */
   --duration-complete-ring: 300ms;
+}
+
+/*
+ * サイドバーを畳んでいるとき（<html data-sidebar="rail">）。サイドバーの幅を使うところ（サイドバー・本文の左の余白・
+ * 上部の帯・トースト）は、どれも --sidebar-width を読むので、ここで帯の幅に替えるだけで付いてくる
+ */
+:root[data-sidebar="rail"] {
+  --sidebar-width: var(--sidebar-rail-width);
 }
 
 /* ライト：coss ui の初期値のまま。今は使わない（ライトは後で足す） */

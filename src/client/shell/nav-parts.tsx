@@ -27,6 +27,13 @@ export function navLinkClassName(active: boolean, dropping = false): string {
 }
 
 /**
+ * サイドバーの1行の名前。畳んだとき（帯）は、行の幅が縮んで名前が切れ、さらに透明にする
+ * （読み上げには残る。名前は帯の右に出す札で見せる。sidebar.tsx の useRailTip）
+ */
+export const navLabelClassName =
+  "min-w-0 flex-1 truncate transition-opacity duration-(--duration-short) rail:opacity-0";
+
+/**
  * サイドバーのアイコンの色。色は意味のあるところにだけ使う：ふだんは控えめな灰、今いる場所だけ選択の紫
  * （リストごとの色は付けない。プロジェクトは色の点で見分ける）
  */
@@ -57,7 +64,8 @@ const COUNT_VARIANTS = {
 /**
  * サイドバーの未完了の件数（受信箱 3 → 2 など）。行の右端に出す。数字だけが小さく入れ替わる
  * （transitions.dev の数字の入れ替えを写したもの）。
- * 最初の描画とリストの切り替えでは動かさない。読み上げには「（3件）」を出す
+ * 最初の描画とリストの切り替えでは動かさない。読み上げには「（3件）」を出す。
+ * 畳んだとき（帯）は透明にする（帯の右に出す札が data-nav-count を読んで、名前に添える）
  */
 export function NavCount({ count }: { count: number }) {
   // 前の件数との比べ（描き直しのたびではなく、件数が変わったときだけ向きを決める）
@@ -65,7 +73,10 @@ export function NavCount({ count }: { count: number }) {
   if (last.count !== count) setLast({ count, direction: count > last.count ? 1 : -1 });
   const { direction } = last;
   return (
-    <span className="relative ml-auto inline-grid flex-none justify-items-end text-[11px] text-faint-foreground tabular-nums">
+    <span
+      data-nav-count={count}
+      className="relative ml-auto inline-grid flex-none justify-items-end text-[11px] text-faint-foreground tabular-nums transition-opacity duration-(--duration-short) rail:opacity-0"
+    >
       <span className="sr-only">（{count}件）</span>
       {/*
         抜けていく数字は、新しい数字と同じ升目に重ねる。popLayout（抜けていく要素の位置を描き直しの途中で測る）は
