@@ -28,10 +28,7 @@ export const StatusBar = observer(function StatusBar() {
   if (!offline) return null;
   return (
     <Bar
-      className={cn(
-        "transition-colors duration-(--duration-base)",
-        emphasized && "bg-primary/25 text-foreground",
-      )}
+      className={cn(emphasized && "bg-primary/25 text-foreground")}
       data-emphasized={emphasized || undefined}
     >
       オフライン — つながるまで保存できません
@@ -44,7 +41,8 @@ function Bar({ className, children, ...props }: ComponentProps<"div">) {
     <div
       role="status"
       className={cn(
-        "fixed top-0 right-0 left-(--sidebar-width) z-40 flex h-6 items-center justify-center gap-3 border-b bg-surface text-muted-foreground text-xs",
+        // 左の端はサイドバーの右（畳む・広げるときは、本文と同じ速さで動く）。強調の色も同じ速さで変える
+        "fixed top-0 right-0 left-(--sidebar-width) z-40 flex h-6 items-center justify-center gap-3 border-b bg-surface text-muted-foreground text-xs transition-[left,color,background-color] duration-(--duration-base) ease-out",
         className,
       )}
       {...props}

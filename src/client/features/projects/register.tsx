@@ -4,6 +4,7 @@ import { useStore } from "@/data";
 import { registerKeyBindings } from "@/keyboard/keymap";
 import { projectColorOf } from "@/lib/project-color";
 import { cn } from "@/lib/utils";
+import { sidebarOf } from "@/shell/sidebar-state";
 import { selectionForOperation } from "@/tasks/commands";
 import { useDetailSurface } from "@/tasks/detail-surface";
 import {
@@ -23,7 +24,7 @@ import { ProjectDot } from "./project-dot";
 
 /**
  * 6 の登録：p（プロジェクト）、行の右側のプロジェクト名、開いたタスクのプロジェクトのボタン。
- * 17 の登録：プロジェクトを作成（キーはなし。⌘K とサイドバーの ＋ から、名前の欄を開く）。
+ * 17 の登録：プロジェクトを作成（キーはなし。⌘K とサイドバーの ＋ から、名前の欄を開く。サイドバーを畳んでいれば広げる）。
  * プロジェクトの画面とサイドバーの一覧・名前の欄、あとでのまとまりは、それぞれ project-screen・project-nav・
  * create-field・later-sections
  */
@@ -47,7 +48,11 @@ registerKeyBindings({
   group: "リスト",
   // キーはなし（⌘K からは名前の欄を開くだけ。名前は欄で打つ）
   keys: [],
-  run: ({ ui }) => projectCreatorOf(ui).show(),
+  run: ({ ui }) => {
+    // 畳んだサイドバー（帯）には名前の欄を出さないので、広げてから開く
+    sidebarOf(ui).setRail(false);
+    projectCreatorOf(ui).show();
+  },
 });
 
 /** 付いているプロジェクト（削除済みなら出さない。アーカイブ済みは完了ログなどのために出す） */

@@ -276,7 +276,8 @@ registerFieldKeys({
 
 /**
  * 「プロジェクト」の見出しの右の ＋。いつも見える（控えめな色で、マウスを乗せると明るく）。
- * 押しても、開いている名前の欄からフォーカスを奪わない（打っている名前はそのまま）
+ * 押しても、開いている名前の欄からフォーカスを奪わない（打っている名前はそのまま）。
+ * サイドバーを畳んだとき（帯）は出さない（場所は残す。⌘K の「プロジェクトを作成」は、広げてから欄を開く）
  */
 export function CreateProjectButton() {
   const context = useKeyContext();
@@ -285,7 +286,8 @@ export function CreateProjectButton() {
       type="button"
       aria-label="プロジェクトを作成"
       title="プロジェクトを作成"
-      className="-my-1 ms-auto grid size-4.5 flex-none place-items-center rounded-[5px] text-faint-foreground outline-none hover:bg-primary/16 hover:text-primary-text focus-visible:bg-primary/16 focus-visible:text-primary-text focus-visible:outline-2 focus-visible:outline-ring"
+      data-sidebar-full-only=""
+      className="-my-1 ms-auto grid size-4.5 flex-none place-items-center rounded-[5px] text-faint-foreground outline-none hover:bg-primary/16 hover:text-primary-text focus-visible:bg-primary/16 focus-visible:text-primary-text focus-visible:outline-2 focus-visible:outline-ring rail:invisible"
       onMouseDown={(event) => event.preventDefault()}
       onClick={() => keymap.run(PROJECT_CREATE_BINDING_ID, context)}
     >
@@ -297,7 +299,8 @@ export function CreateProjectButton() {
 /**
  * プロジェクトの一覧の一番下に開く名前の欄（開いているときだけ描く）。
  * サイドバーにいつも置き、置いているあいだだけ ProjectCreator を動かす（start）。なくなるとき（⌘K のログアウトで
- * ログイン画面へ移るなど）は、打っている名前を控えの列へ移して止める
+ * ログイン画面へ移るなど）は、打っている名前を控えの列へ移して止める。
+ * サイドバーを畳んだとき（帯）は見せない（打った名前は残り、広げると元どおり出る）
  */
 export const ProjectCreateField = observer(function ProjectCreateField() {
   const ui = useUi();
@@ -305,7 +308,7 @@ export const ProjectCreateField = observer(function ProjectCreateField() {
   useEffect(() => creator.start(), [creator]);
   if (!creator.open) return null;
   return (
-    <li>
+    <li data-sidebar-full-only="" className="rail:hidden">
       <NameField creator={creator} />
     </li>
   );
