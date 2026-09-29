@@ -164,7 +164,8 @@ type RailTip = {
 /**
  * 畳んだサイドバー（帯）の項目（data-tip の付いたもの）の名前を、帯の右に札で出す。リストとプロジェクトは
  * 未完了の件数（行の data-nav-count）、畳む・広げるボタンはキー（data-tip-key）も添える。
- * 出すのは、マウスを乗せたとき・キーでフォーカスしたとき・タスクを運んで重ねたとき（どこに落とすかが分かるように）。
+ * 出すのは、マウスを乗せたとき・キーでフォーカスしたとき・タスクを運んで落とせる項目に重ねたとき
+ * （どこに落とすかが分かるように）。
  * 押したとき・項目から外れたとき・スクロールしたときに消す。
  * 札はサイドバーの外に1つだけ置く（サイドバーはすりガラスで、はみ出しを切るため）。読み上げには出さない
  * （項目の名前は、項目の中に透明にして残っている）
@@ -202,8 +203,10 @@ function useRailTip(aside: RefObject<HTMLElement | null>, rail: boolean) {
     const onFocusIn = (event: FocusEvent) => {
       if (isFocusVisible(event.target)) show(itemOf(event.target));
     };
-    // 運んでいるあいだは pointerover が来ないので、dragover で見る（帯の外に出たら消える）
-    const onDragOver = (event: DragEvent) => show(itemOf(event.target));
+    // 運んでいるあいだは pointerover が来ないので、dragover で見る。出すのは落とせる項目の上だけ
+    // （受け口が dragover を preventDefault したとき。useTaskDropTarget）。帯の外や落とせない項目では消す
+    const onDragOver = (event: DragEvent) =>
+      show(event.defaultPrevented ? itemOf(event.target) : null);
     element.addEventListener("pointerover", onPointerOver);
     element.addEventListener("pointerleave", hide);
     element.addEventListener("pointerdown", hide);

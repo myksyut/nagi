@@ -328,14 +328,16 @@ describe("帯へ運んで落とす", () => {
     expect(isRail()).toBe(true);
   });
 
-  it("帯でも「受信箱」「完了ログ」には落とせない（dragOver で preventDefault されない）", async () => {
+  it("帯でも「受信箱」「完了ログ」には落とせない（dragOver で preventDefault されない）。札も出さない", async () => {
     const server = new FakeServer();
     server.putTask(makeTask({ title: "A", bucket: "today" }));
     await openRail("/today", server);
     await screen.findByRole("listbox", { name: "今日" });
     fireEvent.dragStart(screen.getByRole("option", { name: /^A/ }));
     expect(fireEvent.dragOver(screen.getByRole("link", { name: "受信箱" }))).toBe(true);
+    expect(railTip()).toBeNull();
     expect(fireEvent.dragOver(screen.getByRole("link", { name: "完了ログ" }))).toBe(true);
+    expect(railTip()).toBeNull();
   });
 });
 

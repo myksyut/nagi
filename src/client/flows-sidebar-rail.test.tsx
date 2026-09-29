@@ -135,15 +135,21 @@ describe("帯の右の札", () => {
     await waitFor(() => expect(railTip()).toHaveTextContent("成田国際空港"));
   });
 
-  it("タスクを運んで帯の項目に重ねると、その名前が出る", async () => {
+  it("タスクを運んで、落とせる帯の項目に重ねると、その名前が出る。落とせない項目（受信箱）では出さない", async () => {
     const server = new FakeServer();
     server.putProject(makeProject({ name: "ADVICS" }));
+    server.putTask(makeTask({ title: "A", bucket: "today", rank: "a0" }));
     localStorage.setItem(SIDEBAR_STORAGE_KEY, "rail");
     await open("/today", server);
-    const project = await within(sidebar()).findByRole("link", { name: /^ADVICS/ });
-    fireEvent.dragOver(project);
+    const row = await screen.findByRole("option", { name: /^A/ });
+    fireEvent.dragStart(row);
+    fireEvent.dragOver(await within(sidebar()).findByRole("link", { name: /^ADVICS/ }));
     await waitFor(() => expect(railTip()).toHaveTextContent("ADVICS"));
-    fireEvent.drop(window);
+    fireEvent.dragOver(navLink("受信箱"));
+    await waitFor(() => expect(railTip()).toBeNull());
+    fireEvent.dragOver(navLink("あとで"));
+    await waitFor(() => expect(railTip()).toHaveTextContent("あとで"));
+    fireEvent.dragEnd(row);
     await waitFor(() => expect(railTip()).toBeNull());
   });
 
