@@ -153,12 +153,43 @@ describe("帯の右の札", () => {
     await waitFor(() => expect(railTip()).toBeNull());
   });
 
+  it("札を出したまま件数が変わると（x で完了）、札の件数も変わる", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    server.putTask(makeTask({ title: "a", bucket: "today", rank: "a0" }));
+    localStorage.setItem(SIDEBAR_STORAGE_KEY, "rail");
+    await open("/today", server);
+    await user.click(await screen.findByRole("option", { name: /^a/ }));
+    await user.hover(navLink("今日"));
+    await waitFor(() => expect(railTip()).toHaveTextContent("今日1"));
+    // マウスは帯の「今日」に置いたまま、選んでいる行を x で完了にする
+    await user.keyboard("x");
+    await waitFor(() => expect(railTip()?.textContent).toBe("今日"));
+  });
+
   it("畳む・広げるボタンの札には、キーを添える", async () => {
     const user = userEvent.setup();
     localStorage.setItem(SIDEBAR_STORAGE_KEY, "rail");
     await open("/today");
     await user.hover(screen.getByRole("button", { name: /^サイドバーを広げる/ }));
     await waitFor(() => expect(railTip()).toHaveTextContent("サイドバーを広げる⌘\\"));
+  });
+});
+
+describe("ポップオーバーの中", () => {
+  it("カレンダーの小さな追加欄で打っている途中でも ⌘\\ が効き、打った文字とフォーカスは残る", async () => {
+    const user = userEvent.setup();
+    await open("/calendar");
+    await user.click(await screen.findByRole("button", { name: "タスクを追加" }));
+    const input = await screen.findByRole("textbox", { name: "受信箱に追加" });
+    await waitFor(() => expect(input).toHaveFocus());
+    await user.type(input, "資料");
+    await user.keyboard("{Meta>}\\{/Meta}");
+    expect(isRail()).toBe(true);
+    expect(input).toHaveValue("資料");
+    expect(input).toHaveFocus();
+    await user.keyboard("{Meta>}\\{/Meta}");
+    expect(isRail()).toBe(false);
   });
 });
 

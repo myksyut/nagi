@@ -54,6 +54,11 @@ export type KeyBinding = {
   where?: string;
   /** 入力欄にいるあいだも効かせる。1文字のキーには使わない（入力欄では1文字のキーを無効にする決まり） */
   allowInInput?: boolean;
+  /**
+   * ポップオーバー（`data-keymap="off"` の要素の中。候補・小さな追加欄・小さな詳細・⌘K など）の中でも効かせる。
+   * ポップオーバーの中身に関わらない操作（サイドバーの出し入れ）だけに使う。1文字のキーには使わない
+   */
+  allowInPopover?: boolean;
   /** 手元の控えを読み終える前（store.loaded が false）でも効かせる。データを変えない割り当てだけ */
   allowBeforeLoad?: boolean;
   /** 押しっぱなしの繰り返しでも動かす（↑↓ など） */
@@ -98,6 +103,9 @@ export class Keymap {
     const entries = list.map((binding): Entry => {
       if (binding.allowInInput && binding.keys.some((key) => isPlainCharacter(key))) {
         throw new Error(`1文字のキーは入力欄で効かせられません：${binding.id}`);
+      }
+      if (binding.allowInPopover && binding.keys.some((key) => isPlainCharacter(key))) {
+        throw new Error(`1文字のキーはポップオーバーの中で効かせられません：${binding.id}`);
       }
       return { binding, combos: binding.keys.map(parseKey) };
     });
@@ -172,16 +180,17 @@ export class Keymap {
    * - 日本語入力の変換中（確定の Enter を含む）は何もしない
    * - 入力欄にいるあいだは allowInInput の割り当てだけ
    * - ボタンやリンクの上での Enter と Space は、その部品に任せる
-   * - `data-keymap="off"` の要素の中（5 以降のポップオーバーなど）では何もしない
+   * - `data-keymap="off"` の要素の中（5 以降のポップオーバーなど）では、allowInPopover の割り当てだけ
    */
   dispatch(event: KeyboardEvent, context: KeyContext): boolean {
     if (event.defaultPrevented || isComposingKey(event)) return false;
     const target = event.target;
-    if (target instanceof Element && target.closest("[data-keymap='off']")) return false;
+    const inPopover = target instanceof Element && target.closest("[data-keymap='off']") !== null;
     const editable = isEditableTarget(target);
     const activatable = (event.key === "Enter" || event.key === " ") && isActivatableTarget(target);
     for (const { binding, combos } of this.#entries.values()) {
       if (!combos.some((combo) => matchesKey(combo, event))) continue;
+      if (inPopover && !binding.allowInPopover) continue;
       if (editable && !binding.allowInInput) continue;
       if (activatable) continue;
       if (event.repeat && !binding.repeat) continue;

@@ -166,7 +166,8 @@ type RailTip = {
  * 未完了の件数（行の data-nav-count）、畳む・広げるボタンはキー（data-tip-key）も添える。
  * 出すのは、マウスを乗せたとき・キーでフォーカスしたとき・タスクを運んで落とせる項目に重ねたとき
  * （どこに落とすかが分かるように）。
- * 押したとき・項目から外れたとき・スクロールしたときに消す。
+ * 押したとき・項目から外れたとき・スクロールしたときに消す。出しているあいだに件数や名前が変わったら
+ * （x で完了した・名前を変えた）、札も合わせる。
  * 札はサイドバーの外に1つだけ置く（サイドバーはすりガラスで、はみ出しを切るため）。読み上げには出さない
  * （項目の名前は、項目の中に透明にして残っている）
  */
@@ -176,20 +177,35 @@ function useRailTip(aside: RefObject<HTMLElement | null>, rail: boolean) {
     const element = aside.current;
     if (!rail || !element) return;
     let current: HTMLElement | null = null;
-    const show = (item: HTMLElement | null) => {
-      if (item === current) return;
-      current = item;
-      if (!item) {
-        setTip(null);
-        return;
-      }
+    let watcher: MutationObserver | null = null;
+    const update = (item: HTMLElement) => {
       const rect = item.getBoundingClientRect();
-      setTip({
+      const next: RailTip = {
         label: item.dataset.tip ?? "",
         count: item.querySelector("[data-nav-count]")?.getAttribute("data-nav-count") ?? null,
         keyLabel: item.dataset.tipKey ?? null,
         top: rect.top + rect.height / 2,
         left: element.getBoundingClientRect().right + 8,
+      };
+      setTip((previous) => (previous && sameTip(previous, next) ? previous : next));
+    };
+    const show = (item: HTMLElement | null) => {
+      if (item === current) return;
+      current = item;
+      watcher?.disconnect();
+      watcher = null;
+      if (!item) {
+        setTip(null);
+        return;
+      }
+      update(item);
+      // 件数（NavCount の data-nav-count。0 件になると要素ごとなくなる）と名前（data-tip）の変わり目を見る
+      watcher = new MutationObserver(() => update(item));
+      watcher.observe(item, {
+        subtree: true,
+        childList: true,
+        attributes: true,
+        attributeFilter: ["data-nav-count", "data-tip"],
       });
     };
     const itemOf = (target: EventTarget | null) =>
@@ -226,23 +242,36 @@ function useRailTip(aside: RefObject<HTMLElement | null>, rail: boolean) {
       window.removeEventListener("dragover", onDragOver);
       window.removeEventListener("drop", hide);
       window.removeEventListener("dragend", hide);
+      watcher?.disconnect();
       setTip(null);
     };
   }, [aside, rail]);
   if (!tip) return null;
   return (
+    // 幅は 20rem まで、狭い画面では右端まで（8px 残す）。長い名前は折り返す（帯では項目の名前が見えないので、
+    // 末尾まで読めるように）
     <div
       aria-hidden="true"
-      className="pointer-events-none fixed z-30 flex -translate-y-1/2 items-center gap-1.5 whitespace-nowrap rounded-md border border-glass-edge bg-surface px-2 py-1 text-foreground text-xs shadow-lg"
+      className="pointer-events-none fixed z-30 flex max-w-[min(20rem,calc(100vw-var(--sidebar-width)-1rem))] -translate-y-1/2 items-center gap-1.5 rounded-md border border-glass-edge bg-surface px-2 py-1 text-foreground text-xs shadow-lg"
       style={{ top: tip.top, left: tip.left }}
       data-rail-tip=""
     >
-      {tip.label}
+      <span className="min-w-0 break-words">{tip.label}</span>
       {tip.count !== null && tip.count !== "0" && (
-        <span className="text-faint-foreground tabular-nums">{tip.count}</span>
+        <span className="flex-none text-faint-foreground tabular-nums">{tip.count}</span>
       )}
-      {tip.keyLabel !== null && <Kbd>{tip.keyLabel}</Kbd>}
+      {tip.keyLabel !== null && <Kbd className="flex-none">{tip.keyLabel}</Kbd>}
     </div>
+  );
+}
+
+function sameTip(a: RailTip, b: RailTip): boolean {
+  return (
+    a.label === b.label &&
+    a.count === b.count &&
+    a.keyLabel === b.keyLabel &&
+    a.top === b.top &&
+    a.left === b.left
   );
 }
 

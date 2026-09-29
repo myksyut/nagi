@@ -152,6 +152,35 @@ describe("Keymap.dispatch", () => {
     expect(run).not.toHaveBeenCalled();
   });
 
+  it("data-keymap=off の中では allowInPopover の割り当てだけ効く（入力欄の中は allowInInput も要る）", () => {
+    const keymap = new Keymap();
+    const plain = vi.fn();
+    const popover = vi.fn();
+    keymap.register({ id: "plain", label: "普通", group: "全体", keys: ["Mod+k"], run: plain });
+    keymap.register({
+      id: "popover",
+      label: "ポップオーバーでも",
+      group: "全体",
+      keys: ["Mod+\\"],
+      allowInInput: true,
+      allowInPopover: true,
+      run: popover,
+    });
+    const container = document.createElement("div");
+    container.setAttribute("data-keymap", "off");
+    const input = document.createElement("input");
+    container.appendChild(input);
+    const context = makeContext();
+    expect(keymap.dispatch(makeEvent({ key: "k", metaKey: true, target: input }), context)).toBe(
+      false,
+    );
+    expect(plain).not.toHaveBeenCalled();
+    const event = makeEvent({ key: "\\", metaKey: true, target: input });
+    expect(keymap.dispatch(event, context)).toBe(true);
+    expect(popover).toHaveBeenCalledTimes(1);
+    expect(event.preventDefault).toHaveBeenCalledTimes(1);
+  });
+
   it("変換中（isComposing・keyCode 229）は何もしない", () => {
     const keymap = new Keymap();
     const run = vi.fn();
@@ -182,6 +211,20 @@ describe("Keymap.register", () => {
         group: "タスク",
         keys: ["x"],
         allowInInput: true,
+        run: vi.fn(),
+      }),
+    ).toThrow();
+  });
+
+  it("1文字のキーに allowInPopover を付けると例外", () => {
+    const keymap = new Keymap();
+    expect(() =>
+      keymap.register({
+        id: "bad",
+        label: "だめ",
+        group: "全体",
+        keys: ["x"],
+        allowInPopover: true,
         run: vi.fn(),
       }),
     ).toThrow();
