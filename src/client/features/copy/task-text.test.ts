@@ -21,6 +21,12 @@ describe("taskClipboardText", () => {
     ).toBe("議事録\n\n  - 決めたこと\n\n  - 宿題");
   });
 
+  it("先頭の、全角の空白・ノーブレークスペース・CR だけの行も落とす", () => {
+    expect(taskClipboardText([{ title: "議事録", memo: "\u3000\n\u00a0\t\r\n本文" }])).toBe(
+      "議事録\n\n本文",
+    );
+  });
+
   it("何件か：渡した順に並べ、あいだに --- の行をはさむ", () => {
     expect(
       taskClipboardText([

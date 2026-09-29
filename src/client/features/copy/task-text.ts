@@ -11,7 +11,8 @@ const SEPARATOR = "\n\n---\n\n";
 export function taskClipboardText(tasks: readonly Pick<TaskRow, "title" | "memo">[]): string {
   return tasks
     .map(({ title, memo }) => {
-      const body = memo.replace(/^(?:[ \t]*\r?\n)+/, "").trimEnd();
+      // 空白（全角の空白・ノーブレークスペースも）だけの行を先頭から落とす
+      const body = memo.replace(/^(?:[^\S\n]*\n)+/, "").trimEnd();
       return body === "" ? title.trim() : `${title.trim()}\n\n${body}`;
     })
     .join(SEPARATOR);

@@ -494,3 +494,37 @@ async function setupListAndPopover(server: FakeServer, popoverTaskId: string) {
   act(() => ui.setView(view));
   return { store, ui };
 }
+
+describe("⇧⌘C：保存できていない文字（レビューの指摘）", () => {
+  it("保存できていないタイトルとメモがあれば、開いたときに欄に出るそちらを入れる", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "元のタイトル", memo: "元のメモ", bucket: "today", rank: "a0" }),
+    );
+    // オフラインで閉じたときなどに残る下書き（ListUi の unsavedText。localStorage から読む）
+    localStorage.setItem(`nagi:draft:unsaved:${task.id}:title`, "直したタイトル");
+    localStorage.setItem(`nagi:draft:unsaved:${task.id}:memo`, "直したメモ");
+    await open("/today", server);
+    await user.click(await screen.findByRole("option", { name: /^元のタイトル/ }));
+    await user.keyboard(COPY);
+    await waitFor(async () =>
+      expect(await navigator.clipboard.readText()).toBe("直したタイトル\n\n直したメモ"),
+    );
+  });
+
+  it("保存できていないタイトルが空白だけなら、保存したタイトルを入れる（空のタイトルは保存しない決まり）", async () => {
+    const user = userEvent.setup();
+    const server = new FakeServer();
+    const task = server.putTask(
+      makeTask({ title: "元のタイトル", memo: "元のメモ", bucket: "today", rank: "a0" }),
+    );
+    localStorage.setItem(`nagi:draft:unsaved:${task.id}:title`, "  ");
+    await open("/today", server);
+    await user.click(await screen.findByRole("option", { name: /^元のタイトル/ }));
+    await user.keyboard(COPY);
+    await waitFor(async () =>
+      expect(await navigator.clipboard.readText()).toBe("元のタイトル\n\n元のメモ"),
+    );
+  });
+});
