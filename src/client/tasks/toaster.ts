@@ -3,7 +3,8 @@ import { reaction } from "mobx";
 import type { AppStore } from "@/data";
 
 /**
- * 画面下のトースト。「元に戻す」付きのもの（完了・振り分け・削除）と、「保存できませんでした」。
+ * 画面下のトースト。「元に戻す」付きのもの（完了・振り分け・削除）と、「保存できませんでした」と、
+ * 知らせるだけのもの（タスクをコピーしました）。
  * 「元に戻す」付きのトーストは1つだけ出し、元に戻す対象（undoStack の一番上）がその操作でなくなったら消す
  * （⌘Z で戻したとき、ほかの操作をしたとき）。トーストのボタンが別の操作を戻してしまわないように
  */
@@ -16,6 +17,8 @@ export type ToastData = {
 /** 「元に戻す」付きのトーストを出しておく時間 */
 export const UNDO_TOAST_MS = 5000;
 const ERROR_TOAST_MS = 6000;
+/** 知らせるだけのトースト（コピーしたときなど）を出しておく時間 */
+export const NOTICE_TOAST_MS = 2500;
 
 export class Toaster {
   readonly manager = Toast.createToastManager();
@@ -41,6 +44,11 @@ export class Toaster {
       },
     });
     this.#undoToast = { toastId, operationId };
+  }
+
+  /** 知らせるだけのトースト（タスクをコピーしたときなど。ボタンはない） */
+  notice(title: string): void {
+    this.manager.add<ToastData>({ title, type: "notice", timeout: NOTICE_TOAST_MS });
   }
 
   error(title: string, description?: string): void {
