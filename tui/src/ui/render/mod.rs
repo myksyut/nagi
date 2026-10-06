@@ -22,6 +22,8 @@ use crate::dates::format_day_heading;
 use crate::model::Task;
 
 const SIDEBAR_WIDTH: u16 = 24;
+/// 畳んだサイドバー（印だけの細い帯）の幅
+const SIDEBAR_RAIL_WIDTH: u16 = 4;
 /// これより狭い端末では、サイドバーを出さない
 const MIN_WIDTH_FOR_SIDEBAR: u16 = 72;
 
@@ -32,11 +34,20 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
         return;
     }
     let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-    let main = if area.width >= MIN_WIDTH_FOR_SIDEBAR {
+    // サイドバー：畳んでいれば細い帯、狭い端末で広げていれば出さない
+    let rail = app.prefs.sidebar_rail;
+    let sidebar_width = if rail {
+        SIDEBAR_RAIL_WIDTH
+    } else if area.width >= MIN_WIDTH_FOR_SIDEBAR {
+        SIDEBAR_WIDTH
+    } else {
+        0
+    };
+    let main = if sidebar_width > 0 {
         let [sidebar, main] =
-            Layout::horizontal([Constraint::Length(SIDEBAR_WIDTH), Constraint::Min(20)])
+            Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(20)])
                 .areas(body);
-        draw_sidebar(frame, app, sidebar);
+        draw_sidebar(frame, app, sidebar, rail);
         main
     } else {
         body
@@ -86,12 +97,14 @@ pub fn priority_mark(priority: crate::model::Priority) -> Span<'static> {
     }
 }
 
-fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
+/// サイドバー。rail なら、畳んだ細い帯（印だけ。見出し・名前・件数は出さない）
+fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) {
     let lists = app.store.lists();
     let focused = app.focus == Focus::Sidebar;
     let inner_width = area.width.saturating_sub(2) as usize;
+    let heading = |text: &'static str| Line::from(Span::styled(text, theme::faint()));
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        " nagi",
+        if rail { " 凪" } else { " nagi" },
         theme::accent().add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::default());
@@ -104,11 +117,15 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         match screen {
             Screen::Calendar => {
                 lines.push(Line::default());
-                lines.push(Line::from(Span::styled(" ビュー", theme::faint())));
+                if !rail {
+                    lines.push(heading(" ビュー"));
+                }
             }
             Screen::Project(_) if Some(index) == project_start => {
                 lines.push(Line::default());
-                lines.push(Line::from(Span::styled(" プロジェクト", theme::faint())));
+                if !rail {
+                    lines.push(heading(" プロジェクト"));
+                }
             }
             Screen::Logbook => lines.push(Line::default()),
             _ => {}
@@ -146,7 +163,7 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
         } else if current {
             style = style.bg(theme::SELECTED_BG);
         }
-        lines.push(Line::from(vec![
+        let mut spans = vec![
             Span::styled(" ", style),
             Span::styled(
                 mark,
@@ -156,11 +173,22 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect) {
                     mark_style.patch(style)
                 },
             ),
-            Span::styled(format!(" {}", pad(&label, label_width)), style),
-            Span::styled(format!("{count_text} "), theme::muted().patch(style)),
-        ]));
+        ];
+        if rail {
+            spans.push(Span::styled("  ", style));
+        } else {
+            spans.push(Span::styled(
+                format!(" {}", pad(&label, label_width)),
+                style,
+            ));
+            spans.push(Span::styled(
+                format!("{count_text} "),
+                theme::muted().patch(style),
+            ));
+        }
+        lines.push(Line::from(spans));
     }
-    if project_start.is_none() {
+    if project_start.is_none() && !rail {
         lines.push(Line::default());
         lines.push(Line::from(Span::styled(" プロジェクト", theme::faint())));
         lines.push(Line::from(Span::styled("  N で作成", theme::faint())));

@@ -4,7 +4,8 @@
 
 use std::collections::HashSet;
 
-use super::app::{App, Screen};
+use super::app::{App, Screen, TextField};
+use super::clipboard::{copied_message, task_clipboard_text, write_clipboard};
 use super::list::plan_step;
 use crate::data::{AddTask, Destination, Failure, OpResult, Store};
 use crate::dates::format_long_date;
@@ -395,6 +396,35 @@ impl App {
             }
         }
         self.reconcile();
+    }
+
+    /// y：タスクのタイトルとメモをクリップボードに入れる（データは変えないので、元に戻すものはない）。
+    /// 保存できていないタイトルとメモがあれば、開いたときに欄に出るそちらを入れる
+    pub fn copy_tasks(&mut self, ids: &[String]) {
+        if !self.within_bulk_limit(ids.len()) {
+            return;
+        }
+        let tasks: Vec<(String, String)> = ids
+            .iter()
+            .filter_map(|id| self.task(id))
+            .map(|task| {
+                let unsaved = |field| self.unsaved_text.get(&(task.id.clone(), field)).cloned();
+                (
+                    // タイトルは空なら保存しない決まりなので、空のときは保存したほうを使う
+                    unsaved(TextField::Title)
+                        .filter(|title| !title.trim().is_empty())
+                        .unwrap_or_else(|| task.title.clone()),
+                    unsaved(TextField::Memo).unwrap_or_else(|| task.memo.clone()),
+                )
+            })
+            .collect();
+        if tasks.is_empty() {
+            return;
+        }
+        match write_clipboard(&task_clipboard_text(&tasks)) {
+            Ok(()) => self.toast_info(&copied_message(&tasks)),
+            Err(_) => self.toast_error("コピーできませんでした", None),
+        }
     }
 
     // --- プロジェクト・優先度・工数 -----------------------------------------------------

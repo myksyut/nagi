@@ -1,6 +1,7 @@
 //! 画面。端末のイベント・通信の結果・ログインの知らせを1本の列で受け、1つずつ処理して描き直す
 
 pub mod app;
+mod clipboard;
 mod commands;
 mod input;
 mod keys;

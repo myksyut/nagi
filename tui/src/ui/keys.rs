@@ -68,6 +68,7 @@ pub enum Action {
     Priority,
     Points,
     Delete,
+    Copy,
     Undo,
     Go(Screen),
     ToggleBoard,
@@ -92,6 +93,7 @@ pub enum Action {
     ShiftDates(i64),
     Filter,
     FocusSidebar,
+    ToggleSidebar,
     Sync,
     Logout,
     Quit,
@@ -171,6 +173,7 @@ pub fn bindings() -> Vec<Binding> {
         binding("優先度", G::Task, &["P"], A::Priority),
         binding("工数", G::Task, &["e"], A::Points),
         binding("削除", G::Task, &["Delete", "Alt+Backspace"], A::Delete),
+        binding("タイトルとメモをコピー", G::Task, &["y", "c"], A::Copy),
         binding("元に戻す", G::Task, &["u", "Ctrl+z"], A::Undo),
         binding("受信箱を開く", G::List, &["1"], A::Go(Screen::Inbox)),
         binding("今日を開く", G::List, &["2"], A::Go(Screen::Today)),
@@ -284,6 +287,12 @@ pub fn bindings() -> Vec<Binding> {
             binding("プロジェクトで絞り込む", G::List, &["f"], A::Filter),
         ),
         binding("サイドバーへ移る", G::Move, &["Tab"], A::FocusSidebar),
+        binding(
+            "サイドバーを畳む・広げる",
+            G::Global,
+            &["\\"],
+            A::ToggleSidebar,
+        ),
         binding(
             "検索とコマンド",
             G::Global,
@@ -534,7 +543,7 @@ impl App {
             A::Add => is_list || matches!(self.screen, Screen::Calendar | Screen::Timeline),
             A::Open => self.detail.is_none() && !self.targets().is_empty(),
             A::Close => self.detail.is_some() || (is_list && self.list.cursor.is_some()),
-            A::Complete | A::Project | A::Priority | A::Points | A::Delete => {
+            A::Complete | A::Project | A::Priority | A::Points | A::Delete | A::Copy => {
                 !self.targets().is_empty()
             }
             A::Start => {
@@ -570,6 +579,7 @@ impl App {
             | A::Palette
             | A::CreateProject
             | A::FocusSidebar
+            | A::ToggleSidebar
             | A::Sync
             | A::Logout
             | A::Quit => true,
@@ -687,6 +697,10 @@ impl App {
             A::Delete => {
                 let ids = self.targets();
                 self.delete_tasks(&ids);
+            }
+            A::Copy => {
+                let ids = self.targets();
+                self.copy_tasks(&ids);
             }
             A::Undo => self.undo(),
             A::Go(screen) => {
@@ -811,6 +825,11 @@ impl App {
                 self.close_detail();
                 self.sidebar_index = self.sidebar_position();
                 self.focus = Focus::Sidebar;
+            }
+            A::ToggleSidebar => {
+                // その端末に覚える
+                self.prefs.sidebar_rail = !self.prefs.sidebar_rail;
+                self.config.save_prefs(&self.prefs);
             }
             A::Sync => {
                 self.sync_now();

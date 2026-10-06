@@ -153,4 +153,7 @@ pub struct Prefs {
     /// 画面ごとの並び方（`today`・`later`・`project:<id>` → 並び方の名前。手動は入れない）
     #[serde(default)]
     pub sort: BTreeMap<String, String>,
+    /// サイドバーを畳んでいるか（印だけの細い帯）
+    #[serde(default)]
+    pub sidebar_rail: bool,
 }
