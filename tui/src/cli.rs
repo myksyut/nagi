@@ -43,6 +43,7 @@ nagi — 自分専用の TODO アプリ
 
 add の指定：
   --memo <文字>              メモ
+  --memo-file <ファイル>     メモをファイルから読む（外から拾った文章は、引数に入れずにこちらで渡す）
   --to <行き先>              inbox（既定）・today・later か、日付（予定へ。今日以前の日付なら今日へ）
   --project <名前>           プロジェクト（名前で指す。なければ失敗する）
   --deadline <日付>          締切
@@ -56,6 +57,8 @@ list の指定：
 
 update の指定（足すものと属性だけ。タイトルの書き換え・メモの置き換え・チェックを外す・削除はできない）：
   --append-memo <文字>       メモの後ろに足す（同じ文字がすでにあれば足さない）
+  --append-memo-file <ファイル>
+                             足す文字をファイルから読む
   --add-check <項目>         チェックリストに項目を足す（同じ名前があれば足さない。何度でも書ける）
   --check <項目>             項目にチェックを付ける（名前か id。何度でも書ける）
   --to・--project・--deadline・--priority・--points
@@ -78,6 +81,8 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
 pub struct AddArgs {
     pub title: String,
     pub memo: String,
+    /// メモをファイルから読む（外から拾った文章を、シェルの引数に入れずに渡すため）
+    pub memo_file: Option<String>,
     pub to: Option<String>,
     pub project: Option<String>,
     pub deadline: Option<String>,
@@ -120,6 +125,8 @@ pub struct ShowArgs {
 pub struct UpdateArgs {
     pub id: String,
     pub append_memo: Option<String>,
+    /// 追記する文字をファイルから読む
+    pub append_memo_file: Option<String>,
     pub add_checks: Vec<String>,
     /// チェックを付ける項目（名前か id）
     pub checks: Vec<String>,
@@ -164,7 +171,7 @@ pub struct Invocation {
 }
 
 /// 値を取る指定
-const VALUE_FLAGS: [&str; 12] = [
+const VALUE_FLAGS: [&str; 14] = [
     "server",
     "memo",
     "to",
@@ -174,6 +181,8 @@ const VALUE_FLAGS: [&str; 12] = [
     "points",
     "days",
     "append-memo",
+    "memo-file",
+    "append-memo-file",
     "add-check",
     "check",
     "if-unchanged-since",
@@ -275,6 +284,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             Command::Add(AddArgs {
                 title: title.trim().to_string(),
                 memo: take(values, "memo").unwrap_or_default(),
+                memo_file: take(values, "memo-file"),
                 to: take(values, "to"),
                 project: take(values, "project"),
                 deadline: take(values, "deadline"),
@@ -309,6 +319,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         Some((&"update", ids)) => Command::Update(UpdateArgs {
             id: single_id("update", ids)?,
             append_memo: take(values, "append-memo"),
+            append_memo_file: take(values, "append-memo-file"),
             add_checks: take_all(values, "add-check"),
             checks: take_all(values, "check"),
             to: take(values, "to"),
@@ -678,6 +689,25 @@ fn with_checked(
     Ok(next)
 }
 
+/// 文字を、引数かファイルのどちらかから受け取る（両方は渡せない）。
+/// ファイルから渡すのは、外から拾った文章を、シェルの引数に入れないため（`$(…)` などが実行されないように）
+fn text_or_file(
+    text: Option<&str>,
+    file: Option<&str>,
+    flag: &str,
+) -> Result<Option<String>, String> {
+    match (text, file) {
+        (Some(_), Some(_)) => Err(format!(
+            "--{flag} と --{flag}-file は、どちらか一方だけ渡します"
+        )),
+        (Some(text), None) => Ok(Some(text.to_string())),
+        (None, Some(path)) => std::fs::read_to_string(path)
+            .map(|text| Some(text.trim_end().to_string()))
+            .map_err(|error| format!("ファイルを読めません：{path}（{error}）")),
+        (None, None) => Ok(None),
+    }
+}
+
 /// 「none」（なし）なら None、それ以外は読んだ値
 fn optional<T>(
     text: &str,
@@ -785,10 +815,16 @@ fn add(config: &Config, args: AddArgs) -> Result<(), String> {
     };
     let priority = args.priority.as_deref().map(parse_priority).transpose()?;
     let points = args.points.as_deref().map(parse_points).transpose()?;
+    let memo = text_or_file(
+        Some(args.memo.as_str()).filter(|memo| !memo.is_empty()),
+        args.memo_file.as_deref(),
+        "memo",
+    )?
+    .unwrap_or_default();
 
     let done = session.store.add_task(AddTask {
         title: args.title,
-        memo: args.memo,
+        memo,
         project_id,
         to,
     });
@@ -920,7 +956,12 @@ fn update(config: &Config, args: UpdateArgs) -> Result<(), String> {
     let today = store.today.clone();
     let keep = args.keep_existing;
     let mut changes = TaskChanges::default();
-    if let Some(addition) = &args.append_memo {
+    let addition = text_or_file(
+        args.append_memo.as_deref(),
+        args.append_memo_file.as_deref(),
+        "append-memo",
+    )?;
+    if let Some(addition) = &addition {
         changes.memo = appended_memo(&task.memo, addition);
     }
     if !args.add_checks.is_empty() || !args.checks.is_empty() {
@@ -1158,6 +1199,7 @@ mod tests {
             Command::Add(AddArgs {
                 title: "PR のレビュー".into(),
                 memo: "Slack のスレッド\nhttps://example.com".into(),
+                memo_file: None,
                 to: Some("today".into()),
                 project: Some("AIPR".into()),
                 deadline: Some("金曜".into()),
@@ -1293,6 +1335,30 @@ mod tests {
                 json: false
             })
         );
+        // メモは、ファイルからも渡せる
+        assert_eq!(
+            command(&["add", "x", "--memo-file", "memo.txt"]),
+            Command::Add(AddArgs {
+                title: "x".into(),
+                memo_file: Some("memo.txt".into()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            command(&["update", "a", "--append-memo-file=add.txt"]),
+            Command::Update(UpdateArgs {
+                id: "a".into(),
+                append_memo_file: Some("add.txt".into()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            text_or_file(Some("直接"), None, "memo"),
+            Ok(Some("直接".to_string()))
+        );
+        assert!(text_or_file(Some("直接"), Some("memo.txt"), "memo").is_err());
+        assert!(text_or_file(None, Some("/nonexistent/memo.txt"), "memo").is_err());
+        assert_eq!(text_or_file(None, None, "memo"), Ok(None));
         // id は1つだけ。update で使えない指定（メモの置き換えなど）は断る
         assert!(parsed(&["update"]).is_err());
         assert!(parsed(&["done", "a", "b"]).is_err());
