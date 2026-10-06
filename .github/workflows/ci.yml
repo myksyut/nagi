@@ -9,8 +9,11 @@ on:
 permissions:
   contents: read
 
+# 枠は、PR なら PR の番号ごと、push なら ref ごとに分ける。
+# github.ref だけで分けると、作ってすぐマージした PR の CI がマージのあとに始まったとき、github.ref が
+# refs/heads/main になって main の CI と同じ枠に入り、main の CI を止めてしまう（deploy が飛ばされる）
 concurrency:
-  group: ci-${{ github.ref }}
+  group: ci-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}
   cancel-in-progress: true
 
 jobs:

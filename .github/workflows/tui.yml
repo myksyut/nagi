@@ -33,8 +33,10 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
     # PR では、新しい push が来たら古いビルドをやめる。main のビルドは最後まで動かす（Release に出すため）
+    # 枠は、PR なら PR の番号ごと、それ以外は ref ごとに分ける（github.ref だけで分けると、マージのあとに始まった
+    # PR のビルドが main と同じ枠に入り、main のビルドを止めてしまう。ci.yml と同じ理由）
     concurrency:
-      group: tui-build-${{ github.ref }}-${{ matrix.target }}
+      group: tui-build-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.target }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
