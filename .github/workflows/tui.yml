@@ -46,8 +46,11 @@ jobs:
         with:
           workspaces: tui
       # --locked：Cargo.lock のとおりにビルドする（Cargo.lock が古ければ失敗させる）
+      # NAGI_VERSION：`nagi --version` に出す版。Release の版（release の job の VERSION）と同じにする
       - name: Build nagi
         working-directory: tui
+        env:
+          NAGI_VERSION: 0.1.${{ github.run_number }}
         run: cargo build --release --locked --target ${{ matrix.target }}
       - name: tar.gz にまとめる
         run: tar -czf "nagi-${{ matrix.target }}.tar.gz" -C "tui/target/${{ matrix.target }}/release" nagi
