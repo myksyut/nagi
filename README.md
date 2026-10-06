@@ -20,6 +20,8 @@ wrangler.jsonc   # Worker・D1 の設定
 
 Worker がすべてのリクエストを受ける（画面のファイルは配らない）。
 
+版ごとのプレビュー URL は止めてある（`wrangler.jsonc` の `preview_urls: false`）。出したままだと、Web 版だったころの古い版の画面が、その URL から開けてしまうため。
+
 | 口 | 内容 |
 | --- | --- |
 | `POST /auth/device/start` | ログインを始める（GitHub のデバイスフロー）。ログイン不要 |

@@ -5,6 +5,9 @@
   "main": "./src/worker/index.ts",
   "compatibility_date": "2026-08-15",
   "observability": { "enabled": true },
+  // 版ごとのプレビュー URL（<版の ID の先頭>-nagi.<サブドメイン>.workers.dev）は出さない。
+  // 出したままだと、Web 版だったころの古い版が、その URL から開けてしまう
+  "preview_urls": false,
   "d1_databases": [
     {
       "binding": "DB",
