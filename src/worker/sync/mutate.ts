@@ -13,7 +13,8 @@ import {
 import type { ParsedMutationBatch, ProjectChanges, TaskChanges } from "../../shared/mutations";
 import type { Db } from "../db/client";
 import { appliedMutations, meta, projects, tasks } from "../db/schema";
-import { chunk, readRowsByIds, toSyncRows } from "./rows";
+import { metaRow } from "./meta";
+import { chunk, projectColumns, readRowsByIds, taskColumns, toSyncRows } from "./rows";
 import { advanceSeq, seqFor } from "./seq";
 
 export type MutateOutcome =
@@ -27,8 +28,8 @@ type TaskFacts = Pick<
 >;
 type ProjectFacts = { archivedAt: string | null; deletedAt: string | null };
 
-type NewTask = Omit<typeof tasks.$inferInsert, "createdAt" | "updatedAt" | "seq">;
-type NewProject = Omit<typeof projects.$inferInsert, "createdAt" | "updatedAt" | "seq">;
+type NewTask = Omit<typeof tasks.$inferInsert, "userId" | "createdAt" | "updatedAt" | "seq">;
+type NewProject = Omit<typeof projects.$inferInsert, "userId" | "createdAt" | "updatedAt" | "seq">;
 
 /**
  * 1つの行への書き込み。同じまとまりで同じ行に何度か操作したときは1つにまとめる
@@ -80,23 +81,23 @@ function targetIds(batch: ParsedMutationBatch) {
   return { taskIds: [...taskIds], projectIds: [...projectIds] };
 }
 
-async function isApplied(db: Db, batchId: string): Promise<boolean> {
+async function isApplied(db: Db, userId: string, batchId: string): Promise<boolean> {
   const row = await db
     .select({ id: appliedMutations.id })
     .from(appliedMutations)
-    .where(eq(appliedMutations.id, batchId))
+    .where(and(eq(appliedMutations.userId, userId), eq(appliedMutations.id, batchId)))
     .get();
   return row !== undefined;
 }
 
 /**
- * 検証に要る今の行を読む。まとまりの書き込みより前に読む（1人用なので、読んでから書くまでの
- * あいだの変更は割り切る）
+ * 検証に要る、利用者の今の行を読む。まとまりの書き込みより前に読む（1人の利用者が使う画面は
+ * 少ないので、読んでから書くまでのあいだの変更は割り切る）。ほかの利用者の行は、ID が同じでも読まない
  * - 操作の対象のタスクとプロジェクト、タスクに付けるプロジェクト
  * - アーカイブするプロジェクトの、未完了・未削除のタスク
  * チェックリストは、読んだときの文字列（D1 に入っているそのまま）も返す（バッチの中の守りで比べる）
  */
-async function loadFacts(db: Db, batch: ParsedMutationBatch) {
+async function loadFacts(db: Db, userId: string, batch: ParsedMutationBatch) {
   const { taskIds, projectIds } = targetIds(batch);
   const referencedProjectIds = new Set(projectIds);
   const archivingProjectIds: string[] = [];
@@ -112,7 +113,7 @@ async function loadFacts(db: Db, batch: ParsedMutationBatch) {
     }
   }
 
-  const taskColumns = {
+  const factColumns = {
     id: tasks.id,
     bucket: tasks.bucket,
     scheduledOn: tasks.scheduledOn,
@@ -125,15 +126,25 @@ async function loadFacts(db: Db, batch: ParsedMutationBatch) {
   };
   const [targetTasks, openTasks, projectRows] = await Promise.all([
     Promise.all(
-      chunk(taskIds).map((ids) => db.select(taskColumns).from(tasks).where(inArray(tasks.id, ids))),
+      chunk(taskIds).map((ids) =>
+        db
+          .select(factColumns)
+          .from(tasks)
+          .where(and(eq(tasks.userId, userId), inArray(tasks.id, ids))),
+      ),
     ),
     Promise.all(
       chunk(archivingProjectIds).map((ids) =>
         db
-          .select(taskColumns)
+          .select(factColumns)
           .from(tasks)
           .where(
-            and(inArray(tasks.projectId, ids), isNull(tasks.completedAt), isNull(tasks.deletedAt)),
+            and(
+              eq(tasks.userId, userId),
+              inArray(tasks.projectId, ids),
+              isNull(tasks.completedAt),
+              isNull(tasks.deletedAt),
+            ),
           ),
       ),
     ),
@@ -146,7 +157,7 @@ async function loadFacts(db: Db, batch: ParsedMutationBatch) {
             deletedAt: projects.deletedAt,
           })
           .from(projects)
-          .where(inArray(projects.id, ids)),
+          .where(and(eq(projects.userId, userId), inArray(projects.id, ids))),
       ),
     ),
   ]);
@@ -286,12 +297,13 @@ type ChecklistGuard = { id: string; text: string };
 /** 今の行を読んで検証し、行ごとの書き込みにまとめる */
 async function plan(
   db: Db,
+  userId: string,
   batch: ParsedMutationBatch,
 ): Promise<
   | { ok: true; writes: PendingWrite[]; checklistGuards: ChecklistGuard[] }
   | Extract<MutateOutcome, { ok: false }>
 > {
-  const { taskFacts, projectFacts, checklistTexts } = await loadFacts(db, batch);
+  const { taskFacts, projectFacts, checklistTexts } = await loadFacts(db, userId, batch);
   try {
     const { writes, checklistChecked } = planWrites(batch, taskFacts, projectFacts);
     const checklistGuards = [...checklistChecked].flatMap((id) => {
@@ -311,10 +323,10 @@ async function plan(
 /**
  * 既存の行を更新する前提（行がまだあること）を、バッチの中で確かめる文。
  * 検証のあとで行が物理削除されていると、UPDATE は 0 行でも失敗しないので、
- * 行が足りないときだけ meta.seq の value（NOT NULL）に NULL を入れようとして、バッチ全体を失敗させる。
+ * 行が足りないときだけ、利用者の meta.seq の value（NOT NULL）に NULL を入れようとして、バッチ全体を失敗させる。
  * 1つの文のバインド変数は 100 までなので、ID は 90 件ずつに分けて数える
  */
-function requireExistingRows(db: Db, writes: readonly PendingWrite[]) {
+function requireExistingRows(db: Db, userId: string, writes: readonly PendingWrite[]) {
   const updated = (kind: PendingWrite["kind"]) =>
     writes.filter((write) => write.kind === kind && write.create === null).map((w) => w.id);
   const guard = (table: typeof tasks | typeof projects, ids: string[]) =>
@@ -323,8 +335,8 @@ function requireExistingRows(db: Db, writes: readonly PendingWrite[]) {
       .set({ value: sql`NULL` })
       .where(
         and(
-          eq(meta.key, "seq"),
-          sql`(SELECT COUNT(*) FROM ${table} WHERE ${inArray(table.id, ids)}) < ${ids.length}`,
+          metaRow(userId, "seq"),
+          sql`(SELECT COUNT(*) FROM ${table} WHERE ${and(eq(table.userId, userId), inArray(table.id, ids))}) < ${ids.length}`,
         ),
       );
   return [
@@ -333,26 +345,26 @@ function requireExistingRows(db: Db, writes: readonly PendingWrite[]) {
   ];
 }
 
-/** 1つの文に入れる守りの数（1つの守りでバインド変数を2つ使う。1つの文で 100 まで） */
-const CHECKLIST_GUARDS_PER_STATEMENT = 45;
+/** 1つの文に入れる守りの数（1つの守りでバインド変数を3つ使う。1つの文で 100 まで） */
+const CHECKLIST_GUARDS_PER_STATEMENT = 30;
 
 /**
  * チェックリストを変える前の配列と比べたタスクについて、検証で読んだあとにほかの書き込みが割り込んで
  * 配列が変わっていないことを、バッチの中で確かめる文。変わっていたら requireExistingRows と同じく
  * meta.seq の value に NULL を入れようとして、バッチ全体を失敗させる（そのあと検証し直して checklist_conflict）
  */
-function requireUnchangedChecklists(db: Db, guards: readonly ChecklistGuard[]) {
+function requireUnchangedChecklists(db: Db, userId: string, guards: readonly ChecklistGuard[]) {
   return chunk(guards, CHECKLIST_GUARDS_PER_STATEMENT).map((part) =>
     db
       .update(meta)
       .set({ value: sql`NULL` })
       .where(
         and(
-          eq(meta.key, "seq"),
+          metaRow(userId, "seq"),
           sql`(${sql.join(
             part.map(
               ({ id, text }) =>
-                sql`(SELECT ${tasks.checklist} FROM ${tasks} WHERE ${tasks.id} = ${id}) IS NOT ${text}`,
+                sql`(SELECT ${tasks.checklist} FROM ${tasks} WHERE ${tasks.userId} = ${userId} AND ${tasks.id} = ${id}) IS NOT ${text}`,
             ),
             sql` OR `,
           )})`,
@@ -362,7 +374,8 @@ function requireUnchangedChecklists(db: Db, guards: readonly ChecklistGuard[]) {
 }
 
 /**
- * 操作のまとまりを反映する。書き込みは db.batch() 1回だけで、全部成功か全部失敗
+ * 利用者の操作のまとまりを反映する（読むのも書くのも、その利用者の行だけ）。
+ * 書き込みは db.batch() 1回だけで、全部成功か全部失敗
  * （D1 には対話的なトランザクションがないので、Drizzle の transaction() は使わない）。
  * バッチの中身は、applied_mutations の INSERT → 更新する行がまだあること・チェックリストが検証のときのままで
  * あることの確認 → meta.seq を行数ぶん進める → 行ごとの INSERT / UPDATE。
@@ -370,23 +383,24 @@ function requireUnchangedChecklists(db: Db, guards: readonly ChecklistGuard[]) {
  */
 export async function applyMutationBatch(
   db: Db,
+  userId: string,
   batch: ParsedMutationBatch,
   now: Date,
 ): Promise<MutateOutcome> {
   const { taskIds, projectIds } = targetIds(batch);
   const currentRows = async (): Promise<MutateOutcome> => ({
     ok: true,
-    rows: await readRowsByIds(db, taskIds, projectIds),
+    rows: await readRowsByIds(db, userId, taskIds, projectIds),
     duplicate: true,
   });
 
-  if (await isApplied(db, batch.id)) return currentRows();
+  if (await isApplied(db, userId, batch.id)) return currentRows();
 
-  const planned = await plan(db, batch);
+  const planned = await plan(db, userId, batch);
   if (!planned.ok) {
     // 同じ id のまとまりが同時に来て、事前の確認のあとに先に反映されていた（自分が作った行を
     // 「もうある」と見て落ちた）なら、反映済みとして扱う
-    if (await isApplied(db, batch.id)) return currentRows();
+    if (await isApplied(db, userId, batch.id)) return currentRows();
     return planned;
   }
   const { writes, checklistGuards } = planned;
@@ -394,34 +408,34 @@ export async function applyMutationBatch(
   const timestamp = now.toISOString();
   const count = writes.length;
   const statements: BatchItem<"sqlite">[] = [
-    db.insert(appliedMutations).values({ id: batch.id, appliedAt: timestamp }),
-    ...requireExistingRows(db, writes),
-    ...requireUnchangedChecklists(db, checklistGuards),
-    advanceSeq(db, count),
+    db.insert(appliedMutations).values({ userId, id: batch.id, appliedAt: timestamp }),
+    ...requireExistingRows(db, userId, writes),
+    ...requireUnchangedChecklists(db, userId, checklistGuards),
+    advanceSeq(db, userId, count),
     ...writes.map((write, i) => {
-      const seq = seqFor(count, i);
+      const seq = seqFor(userId, count, i);
       if (write.kind === "task") {
         return write.create
           ? db
               .insert(tasks)
-              .values({ ...write.create, createdAt: timestamp, updatedAt: timestamp, seq })
-              .returning()
+              .values({ ...write.create, userId, createdAt: timestamp, updatedAt: timestamp, seq })
+              .returning(taskColumns)
           : db
               .update(tasks)
               .set({ ...write.changes, updatedAt: timestamp, seq })
-              .where(eq(tasks.id, write.id))
-              .returning();
+              .where(and(eq(tasks.userId, userId), eq(tasks.id, write.id)))
+              .returning(taskColumns);
       }
       return write.create
         ? db
             .insert(projects)
-            .values({ ...write.create, createdAt: timestamp, updatedAt: timestamp, seq })
-            .returning()
+            .values({ ...write.create, userId, createdAt: timestamp, updatedAt: timestamp, seq })
+            .returning(projectColumns)
         : db
             .update(projects)
             .set({ ...write.changes, updatedAt: timestamp, seq })
-            .where(eq(projects.id, write.id))
-            .returning();
+            .where(and(eq(projects.userId, userId), eq(projects.id, write.id)))
+            .returning(projectColumns);
     }),
   ];
 
@@ -430,9 +444,9 @@ export async function applyMutationBatch(
     results = await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
   } catch (error) {
     // 同じ id のまとまりが同時に来て、先に反映された（applied_mutations の主キーが重なった）
-    if (await isApplied(db, batch.id)) return currentRows();
+    if (await isApplied(db, userId, batch.id)) return currentRows();
     // 検証のあとで前提が崩れた（更新する行が物理削除されたなど）なら、検証をやり直して 400 にする
-    const replanned = await plan(db, batch);
+    const replanned = await plan(db, userId, batch);
     if (!replanned.ok) return replanned;
     throw error;
   }

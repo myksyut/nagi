@@ -1,16 +1,16 @@
-import { and, asc, gt, lte } from "drizzle-orm";
+import { and, asc, eq, gt, lte } from "drizzle-orm";
 import type { SyncRequest, SyncResponse } from "../../shared/api";
 import type { Db } from "../db/client";
 import { meta, projects, tasks } from "../db/schema";
 import { parseMeta } from "./meta";
-import { toSyncRows } from "./rows";
+import { projectColumns, taskColumns, toSyncRows } from "./rows";
 import { currentSeq } from "./seq";
 
 /** 1回の応答で返す行の数の上限（応答を小さく保つため） */
 export const SYNC_PAGE_SIZE = 500;
 
 /**
- * cursor より新しい行を seq の順に返す（差分の取得）。論理削除した行も返す。
+ * 利用者の行のうち、cursor より新しいものを seq の順に返す（差分の取得）。論理削除した行も返す。
  *
  * reset を返すのは、手元に反映済みのカーソル（baseCursor）が
  * - 物理削除した範囲より古いとき（0 < baseCursor < purged_through_seq）：消した行の削除を受け取っていないかもしれない
@@ -19,6 +19,7 @@ export const SYNC_PAGE_SIZE = 500;
  */
 export async function readChanges(
   db: Db,
+  userId: string,
   { cursor, baseCursor }: SyncRequest,
   pageSize: number = SYNC_PAGE_SIZE,
 ): Promise<SyncResponse> {
@@ -26,17 +27,25 @@ export async function readChanges(
   // 最後のページの nextCursor にこの meta.seq を使うので、行を読んだあとに別の読み取りで meta.seq を
   // 読んではいけない（そのあいだに書かれた行を、次の同期で取りに行かなくなる）
   const [metaRows, taskRows, projectRows] = await db.batch([
-    db.select().from(meta),
+    db.select({ key: meta.key, value: meta.value }).from(meta).where(eq(meta.userId, userId)),
     db
-      .select()
+      .select(taskColumns)
       .from(tasks)
-      .where(and(gt(tasks.seq, cursor), lte(tasks.seq, currentSeq)))
+      .where(
+        and(eq(tasks.userId, userId), gt(tasks.seq, cursor), lte(tasks.seq, currentSeq(userId))),
+      )
       .orderBy(asc(tasks.seq))
       .limit(pageSize + 1),
     db
-      .select()
+      .select(projectColumns)
       .from(projects)
-      .where(and(gt(projects.seq, cursor), lte(projects.seq, currentSeq)))
+      .where(
+        and(
+          eq(projects.userId, userId),
+          gt(projects.seq, cursor),
+          lte(projects.seq, currentSeq(userId)),
+        ),
+      )
       .orderBy(asc(projects.seq))
       .limit(pageSize + 1),
   ]);

@@ -5,7 +5,12 @@ declare namespace Cloudflare {
     DB: D1Database;
     APP_TIMEZONE: string;
     GITHUB_CLIENT_ID: string;
-    ALLOWED_GITHUB_USER_ID: string;
+    /** 利用者を分ける前からあったデータの持ち主としてログインする GitHub ユーザー ID（なければ空） */
+    OWNER_GITHUB_USER_ID?: string;
+    /** "open" なら、GitHub のアカウントがあればだれでも登録できる。"allowlist"（既定）なら、許可した人だけ */
+    SIGNUP?: string;
+    /** SIGNUP が "allowlist" のときに登録・ログインできる GitHub ユーザー ID（カンマ区切り） */
+    ALLOWED_GITHUB_USER_IDS?: string;
     /** "true" のとき、localhost からのリクエストに限ってログインを外す（手元の開発用） */
     AUTH_DISABLED?: string;
   }

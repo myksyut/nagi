@@ -4,6 +4,7 @@ import { logicalDate } from "../../shared/logical-date";
 import { arrivalRanks } from "../../shared/rank";
 import type { Db } from "../db/client";
 import { appliedMutations, meta, projects, tasks } from "../db/schema";
+import { metaRow } from "./meta";
 import { advanceSeq, seqFor } from "./seq";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
@@ -21,12 +22,13 @@ export const ROLLOVER_BATCH_LIMIT = 400;
 export type RolloverResult = { ran: boolean; moved: number };
 
 /**
- * 未完了・未削除で、今日の置き場になく、予定の日付か締切が今日以前のタスク。
+ * 利用者のタスクのうち、未完了・未削除で、今日の置き場になく、予定の日付か締切が今日以前のもの。
  * 移す行の UPDATE の WHERE にも入れるので、何度実行しても（同時に2回来ても）同じ結果になる。
  * last_rollover_on を進める条件（対象が残っていない）も、この条件と同じにする
  */
-function isDue(today: string) {
+function isDue(userId: string, today: string) {
   return and(
+    eq(tasks.userId, userId),
     isNull(tasks.completedAt),
     isNull(tasks.deletedAt),
     ne(tasks.bucket, "today"),
@@ -60,8 +62,8 @@ function byArrival(today: string) {
   };
 }
 
-/** 削除から 30 日たった行の物理削除と、7 日たった applied_mutations の削除 */
-function purgeStatements(db: Db, now: Date) {
+/** 利用者の行のうち、削除から 30 日たった行の物理削除と、7 日たった applied_mutations の削除 */
+function purgeStatements(db: Db, userId: string, now: Date) {
   const purgeBefore = new Date(now.getTime() - PURGE_AFTER_DAYS * DAY_MS).toISOString();
   const appliedBefore = new Date(now.getTime() - APPLIED_MUTATIONS_TTL_DAYS * DAY_MS).toISOString();
   return [
@@ -71,19 +73,26 @@ function purgeStatements(db: Db, now: Date) {
       .set({
         value: sql`MAX(
           CAST(${meta.value} AS INTEGER),
-          COALESCE((SELECT MAX(seq) FROM tasks WHERE deleted_at < ${purgeBefore}), 0),
-          COALESCE((SELECT MAX(seq) FROM projects WHERE deleted_at < ${purgeBefore}), 0)
+          COALESCE((SELECT MAX(seq) FROM tasks WHERE user_id = ${userId} AND deleted_at < ${purgeBefore}), 0),
+          COALESCE((SELECT MAX(seq) FROM projects WHERE user_id = ${userId} AND deleted_at < ${purgeBefore}), 0)
         )`,
       })
-      .where(eq(meta.key, "purged_through_seq")),
-    db.delete(tasks).where(lt(tasks.deletedAt, purgeBefore)),
-    db.delete(projects).where(lt(projects.deletedAt, purgeBefore)),
-    db.delete(appliedMutations).where(lt(appliedMutations.appliedAt, appliedBefore)),
+      .where(metaRow(userId, "purged_through_seq")),
+    db.delete(tasks).where(and(eq(tasks.userId, userId), lt(tasks.deletedAt, purgeBefore))),
+    db
+      .delete(projects)
+      .where(and(eq(projects.userId, userId), lt(projects.deletedAt, purgeBefore))),
+    db
+      .delete(appliedMutations)
+      .where(
+        and(eq(appliedMutations.userId, userId), lt(appliedMutations.appliedAt, appliedBefore)),
+      ),
   ];
 }
 
 /**
- * 日付の切り替え（午前4時）。last_rollover_on が論理日付より前なら行う（/api/sync の最初に呼ぶ）。
+ * 利用者ごとの、日付の切り替え（午前4時）。その利用者の last_rollover_on が論理日付より前なら行う
+ * （/api/sync の最初に呼ぶ）。ほかの利用者の行には触れない。
  * 1. 予定の日付か締切が今日以前のタスクを、今日の「今日来たタスクの後ろ、それ以外の前」へ移す
  *    （日付の早い順、同じなら作成順。arrivedOn に今日を入れ、scheduledOn は空にする）
  * 2. 同じバッチで、削除から 30 日たった行を物理削除し、7 日たった applied_mutations を消す
@@ -92,12 +101,13 @@ function purgeStatements(db: Db, now: Date) {
  */
 export async function rolloverIfDue(
   db: Db,
+  userId: string,
   now: Date,
   timeZone: string,
   limit: number = ROLLOVER_BATCH_LIMIT,
 ): Promise<RolloverResult> {
   const today = logicalDate(now, timeZone);
-  const last = await db.select().from(meta).where(eq(meta.key, "last_rollover_on")).get();
+  const last = await db.select().from(meta).where(metaRow(userId, "last_rollover_on")).get();
   if (!last) throw new Error("meta.last_rollover_on がありません");
   if (last.value >= today) return { ran: false, moved: 0 };
 
@@ -110,11 +120,18 @@ export async function rolloverIfDue(
         createdAt: tasks.createdAt,
       })
       .from(tasks)
-      .where(isDue(today)),
+      .where(isDue(userId, today)),
     db
       .select({ id: tasks.id, rank: tasks.rank, arrivedOn: tasks.arrivedOn })
       .from(tasks)
-      .where(and(eq(tasks.bucket, "today"), isNull(tasks.completedAt), isNull(tasks.deletedAt))),
+      .where(
+        and(
+          eq(tasks.userId, userId),
+          eq(tasks.bucket, "today"),
+          isNull(tasks.completedAt),
+          isNull(tasks.deletedAt),
+        ),
+      ),
   ]);
 
   const moving = candidates.sort(byArrival(today)).slice(0, limit);
@@ -123,7 +140,7 @@ export async function rolloverIfDue(
   const count = moving.length;
 
   const statements: BatchItem<"sqlite">[] = [];
-  if (count > 0) statements.push(advanceSeq(db, count));
+  if (count > 0) statements.push(advanceSeq(db, userId, count));
   const firstMove = statements.length;
   moving.forEach((task, i) => {
     const rank = ranks[i];
@@ -137,12 +154,12 @@ export async function rolloverIfDue(
           arrivedOn: today,
           scheduledOn: null,
           updatedAt,
-          seq: seqFor(count, i),
+          seq: seqFor(userId, count, i),
         })
-        .where(and(eq(tasks.id, task.id), isDue(today))),
+        .where(and(eq(tasks.id, task.id), isDue(userId, today))),
     );
   });
-  statements.push(...purgeStatements(db, now));
+  statements.push(...purgeStatements(db, userId, now));
   // バッチの最後で、移す対象（isDue と同じ条件）がもう残っていないときだけ last_rollover_on を進める。
   // 候補を読んだあとに期限の来たタスクが確定していたり、limit で残したりしたら進めず、次の同期でやり直す
   statements.push(
@@ -151,9 +168,9 @@ export async function rolloverIfDue(
       .set({ value: today })
       .where(
         and(
-          eq(meta.key, "last_rollover_on"),
+          metaRow(userId, "last_rollover_on"),
           lt(meta.value, today),
-          notExists(db.select({ id: tasks.id }).from(tasks).where(isDue(today))),
+          notExists(db.select({ id: tasks.id }).from(tasks).where(isDue(userId, today))),
         ),
       ),
   );

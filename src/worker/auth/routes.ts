@@ -5,6 +5,7 @@ import type { AppEnv } from "../types";
 import { readBearerToken } from "./bearer";
 import { fetchGitHubUserId, pollDeviceToken, requestDeviceCode } from "./github";
 import { createSession, deleteSession } from "./session";
+import { readSignupPolicy, resolveUser, type SignupPolicy } from "./users";
 
 /**
  * TUI のログイン（GitHub のデバイスフロー）。
@@ -12,8 +13,12 @@ import { createSession, deleteSession } from "./session";
  * 2. TUI が interval 秒ごとに /auth/device/token を呼び、status が ok になったら token を手元に置く
  * 3. そのあとは `Authorization: Bearer <token>` で /api/* を呼ぶ
  *
+ * だれがログインできるかは、設定で決まる（src/worker/auth/users.ts の readSignupPolicy）。
+ * 初めてログインした人には、利用者（users）を作る
+ *
  * 失敗の応答（{ error }）
- * - config（500）：GITHUB_CLIENT_ID か ALLOWED_GITHUB_USER_ID が入っていない・正しくない
+ * - config（500）：GITHUB_CLIENT_ID が入っていない、または、だれがログインできるかの設定
+ *   （OWNER_GITHUB_USER_ID・SIGNUP・ALLOWED_GITHUB_USER_IDS）が正しくない
  * - github（502）：GitHub とのやり取りの失敗（OAuth App のデバイスフローが無効のときも。理由はログに残す）
  * - invalid_request（400）：/auth/device/token の本文の形が違う
  */
@@ -34,8 +39,8 @@ export type DeviceStartResponse = {
  * - slow_down：聞くのが速すぎる（次からは interval 秒あける）
  * - expired：コードの期限が切れた・コードが違う（/auth/device/start からやり直す）
  * - denied：利用者が GitHub で拒否した
- * - forbidden：承認されたが、許可していない GitHub ユーザーだった（セッションは作らない）
- * - ok：ログインできた。token はセッションのトークン、expiresAt はその期限（ISO 8601）
+ * - forbidden：承認されたが、ログインできない GitHub ユーザーだった（利用者もセッションも作らない）
+ * - ok：ログインできた。token はセッションのトークン、expiresAt はその期限（ISO 8601）、userId は利用者の ID（users.id）
  */
 export type DeviceTokenResponse =
   | { status: "pending" }
@@ -43,25 +48,16 @@ export type DeviceTokenResponse =
   | { status: "expired" }
   | { status: "denied" }
   | { status: "forbidden" }
-  | { status: "ok"; token: string; expiresAt: string };
+  | { status: "ok"; token: string; expiresAt: string; userId: string };
 
 /** GitHub のデバイスコードは 40 文字。念のため長さに上限を付ける */
 const deviceTokenRequestSchema = z.strictObject({ deviceCode: z.string().min(1).max(256) });
 
-/** 許可する GitHub ユーザー ID。正の整数でなければ null（誰も通さない） */
-export function parseAllowedUserId(value: string | undefined): number | null {
-  if (!value || !/^[1-9]\d*$/.test(value)) return null;
-  const id = Number(value);
-  return Number.isSafeInteger(id) ? id : null;
-}
-
-/** ログインに要る設定。どちらかが欠けていれば null（GitHub には問い合わせない） */
-function readLoginConfig(
-  env: Pick<Cloudflare.Env, "GITHUB_CLIENT_ID" | "ALLOWED_GITHUB_USER_ID">,
-): { clientId: string; allowedUserId: number } | null {
-  const allowedUserId = parseAllowedUserId(env.ALLOWED_GITHUB_USER_ID);
-  if (!env.GITHUB_CLIENT_ID || allowedUserId === null) return null;
-  return { clientId: env.GITHUB_CLIENT_ID, allowedUserId };
+/** ログインに要る設定。欠けている・正しくないものがあれば null（GitHub には問い合わせない） */
+function readLoginConfig(env: Cloudflare.Env): { clientId: string; policy: SignupPolicy } | null {
+  const policy = readSignupPolicy(env);
+  if (!env.GITHUB_CLIENT_ID || policy === null) return null;
+  return { clientId: env.GITHUB_CLIENT_ID, policy };
 }
 
 export const authRoutes = new Hono<AppEnv>()
@@ -85,7 +81,7 @@ export const authRoutes = new Hono<AppEnv>()
     const config = readLoginConfig(c.env);
     if (!config) return c.json({ error: "config" } satisfies AuthErrorResponse, 500);
 
-    let userId: number;
+    let githubUserId: number;
     try {
       const poll = await pollDeviceToken({
         clientId: config.clientId,
@@ -93,20 +89,22 @@ export const authRoutes = new Hono<AppEnv>()
       });
       if (poll.status !== "authorized") return c.json(poll satisfies DeviceTokenResponse);
       // GitHub のアクセストークンは ID を確かめるためだけに使い、保存も返しもしない
-      userId = await fetchGitHubUserId(poll.accessToken);
+      githubUserId = await fetchGitHubUserId(poll.accessToken);
     } catch (e) {
       console.error("GitHub でのログインに失敗しました", e);
       return c.json({ error: "github" } satisfies AuthErrorResponse, 502);
     }
-    if (userId !== config.allowedUserId) {
-      return c.json({ status: "forbidden" } satisfies DeviceTokenResponse);
-    }
+    const db = getDb(c.env.DB);
+    const now = new Date();
+    const userId = await resolveUser(db, config.policy, githubUserId, now);
+    if (userId === null) return c.json({ status: "forbidden" } satisfies DeviceTokenResponse);
 
-    const session = await createSession(getDb(c.env.DB), new Date());
+    const session = await createSession(db, userId, now);
     return c.json({
       status: "ok",
       token: session.token,
       expiresAt: session.expiresAt.toISOString(),
+      userId,
     } satisfies DeviceTokenResponse);
   })
   .post("/logout", async (c) => {

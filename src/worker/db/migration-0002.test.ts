@@ -1,14 +1,12 @@
 import { applyD1Migrations, env } from "cloudflare:test";
-import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
-import { getDb } from "./client";
-import { projects, tasks } from "./schema";
 
 /**
  * migrations/0002_status_color.sql の確認。DB とは別の空の D1（MIGRATION_TEST_DB）を使い、
- * 0001 まで当てて既存の行を入れてから、残り（0002）を当てる。
- * 0002 を当てる前は、schema.ts が持つ started_at・color の列がまだない（drizzle での select はできない）ので、
- * 生の D1 の prepare で読み書きする。当てたあとは schema.ts と一致するので drizzle で読む
+ * 0001 まで当てて既存の行を入れてから、0002 だけを当てる（そのあとの版は当てない。あとの版で表の形が変わっても、
+ * ここで確かめるのは 0002 を当てた直後の形）。
+ * schema.ts は最新の版の形で、この時点の表とは合わない（drizzle での select はできない）ので、
+ * 生の D1 の prepare で読み書きする
  */
 describe("マイグレーション 0002：進行中とプロジェクトの色", () => {
   it("既存の行を保ったまま列を足し、CHECK 制約（tasks_started_at_check）と既存の制約・索引を守る", async () => {
@@ -69,14 +67,13 @@ describe("マイグレーション 0002：進行中とプロジェクトの色",
     expect(await columnsOf("tasks")).not.toContain("started_at");
     expect(await columnsOf("projects")).not.toContain("color");
 
-    // 残り（0002）を当てる
-    await applyD1Migrations(env.MIGRATION_TEST_DB, env.TEST_MIGRATIONS);
+    // 0002 を当てる
+    await applyD1Migrations(env.MIGRATION_TEST_DB, env.TEST_MIGRATIONS.slice(0, 3));
     expect(await columnsOf("tasks")).toContain("started_at");
     expect(await columnsOf("projects")).toContain("color");
 
-    const db = getDb(raw);
-    const afterTasks = await db.select().from(tasks).orderBy(tasks.seq);
-    const afterProjects = await db.select().from(projects).orderBy(projects.seq);
+    const afterTasks = (await raw.prepare("SELECT * FROM tasks ORDER BY seq").all()).results;
+    const afterProjects = (await raw.prepare("SELECT * FROM projects ORDER BY seq").all()).results;
 
     // 既存の行は残り、seq も中身も変わらない。started_at と color は NULL
     expect(afterTasks.map((row) => row.id)).toEqual(beforeTasks.results.map((row) => row.id));
@@ -84,20 +81,20 @@ describe("マイグレーション 0002：進行中とプロジェクトの色",
       const before = beforeTasks.results[i] as Record<string, unknown>;
       expect(row.title).toBe(before.title);
       expect(row.bucket).toBe(before.bucket);
-      expect(row.scheduledOn).toBe(before.scheduled_on);
+      expect(row.scheduled_on).toBe(before.scheduled_on);
       expect(row.rank).toBe(before.rank);
-      expect(row.createdAt).toBe(before.created_at);
-      expect(row.updatedAt).toBe(before.updated_at);
+      expect(row.created_at).toBe(before.created_at);
+      expect(row.updated_at).toBe(before.updated_at);
       expect(row.seq).toBe(before.seq);
-      expect(row.startedAt).toBeNull();
+      expect(row.started_at).toBeNull();
     });
     expect(afterProjects.map((row) => row.id)).toEqual(beforeProjects.results.map((row) => row.id));
     for (const row of afterProjects) expect(row.color).toBeNull();
 
     // 当てたあと：今日の行に started_at を入れるのは通る
     await raw.prepare("UPDATE tasks SET started_at = ? WHERE id = ?").bind(now, todayId).run();
-    const started = await db.select().from(tasks).where(eq(tasks.id, todayId)).get();
-    expect(started?.startedAt).toBe(now);
+    const started = await raw.prepare("SELECT * FROM tasks WHERE id = ?").bind(todayId).first();
+    expect(started?.started_at).toBe(now);
 
     // 今日以外で started_at を入れる書き込みは CHECK で落ちる
     await expect(

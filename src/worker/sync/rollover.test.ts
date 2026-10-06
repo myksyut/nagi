@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { compareRank, rankAfter, ranksBetween } from "../../shared/rank";
 import { getDb } from "../db/client";
-import { appliedMutations, meta, projects, tasks } from "../db/schema";
+import { appliedMutations, meta, OWNER_USER_ID, projects, tasks } from "../db/schema";
 import {
   apiApp,
   insertRawProject,
@@ -12,6 +12,7 @@ import {
   setMeta,
 } from "../test/sync-app";
 import { rolloverIfDue } from "./rollover";
+import { projectColumns, taskColumns } from "./rows";
 
 const db = getDb(env.DB);
 
@@ -26,7 +27,7 @@ const TOMORROW = "2026-09-29";
 const NOW = new Date(`${TODAY}T12:00:00+09:00`);
 
 async function taskById(id: string) {
-  return db.select().from(tasks).where(eq(tasks.id, id)).get();
+  return db.select(taskColumns).from(tasks).where(eq(tasks.id, id)).get();
 }
 
 describe("★ 予定と締切の各条件", () => {
@@ -79,7 +80,7 @@ describe("★ 予定と締切の各条件", () => {
     });
     await setMeta(db, "seq", "9");
 
-    const result = await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    const result = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(result.ran).toBe(true);
     expect(result.moved).toBe(4);
 
@@ -160,7 +161,7 @@ describe("★ 並ぶ位置", () => {
     });
     await setMeta(db, "seq", "6");
 
-    const result = await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    const result = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(result.ran).toBe(true);
     expect(result.moved).toBe(4);
 
@@ -207,7 +208,7 @@ describe("★ 並ぶ位置", () => {
     const moving = await insertRawTask(db, { bucket: "scheduled", scheduledOn: YESTERDAY, seq: 2 });
     await setMeta(db, "seq", "2");
 
-    const result = await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    const result = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(result.moved).toBe(1);
 
     const movingRank = (await taskById(moving.id))?.rank;
@@ -225,11 +226,11 @@ describe("★ 2回実行しても同じ結果になる", () => {
     await insertRawTask(db, { bucket: "scheduled", scheduledOn: YESTERDAY, seq: 1 });
     await setMeta(db, "seq", "1");
 
-    const first = await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    const first = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(first.ran).toBe(true);
     expect(first.moved).toBe(1);
 
-    const second = await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    const second = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(second).toEqual({ ran: false, moved: 0 });
   });
 
@@ -237,11 +238,11 @@ describe("★ 2回実行しても同じ結果になる", () => {
     const moving = await insertRawTask(db, { bucket: "scheduled", scheduledOn: YESTERDAY, seq: 1 });
     await setMeta(db, "seq", "1");
 
-    await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     const afterFirst = await taskById(moving.id);
 
     await setMeta(db, "last_rollover_on", "");
-    await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     const afterSecond = await taskById(moving.id);
 
     expect(afterSecond).toEqual(afterFirst);
@@ -256,8 +257,8 @@ describe("★ 2回実行しても同じ結果になる", () => {
     await setMeta(db, "seq", "5");
 
     const [r1, r2] = await Promise.all([
-      rolloverIfDue(db, NOW, "Asia/Tokyo"),
-      rolloverIfDue(db, NOW, "Asia/Tokyo"),
+      rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo"),
+      rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo"),
     ]);
     expect(r1.moved + r2.moved).toBe(5);
 
@@ -294,7 +295,7 @@ describe("limit", () => {
     );
     await setMeta(db, "seq", "3");
 
-    const first = await rolloverIfDue(db, NOW, "Asia/Tokyo", 2);
+    const first = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo", 2);
     expect(first.ran).toBe(true);
     expect(first.moved).toBe(2);
     const lastAfterFirst = await db
@@ -304,7 +305,7 @@ describe("limit", () => {
       .get();
     expect(lastAfterFirst?.value).toBe("");
 
-    const second = await rolloverIfDue(db, NOW, "Asia/Tokyo", 2);
+    const second = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo", 2);
     expect(second.ran).toBe(true);
     expect(second.moved).toBe(1);
     const lastAfterSecond = await db
@@ -342,21 +343,21 @@ describe("物理削除", () => {
     const appliedPurgeId = crypto.randomUUID();
     const appliedKeepId = crypto.randomUUID();
     await db.insert(appliedMutations).values([
-      { id: appliedPurgeId, appliedAt: appliedPurgeAt },
-      { id: appliedKeepId, appliedAt: appliedKeepAt },
+      { userId: OWNER_USER_ID, id: appliedPurgeId, appliedAt: appliedPurgeAt },
+      { userId: OWNER_USER_ID, id: appliedKeepId, appliedAt: appliedKeepAt },
     ]);
 
-    const result = await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    const result = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(result.ran).toBe(true);
 
     expect(await taskById(taskPurge.id)).toBeUndefined();
     expect(await taskById(taskKeep.id)).toEqual(taskKeep);
     expect(
-      await db.select().from(projects).where(eq(projects.id, projectPurge.id)).get(),
+      await db.select(projectColumns).from(projects).where(eq(projects.id, projectPurge.id)).get(),
     ).toBeUndefined();
-    expect(await db.select().from(projects).where(eq(projects.id, projectKeep.id)).get()).toEqual(
-      projectKeep,
-    );
+    expect(
+      await db.select(projectColumns).from(projects).where(eq(projects.id, projectKeep.id)).get(),
+    ).toEqual(projectKeep);
 
     const purgedThroughSeq = await db
       .select()
@@ -384,11 +385,11 @@ describe("物理削除", () => {
     const appliedKeepId = crypto.randomUUID();
     const appliedPurgeId = crypto.randomUUID();
     await db.insert(appliedMutations).values([
-      { id: appliedKeepId, appliedAt: exactly(7) },
-      { id: appliedPurgeId, appliedAt: justOver(7) },
+      { userId: OWNER_USER_ID, id: appliedKeepId, appliedAt: exactly(7) },
+      { userId: OWNER_USER_ID, id: appliedPurgeId, appliedAt: justOver(7) },
     ]);
 
-    await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
 
     expect(await taskById(taskKeep.id)).toEqual(taskKeep);
     expect(await taskById(taskPurge.id)).toBeUndefined();

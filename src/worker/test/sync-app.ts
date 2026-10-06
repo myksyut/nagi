@@ -1,5 +1,5 @@
 import { env } from "cloudflare:test";
-import { eq } from "drizzle-orm";
+import { and, eq, ne } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { ApiErrorResponse, MutateResponse, SyncResponse } from "../../shared/api";
 import { API_VERSION, API_VERSION_HEADER } from "../../shared/api";
@@ -7,20 +7,46 @@ import type { Project, SyncRow, Task } from "../../shared/model";
 import { mutationBatchSchema, type ParsedMutationBatch } from "../../shared/mutations";
 import { rankAfter } from "../../shared/rank";
 import { type Db, getDb } from "../db/client";
-import { appliedMutations, meta, projects, tasks } from "../db/schema";
+import {
+  appliedMutations,
+  meta,
+  OWNER_USER_ID,
+  projects,
+  sessions,
+  tasks,
+  users,
+} from "../db/schema";
 import { createApp } from "../index";
+import { initialMetaRows, metaRow } from "../sync/meta";
+import { projectColumns, taskColumns } from "../sync/rows";
 
-/** 各テストの前に呼ぶ。tasks・projects・applied_mutations を空にし、meta を初期値（seq=0、last_rollover_on=''、purged_through_seq=0）に戻す */
+/**
+ * 各テストの前に呼ぶ。tasks・projects・applied_mutations を空にし、OWNER_USER_ID の meta を初期値
+ * （seq=0、last_rollover_on=''、purged_through_seq=0）に戻す。テストが作ったほかの利用者は、セッション・meta ごと消す
+ */
 export async function resetSyncTables(db: Db = getDb(env.DB)): Promise<void> {
   const statements: BatchItem<"sqlite">[] = [
     db.delete(tasks),
     db.delete(projects),
     db.delete(appliedMutations),
-    db.update(meta).set({ value: "0" }).where(eq(meta.key, "seq")),
-    db.update(meta).set({ value: "" }).where(eq(meta.key, "last_rollover_on")),
-    db.update(meta).set({ value: "0" }).where(eq(meta.key, "purged_through_seq")),
+    db.delete(meta).where(ne(meta.userId, OWNER_USER_ID)),
+    db.delete(sessions).where(ne(sessions.userId, OWNER_USER_ID)),
+    db.delete(users).where(ne(users.id, OWNER_USER_ID)),
+    db.update(meta).set({ value: "0" }).where(metaRow(OWNER_USER_ID, "seq")),
+    db.update(meta).set({ value: "" }).where(metaRow(OWNER_USER_ID, "last_rollover_on")),
+    db.update(meta).set({ value: "0" }).where(metaRow(OWNER_USER_ID, "purged_through_seq")),
   ];
   await db.batch(statements as [BatchItem<"sqlite">, ...BatchItem<"sqlite">[]]);
+}
+
+/** 検証をバイパスして、もう 1 人の利用者（と、その meta の行）を直に作る。利用者の ID を返す */
+export async function insertRawUser(db: Db, githubUserId: number): Promise<string> {
+  const id = crypto.randomUUID();
+  await db.batch([
+    db.insert(users).values({ id, githubUserId, createdAt: new Date().toISOString() }),
+    db.insert(meta).values(initialMetaRows(id)),
+  ]);
+  return id;
 }
 
 const BASE_HEADERS: Record<string, string> = {
@@ -83,21 +109,27 @@ export function parseBatch(
   return mutationBatchSchema.parse({ id, mutations });
 }
 
-/** meta.seq の今の値（数） */
-export async function metaSeq(db: Db): Promise<number> {
-  const row = await db.select().from(meta).where(eq(meta.key, "seq")).get();
+/** 利用者（既定は OWNER_USER_ID）の meta.seq の今の値（数） */
+export async function metaSeq(db: Db, userId: string = OWNER_USER_ID): Promise<number> {
+  const row = await db.select().from(meta).where(metaRow(userId, "seq")).get();
   return Number(row?.value);
 }
 
-/** 書き込みが起きていないことを確かめるための、meta.seq・各表・applied_mutations のまとめ */
-export async function snapshot(db: Db) {
+/**
+ * 書き込みが起きていないことを確かめるための、利用者（既定は OWNER_USER_ID）の meta.seq・各表・applied_mutations のまとめ。
+ * 行は、画面へ返すのと同じ形（user_id なし）
+ */
+export async function snapshot(db: Db, userId: string = OWNER_USER_ID) {
   const byId = <T extends { id: string }>(rows: T[]) =>
     [...rows].sort((a, b) => (a.id < b.id ? -1 : 1));
   const [seq, taskRows, projectRows, appliedRows] = await Promise.all([
-    metaSeq(db),
-    db.select().from(tasks),
-    db.select().from(projects),
-    db.select().from(appliedMutations),
+    metaSeq(db, userId),
+    db.select(taskColumns).from(tasks).where(eq(tasks.userId, userId)),
+    db.select(projectColumns).from(projects).where(eq(projects.userId, userId)),
+    db
+      .select({ id: appliedMutations.id, appliedAt: appliedMutations.appliedAt })
+      .from(appliedMutations)
+      .where(eq(appliedMutations.userId, userId)),
   ]);
   return { seq, tasks: byId(taskRows), projects: byId(projectRows), applied: byId(appliedRows) };
 }
@@ -142,9 +174,13 @@ export function asProjectRow(row: SyncRow): Project {
   return row.row;
 }
 
-/** meta の1つの値を直に書き換える（テスト用の下ごしらえ） */
-export async function setMeta(db: Db, key: string, value: string): Promise<void> {
-  await db.update(meta).set({ value }).where(eq(meta.key, key));
+/** OWNER_USER_ID の meta の1つの値を直に書き換える（テスト用の下ごしらえ） */
+export async function setMeta(
+  db: Db,
+  key: "seq" | "last_rollover_on" | "purged_through_seq",
+  value: string,
+): Promise<void> {
+  await db.update(meta).set({ value }).where(metaRow(OWNER_USER_ID, key));
 }
 
 /** 1つのINSERT文のバインド変数は100までなので、検証をバイパスした行の下ごしらえもこれで区切る */
@@ -156,10 +192,11 @@ function chunkRows<T>(rows: readonly T[], size: number = INSERT_CHUNK_SIZE): T[]
   return chunks;
 }
 
-/** 検証をバイパスして、seq を連番で振った count 件のタスクを直に作る（ページ分けのテスト用） */
+/** 検証をバイパスして、seq を連番で振った count 件のタスクを直に作る（ページ分けのテスト用）。持ち主は OWNER_USER_ID */
 export async function insertRawTasks(db: Db, count: number, seqStart: number) {
   const now = new Date().toISOString();
   const rows = Array.from({ length: count }, (_, i) => ({
+    userId: OWNER_USER_ID,
     id: crypto.randomUUID(),
     title: `task-${seqStart + i}`,
     bucket: "inbox" as const,
@@ -172,10 +209,11 @@ export async function insertRawTasks(db: Db, count: number, seqStart: number) {
   return rows;
 }
 
-/** 検証をバイパスして、seq を連番で振った count 件のプロジェクトを直に作る */
+/** 検証をバイパスして、seq を連番で振った count 件のプロジェクトを直に作る。持ち主は OWNER_USER_ID */
 export async function insertRawProjects(db: Db, count: number, seqStart: number) {
   const now = new Date().toISOString();
   const rows = Array.from({ length: count }, (_, i) => ({
+    userId: OWNER_USER_ID,
     id: crypto.randomUUID(),
     name: `project-${seqStart + i}`,
     createdAt: now,
@@ -188,7 +226,8 @@ export async function insertRawProjects(db: Db, count: number, seqStart: number)
 
 /**
  * 検証をバイパスして、1件のタスクの行を直に作る（rollover のテストで細かく項目を指定するのに使う）。
- * D1 の既定値（memo・checklist など）まで入った、今の行を読み直して返す
+ * D1 の既定値（memo・checklist など）まで入った、今の行を読み直して返す（画面へ返すのと同じ形）。
+ * 持ち主は、overrides.userId を書かなければ OWNER_USER_ID
  */
 export async function insertRawTask(
   db: Db,
@@ -196,7 +235,9 @@ export async function insertRawTask(
 ) {
   const now = new Date().toISOString();
   const id = overrides.id ?? crypto.randomUUID();
+  const userId = overrides.userId ?? OWNER_USER_ID;
   await db.insert(tasks).values({
+    userId,
     title: "task",
     bucket: "inbox" as const,
     rank: rankAfter(null),
@@ -205,26 +246,36 @@ export async function insertRawTask(
     ...overrides,
     id,
   });
-  const row = await db.select().from(tasks).where(eq(tasks.id, id)).get();
+  const row = await db
+    .select(taskColumns)
+    .from(tasks)
+    .where(and(eq(tasks.userId, userId), eq(tasks.id, id)))
+    .get();
   if (!row) throw new Error("insertRawTask: 行を読み直せませんでした");
   return row;
 }
 
-/** 検証をバイパスして、1件のプロジェクトの行を直に作る。今の行を読み直して返す */
+/** 検証をバイパスして、1件のプロジェクトの行を直に作る。今の行を読み直して返す（持ち主は insertRawTask と同じ） */
 export async function insertRawProject(
   db: Db,
   overrides: Partial<typeof projects.$inferInsert> & { seq: number },
 ) {
   const now = new Date().toISOString();
   const id = overrides.id ?? crypto.randomUUID();
+  const userId = overrides.userId ?? OWNER_USER_ID;
   await db.insert(projects).values({
+    userId,
     name: "project",
     createdAt: now,
     updatedAt: now,
     ...overrides,
     id,
   });
-  const row = await db.select().from(projects).where(eq(projects.id, id)).get();
+  const row = await db
+    .select(projectColumns)
+    .from(projects)
+    .where(and(eq(projects.userId, userId), eq(projects.id, id)))
+    .get();
   if (!row) throw new Error("insertRawProject: 行を読み直せませんでした");
   return row;
 }

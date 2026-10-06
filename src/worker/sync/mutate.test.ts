@@ -5,7 +5,7 @@ import { API_VERSION, API_VERSION_HEADER } from "../../shared/api";
 import { POINTS, PRIORITIES } from "../../shared/priority-points";
 import { createSession } from "../auth/session";
 import { getDb } from "../db/client";
-import { appliedMutations, meta, projects, tasks } from "../db/schema";
+import { appliedMutations, meta, OWNER_USER_ID, projects, tasks } from "../db/schema";
 import { createApp } from "../index";
 import {
   apiApp,
@@ -1077,7 +1077,7 @@ describe("版とログイン", () => {
   );
 
   it("Bearer のセッションがあれば、Origin なしで読み書きできる（TUI と同じ呼び方）", async () => {
-    const { token } = await createSession(db, new Date());
+    const { token } = await createSession(db, OWNER_USER_ID, new Date());
     const app = createApp();
     const call = (path: string, body: unknown, authorization: string = `Bearer ${token}`) =>
       app.request(
@@ -1142,5 +1142,50 @@ describe("版とログイン", () => {
       { ...env, AUTH_DISABLED: "true" },
     );
     expect(res.status).toBe(415);
+  });
+});
+
+describe("1つの文のバインド変数（100 まで）：行ごとの ID に、利用者の ID のぶんが加わっても収まる", () => {
+  it("100 件のタスクを、チェックリストの守りつきで 1 つのまとまりで更新できる。再送でも同じ行が返る", async () => {
+    const { post } = apiApp();
+    const project = projectInput();
+    const created = Array.from({ length: 100 }, (_, i) => {
+      const checklist = [{ id: crypto.randomUUID(), title: `item-${i}`, done: false }];
+      return {
+        checklist,
+        task: taskInput({ title: `task-${i}`, projectId: project.id, checklist }),
+      };
+    });
+    const createRes = await post(
+      "/api/mutate",
+      mutationBatch([
+        { type: "project.create", project },
+        ...created.map(({ task }) => ({ type: "task.create", task })),
+      ]),
+    );
+    expect(createRes.status).toBe(200);
+
+    // 更新する行が 90 件を超え（行があることの守りが 2 つの文に分かれる）、
+    // チェックリストの守りが 30 件を超える（4 つの文に分かれる）
+    const update = mutationBatch(
+      created.map(({ task, checklist }) => ({
+        type: "task.update",
+        id: task.id,
+        baseChecklist: checklist,
+        changes: { checklist: checklist.map((item) => ({ ...item, done: true })) },
+      })),
+    );
+    const updateRes = await post("/api/mutate", update);
+
+    expect(updateRes.status).toBe(200);
+    const rows = (await mutateBody(updateRes)).rows.map(asTaskRow);
+    expect(rows).toHaveLength(100);
+    expect(rows.every((row) => at(row.checklist, 0).done)).toBe(true);
+    expect(rows.map((row) => row.seq)).toEqual(Array.from({ length: 100 }, (_, i) => 102 + i));
+
+    // 再送：ID から読み直す（90 件ずつ）
+    const resent = (await mutateBody(await post("/api/mutate", update))).rows.map(asTaskRow);
+    expect(resent.map((row) => row.id)).toEqual(rows.map((row) => row.id));
+    expect(await metaSeq()).toBe(201);
   });
 });

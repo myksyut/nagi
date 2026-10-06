@@ -22,7 +22,13 @@
     // GitHub の OAuth App「nagi」（myksyut が持ち主）の Client ID。秘密ではない。
     // ログインはデバイスフローなので、Client secret は使わない（OAuth App で「Enable Device Flow」を有効にしておく）
     "GITHUB_CLIENT_ID": "Ov23licDbYh47XzAIdS6",
-    // ログインを許可する GitHub ユーザー（myksyut）の ID
-    "ALLOWED_GITHUB_USER_ID": "51072711"
+    // 利用者を分ける前からあったデータの持ち主（myksyut）の GitHub ユーザー ID。この人は、いつでもログインできる
+    "OWNER_GITHUB_USER_ID": "51072711",
+    // だれが登録・ログインできるか。"allowlist" は、持ち主と ALLOWED_GITHUB_USER_IDS の人だけ。
+    // "open" にすると、GitHub のアカウントがあればだれでも登録できる
+    "SIGNUP": "allowlist",
+    // "allowlist" のときに登録・ログインできる GitHub ユーザー ID（カンマ区切り。例："1002,1003"）。
+    // ID は https://api.github.com/users/<ユーザー名> の id
+    "ALLOWED_GITHUB_USER_IDS": ""
   }
 }

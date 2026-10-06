@@ -1,15 +1,13 @@
 import { applyD1Migrations, env } from "cloudflare:test";
-import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
 import { POINTS, PRIORITIES } from "../../shared/priority-points";
-import { getDb } from "./client";
-import { meta, projects, tasks } from "./schema";
 
 /**
  * migrations/0003_priority_points.sql の確認。DB とは別の空の D1（MIGRATION_0003_TEST_DB）を使い、
- * 0002 まで当てて既存の行（進行中・完了・削除・予定・色のあるプロジェクト）を入れてから、残り（0003）を当てる。
- * 0003 を当てる前は、schema.ts が持つ priority・points の列がまだない（drizzle での select はできない）ので、
- * 生の D1 の prepare で読み書きする。当てたあとは schema.ts と一致するので drizzle で読む
+ * 0002 まで当てて既存の行（進行中・完了・削除・予定・色のあるプロジェクト）を入れてから、0003 だけを当てる
+ * （そのあとの版は当てない。ここで確かめるのは 0003 を当てた直後の形）。
+ * schema.ts は最新の版の形で、この時点の表とは合わない（drizzle での select はできない）ので、
+ * 生の D1 の prepare で読み書きする
  */
 describe("マイグレーション 0003：優先度と工数", () => {
   it("既存の行・seq・既存の制約と索引を保ったまま列を足し、CHECK 制約（tasks_priority_check・tasks_points_check）で値を守る", async () => {
@@ -68,8 +66,8 @@ describe("マイグレーション 0003：優先度と工数", () => {
     expect(await columnsOf("tasks")).not.toContain("priority");
     expect(await columnsOf("tasks")).not.toContain("points");
 
-    // 残り（0003）を当てる
-    await applyD1Migrations(raw, env.TEST_MIGRATIONS);
+    // 0003 を当てる
+    await applyD1Migrations(raw, env.TEST_MIGRATIONS.slice(0, 4));
     expect(await columnsOf("tasks")).toEqual(expect.arrayContaining(["priority", "points"]));
 
     // 既存の行は、もとの列の中身も seq もそのまま。足した列は NULL
@@ -82,19 +80,12 @@ describe("マイグレーション 0003：優先度と工数", () => {
       beforeMeta,
     );
 
-    // schema.ts と一致するので drizzle で読める（行の型も共有の Task と同じ形）
-    const db = getDb(raw);
-    const afterTasks = await db.select().from(tasks).orderBy(tasks.seq);
-    expect(afterTasks.map((row) => row.seq)).toEqual([2, 3, 4, 5, 6]);
-    for (const row of afterTasks) {
-      expect(row.priority).toBeNull();
-      expect(row.points).toBeNull();
-    }
-    expect((await db.select().from(projects)).map((row) => row.color)).toEqual(["sky"]);
-    expect((await db.select().from(meta).where(eq(meta.key, "seq")).get())?.value).toBe("6");
+    expect(afterRaw.map((row) => row.seq)).toEqual([2, 3, 4, 5, 6]);
 
     // 当てたあと：決まった値はすべて入る（完了済み・削除済み・進行中の行にも）。NULL に戻せる
-    const [started, , , completed, deleted] = afterTasks;
+    const [started, , , completed, deleted] = afterRaw;
+    const taskById = (id: unknown) =>
+      raw.prepare("SELECT * FROM tasks WHERE id = ?").bind(id).first();
     for (const priority of PRIORITIES) {
       for (const target of [started, completed, deleted]) {
         await raw
@@ -111,23 +102,15 @@ describe("マイグレーション 0003：優先度と工数", () => {
           .run();
       }
     }
-    const afterSet = await db
-      .select()
-      .from(tasks)
-      .where(eq(tasks.id, started?.id ?? ""))
-      .get();
+    const afterSet = await taskById(started?.id);
     expect(afterSet?.priority).toBe("low");
     expect(afterSet?.points).toBe(13);
-    expect(afterSet?.startedAt).toBe(now);
+    expect(afterSet?.started_at).toBe(now);
     await raw
       .prepare("UPDATE tasks SET priority = NULL, points = NULL WHERE id = ?")
       .bind(started?.id)
       .run();
-    const cleared = await db
-      .select()
-      .from(tasks)
-      .where(eq(tasks.id, started?.id ?? ""))
-      .get();
+    const cleared = await taskById(started?.id);
     expect(cleared?.priority).toBeNull();
     expect(cleared?.points).toBeNull();
 

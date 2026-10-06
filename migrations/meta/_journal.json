@@ -29,6 +29,13 @@
       "when": 1790513688333,
       "tag": "0003_priority_points",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1791308814754,
+      "tag": "0004_users",
+      "breakpoints": true
     }
   ]
 }

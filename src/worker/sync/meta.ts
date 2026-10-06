@@ -1,3 +1,22 @@
+import { and, eq } from "drizzle-orm";
+import { meta } from "../db/schema";
+
+type MetaKey = "seq" | "last_rollover_on" | "purged_through_seq";
+
+/** 利用者の meta の 1 行を指す条件（WHERE に入れる） */
+export function metaRow(userId: string, key: MetaKey) {
+  return and(eq(meta.userId, userId), eq(meta.key, key));
+}
+
+/** 利用者を作るときに入れる meta の行（書き込みは、この行があることを前提にする） */
+export function initialMetaRows(userId: string): (typeof meta.$inferInsert)[] {
+  return [
+    { userId, key: "seq", value: "0" },
+    { userId, key: "last_rollover_on", value: "" },
+    { userId, key: "purged_through_seq", value: "0" },
+  ];
+}
+
 export type MetaValues = {
   /** これまでに振った通し番号の最大値 */
   seq: number;
@@ -7,7 +26,7 @@ export type MetaValues = {
   purgedThroughSeq: number;
 };
 
-/** meta の行（key と value）を読み取る。行はマイグレーションで入れてある */
+/** 1 人の利用者の meta の行（key と value）を読み取る。行は、利用者を作るときに入れてある */
 export function parseMeta(rows: readonly { key: string; value: string }[]): MetaValues {
   const values = new Map(rows.map((row) => [row.key, row.value]));
   const integer = (key: string) => {
