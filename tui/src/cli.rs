@@ -400,8 +400,9 @@ impl Session {
         if token.is_none() && !config.is_local() {
             return Err("ログインしていません。先に `nagi login` を実行してください".to_string());
         }
+        let user_id = auth::current_user_id(config);
         let (sender, events) = channel();
-        let store = open_store(config, token, move |event| {
+        let store = open_store(config, token, user_id.as_deref(), move |event| {
             let _ = sender.send(event);
         });
         Ok(Session {
@@ -1090,9 +1091,9 @@ fn login(config: &Config) -> Result<(), String> {
             // 通信のつまずきは、次の回でもう一度確かめる
             Ok(DevicePoll::Pending) | Err(_) => {}
             Ok(DevicePoll::SlowDown(next)) => interval = next.max(interval + 1),
-            Ok(DevicePoll::Ok(token)) => {
+            Ok(DevicePoll::Ok { token, user_id }) => {
                 config
-                    .save_token(&token)
+                    .save_session(&token, user_id.as_deref())
                     .map_err(|error| format!("トークンを保存できませんでした：{error}"))?;
                 emit!("ログインしました");
                 return Ok(());
@@ -1110,11 +1111,16 @@ fn login(config: &Config) -> Result<(), String> {
 
 /// ログアウト。Worker のセッションを消し、手元のトークンと控えも消す
 fn logout(config: &Config) -> Result<(), String> {
-    match config.saved_token() {
-        Some(token) => {
-            auth::logout(&ApiClient::new(&config.server, Some(token)));
+    match config.saved_session() {
+        Some(session) => {
+            // 持ち主の分からないログイン（利用者の ID を返さないころのもの）は、消す前に聞いておく（どの控えかを決めるため）
+            let user_id = session
+                .user_id
+                .clone()
+                .or_else(|| auth::current_user_id(config));
+            auth::logout(&ApiClient::new(&config.server, Some(session.token)));
             config.clear_token();
-            let _ = std::fs::remove_file(config.db_path());
+            config.remove_db(user_id.as_deref());
             emit!("ログアウトしました");
         }
         None => emit!("ログインしていません"),
