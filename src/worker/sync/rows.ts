@@ -1,5 +1,5 @@
-import type { Project, SyncRow, Task } from "@shared/model";
 import { inArray } from "drizzle-orm";
+import type { Project, SyncRow, Task } from "../../shared/model";
 import type { Db } from "../db/client";
 import { projects, tasks } from "../db/schema";
 

@@ -1,0 +1,98 @@
+name: tui
+
+# TUI（Rust。バイナリの名前は nagi）を、Mac（Apple シリコン）と Linux（x86_64）でビルドする。
+# - PR：tui/ を変えたときに、ビルドできるかだけを確かめる（公開しない）
+# - main：tui/ を変えたときに、ビルドして GitHub の Releases に出す（手でも動かせる）
+# 整形・lint・テストは CI（ci.yml の tui）で回す
+on:
+  pull_request:
+    paths:
+      - "tui/**"
+      - ".github/workflows/tui.yml"
+  push:
+    branches: [main]
+    paths:
+      - "tui/**"
+      - ".github/workflows/tui.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-latest
+            target: aarch64-apple-darwin
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+    # PR では、新しい push が来たら古いビルドをやめる。main のビルドは最後まで動かす（Release に出すため）
+    concurrency:
+      group: tui-build-${{ github.ref }}-${{ matrix.target }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: tui
+      # --locked：Cargo.lock のとおりにビルドする（Cargo.lock が古ければ失敗させる）
+      - name: Build nagi
+        working-directory: tui
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: tar.gz にまとめる
+        run: tar -czf "nagi-${{ matrix.target }}.tar.gz" -C "tui/target/${{ matrix.target }}/release" nagi
+      # Release に出すときだけ、次の job へ渡す
+      - uses: actions/upload-artifact@v7
+        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        with:
+          name: nagi-${{ matrix.target }}
+          path: nagi-${{ matrix.target }}.tar.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  release:
+    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    concurrency:
+      group: tui-release
+      cancel-in-progress: false
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          path: dist
+          merge-multiple: true
+      # 版は 0.1.<このワークフローの実行の番号>。出すたびに上がる
+      # （ワークフローの名前やファイル名を変えると番号が 1 に戻るので、変えない。Re-run では番号が増えないので、出し直すときは新しく手で動かす）。
+      # gh は、ファイルを全部載せ終えてから Release を公開する（releases/latest が、ファイルのそろっていない版を指さない）
+      - name: Release を作って latest にする
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          VERSION: 0.1.${{ github.run_number }}
+          NOTES: |
+            nagi の TUI（Mac の Apple シリコンと、Linux の x86_64）。
+            自分の環境の `nagi-<target>.tar.gz` を展開して、中の `nagi` をパスの通った場所に置く。
+            Mac でブラウザから落としたときは、`xattr -d com.apple.quarantine nagi` を実行してから開く。
+        run: |
+          ls -l dist
+          gh release create "tui-v$VERSION" \
+            dist/nagi-aarch64-apple-darwin.tar.gz \
+            dist/nagi-x86_64-unknown-linux-gnu.tar.gz \
+            --target "$GITHUB_SHA" \
+            --title "nagi TUI $VERSION" \
+            --notes "$NOTES" \
+            --latest

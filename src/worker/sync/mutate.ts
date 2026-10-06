@@ -1,4 +1,6 @@
-import type { InvalidRequestReason } from "@shared/api";
+import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import type { BatchItem } from "drizzle-orm/batch";
+import type { InvalidRequestReason } from "../../shared/api";
 import {
   isOpenTask,
   isScheduleConsistent,
@@ -7,10 +9,8 @@ import {
   type SyncRow,
   sameChecklist,
   type Task,
-} from "@shared/model";
-import type { ParsedMutationBatch, ProjectChanges, TaskChanges } from "@shared/mutations";
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
-import type { BatchItem } from "drizzle-orm/batch";
+} from "../../shared/model";
+import type { ParsedMutationBatch, ProjectChanges, TaskChanges } from "../../shared/mutations";
 import type { Db } from "../db/client";
 import { appliedMutations, meta, projects, tasks } from "../db/schema";
 import { chunk, readRowsByIds, toSyncRows } from "./rows";

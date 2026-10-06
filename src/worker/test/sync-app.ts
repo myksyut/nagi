@@ -1,11 +1,11 @@
 import { env } from "cloudflare:test";
-import type { ApiErrorResponse, MutateResponse, SyncResponse } from "@shared/api";
-import { API_VERSION, API_VERSION_HEADER } from "@shared/api";
-import type { Project, SyncRow, Task } from "@shared/model";
-import { mutationBatchSchema, type ParsedMutationBatch } from "@shared/mutations";
-import { rankAfter } from "@shared/rank";
 import { eq } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
+import type { ApiErrorResponse, MutateResponse, SyncResponse } from "../../shared/api";
+import { API_VERSION, API_VERSION_HEADER } from "../../shared/api";
+import type { Project, SyncRow, Task } from "../../shared/model";
+import { mutationBatchSchema, type ParsedMutationBatch } from "../../shared/mutations";
+import { rankAfter } from "../../shared/rank";
 import { type Db, getDb } from "../db/client";
 import { appliedMutations, meta, projects, tasks } from "../db/schema";
 import { createApp } from "../index";

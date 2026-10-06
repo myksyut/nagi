@@ -1,3 +1,6 @@
+import { type Context, Hono } from "hono";
+import { createMiddleware } from "hono/factory";
+import type { z } from "zod";
 import {
   API_VERSION,
   API_VERSION_HEADER,
@@ -5,11 +8,8 @@ import {
   type MutateResponse,
   type SyncResponse,
   syncRequestSchema,
-} from "@shared/api";
-import { mutationBatchSchema } from "@shared/mutations";
-import { type Context, Hono } from "hono";
-import { createMiddleware } from "hono/factory";
-import type { z } from "zod";
+} from "../../shared/api";
+import { mutationBatchSchema } from "../../shared/mutations";
 import { getDb } from "../db/client";
 import type { AppEnv } from "../types";
 import { readChanges } from "./changes";

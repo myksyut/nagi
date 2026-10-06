@@ -1,5 +1,5 @@
-import type { SyncRequest, SyncResponse } from "@shared/api";
 import { and, asc, gt, lte } from "drizzle-orm";
+import type { SyncRequest, SyncResponse } from "../../shared/api";
 import type { Db } from "../db/client";
 import { meta, projects, tasks } from "../db/schema";
 import { parseMeta } from "./meta";

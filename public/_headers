@@ -1,5 +1,0 @@
-# Workers の静的配信のヘッダー（既定はすべて max-age=0）。
-# /assets/ の下は Vite が名前にハッシュを付けたファイルなので、長くキャッシュさせる（中身が変われば名前も変わる）。
-# index.html・sw.js・offline.html は既定のまま（毎回確かめさせ、新しい版がすぐ届くように）
-/assets/*
-  Cache-Control: public, max-age=31536000, immutable

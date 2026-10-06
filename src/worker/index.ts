@@ -6,8 +6,10 @@ import { createSyncRoutes, type SyncRoutesOptions } from "./sync/routes";
 import type { AppEnv } from "./types";
 
 /**
- * Worker が受けるのは /api/* と /auth/* だけ（wrangler.jsonc の run_worker_first）。
- * それ以外は静的配信が画面ファイルを返す。画面ファイル自体はログインなしで配信する。
+ * Worker がすべてのリクエストを受ける（画面のファイルは配らない。クライアントは TUI）。
+ * - /auth/*：ログイン（GitHub のデバイスフロー）とログアウト
+ * - /api/*：同期の API。`Authorization: Bearer <token>` のセッションが要る
+ * - それ以外の URL：404 の JSON
  * テストでは現在時刻（now）を差し替えたアプリを作れる
  */
 export function createApp({ now = () => new Date() }: Partial<SyncRoutesOptions> = {}) {

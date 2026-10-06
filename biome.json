@@ -7,7 +7,7 @@
   },
   "files": {
     "ignoreUnknown": false,
-    "includes": ["**", "!migrations/meta"]
+    "includes": ["**", "!migrations/meta", "!tui"]
   },
   "formatter": {
     "enabled": true,
@@ -26,11 +26,6 @@
       "quoteStyle": "double"
     }
   },
-  "css": {
-    "parser": {
-      "tailwindDirectives": true
-    }
-  },
   "assist": {
     "enabled": true,
     "actions": {
@@ -38,19 +33,5 @@
         "organizeImports": "on"
       }
     }
-  },
-  "overrides": [
-    {
-      "includes": ["src/client/components/ui/**"],
-      "linter": {
-        "rules": {
-          "a11y": {
-            "noSvgWithoutTitle": "off",
-            "useSemanticElements": "off",
-            "noStaticElementInteractions": "off"
-          }
-        }
-      }
-    }
-  ]
+  }
 }

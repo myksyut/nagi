@@ -1,7 +1,7 @@
-import { logicalDate } from "@shared/logical-date";
-import { arrivalRanks } from "@shared/rank";
 import { and, eq, isNull, lt, lte, ne, notExists, or, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
+import { logicalDate } from "../../shared/logical-date";
+import { arrivalRanks } from "../../shared/rank";
 import type { Db } from "../db/client";
 import { appliedMutations, meta, projects, tasks } from "../db/schema";
 import { advanceSeq, seqFor } from "./seq";

@@ -1,7 +1,7 @@
 name: deploy
 
-# main の CI（check-and-test）が通ったら、本番（Cloudflare Workers）に出す。
-# pnpm release（build → 本番の D1 にマイグレーション → wrangler deploy）を動かす。
+# main の CI（check-and-test と tui）が通ったら、Worker を本番（Cloudflare Workers）に出す。
+# pnpm release（本番の D1 にマイグレーション → wrangler deploy）を動かす。TUI は tui.yml が Releases に出す。
 # マイグレーションの前に D1 の Time Travel のブックマークをログに残す（戻すときに使う。無料プランは 7 日）
 on:
   workflow_run:
@@ -76,11 +76,21 @@ jobs:
         if: steps.latest.outputs.deploy == 'true'
         run: |
           base=https://nagi.wizard1026miya.workers.dev
+          # expect <パス> <期待する状態コード> [curl に足す引数…]
           expect() {
-            actual=$(curl -s -o /dev/null -w '%{http_code}' "$base$1")
-            echo "$1 → $actual"
-            test "$actual" = "$2"
+            path=$1 want=$2
+            shift 2
+            # 出した直後は、まだ前の版が応えることがあるので、少し待ってやり直す
+            for _ in 1 2 3 4 5; do
+              actual=$(curl -s -o /dev/null -w '%{http_code}' "$@" "$base$path")
+              echo "$path → $actual"
+              if [ "$actual" = "$want" ]; then return 0; fi
+              sleep 3
+            done
+            return 1
           }
-          expect / 200
+          # ログインなしでは API に入れない
           expect /api/session 401
-          expect /auth/login 302
+          # ログインの口（デバイスフロー）がある。本文の形が違うので 400 が返り、GitHub には問い合わせない。
+          # Origin を付けない POST（TUI と同じ呼び方）が通ることも、これで確かめられる
+          expect /auth/device/token 400 -X POST -H 'Content-Type: application/json' -d '{}'
