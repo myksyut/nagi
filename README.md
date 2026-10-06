@@ -61,6 +61,7 @@ GitHub とやり取りするのは Worker だけで、GitHub のアクセスト�
 ### 入れ方
 
 - **Releases から**：[GitHub の Releases](https://github.com/myksyut/nagi/releases) の `tui-v…` から、自分の環境のファイル（Mac は `nagi-aarch64-apple-darwin.tar.gz`、Linux は `nagi-x86_64-unknown-linux-gnu.tar.gz`）を落として展開し、`nagi` を PATH の通った場所に置く。Mac でブラウザから落としたときは、`xattr -d com.apple.quarantine nagi` を実行してから使う（Apple の開発者の署名はしていない）。`gh release download --repo myksyut/nagi --pattern 'nagi-aarch64-apple-darwin.tar.gz'` で落とせば、この手間は要らない
+- 入っている版は `nagi --version` で分かる（Release のタグ `tui-v0.1.<番号>` と同じ番号。手元でビルドしたものは `Cargo.toml` の版）
 - **手元でビルド**：Rust（1.88 以降）と C のコンパイラ（SQLite を一緒にビルドする）を入れて、`cargo install --path tui`。M7 には Rust を入れていないので、nix で一時的に使う
 
   ```sh

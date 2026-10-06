@@ -13,6 +13,13 @@ use std::process::ExitCode;
 
 use config::{Config, DEFAULT_SERVER};
 
+/// 版。Release のビルドでは、ワークフロー（tui.yml）が NAGI_VERSION に Release の版（0.1.<実行の番号>）を入れる。
+/// 手元のビルドでは Cargo.toml の版
+const VERSION: &str = match option_env!("NAGI_VERSION") {
+    Some(version) => version,
+    None => env!("CARGO_PKG_VERSION"),
+};
+
 const HELP: &str = "\
 nagi — 自分専用の TODO アプリ
 
@@ -36,7 +43,7 @@ fn main() -> ExitCode {
                 return ExitCode::SUCCESS;
             }
             "-V" | "--version" => {
-                println!("nagi {}", env!("CARGO_PKG_VERSION"));
+                println!("nagi {VERSION}");
                 return ExitCode::SUCCESS;
             }
             "--server" => match args.next() {
