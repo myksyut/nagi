@@ -115,13 +115,22 @@ nagi add "請求書の確認" --to today --project AIPR --priority high --points
 nagi list                                        # 未完了のすべて（受信箱・今日・予定・あとで）
 nagi list inbox --json                           # 受信箱だけを JSON で
 nagi list completed --days 7 --json              # 直近 7 日（今日を含む）に完了したもの
+nagi list all --json                             # 未完了のすべてと、直近に完了したもの
+nagi show <ID> --json                            # 1件を詳しく（メモ・チェックリスト・updatedAt）
+nagi update <ID> --append-memo "10/6 再依頼あり" --add-check "請求書を送る" --check "金額を確認"
+nagi update <ID> --points 3 --deadline 金曜 --keep-existing --if-unchanged-since <updatedAt>
+nagi done <ID>                                   # 完了にする
+nagi projects --json                             # プロジェクトの一覧
 nagi login                                       # 画面なしでログイン（URL とコードを出して、承認を待つ）
 nagi logout
 nagi --help
 ```
 
-- `add` の行き先（`--to`）は `inbox`（既定）・`today`・`later` か日付。日付と締切は、画面の日付の入力と同じ書き方（`2026-10-09`・`明日`・`金曜`・`来週月曜`・`3日後`・`10/3`）で渡せる。`--project` は名前で指す（なければ追加せずに失敗する。プロジェクトは作らない）
-- `--json`：`add` は追加したタスクを、`list` はタスクの配列を出す。1件の形は `id`・`title`・`memo`・`list`（`inbox`・`today`・`upcoming`・`later`・`completed`）・`scheduledOn`・`deadlineOn`・`project`（名前）・`priority`・`points`・`inProgress`・`checklist`・`createdAt`・`completedAt`
+- `add` の行き先（`--to`）は `inbox`（既定）・`today`・`later` か日付。`--add-check` で、チェックリストの項目を一緒に作れる（何度でも書ける）。日付と締切は、画面の日付の入力と同じ書き方（`2026-10-09`・`明日`・`金曜`・`来週月曜`・`3日後`・`10/3`）で渡せる。`--project` は名前で指す（なければ追加せずに失敗する。プロジェクトは作らない）
+- `--json`：`add`・`show`・`update`・`done` はそのタスクを、`list` はタスクの配列を出す。1件の形は `id`・`title`・`memo`・`list`（`inbox`・`today`・`upcoming`・`later`・`completed`）・`scheduledOn`・`deadlineOn`・`project`（名前）・`priority`・`points`・`inProgress`・`checklist`（`id`・`title`・`done`）・`createdAt`・`updatedAt`・`completedAt`
+- `update` でできるのは、足すこと（メモの追記・チェックリストの項目）と、チェックを付けること、属性（行き先・プロジェクト・締切・優先度・工数）を付けることだけ。タイトルの書き換え・メモの置き換え・チェックを外す・削除・完了を外すことは、CLI からはできない（自動の実行が、人の書いたものを壊さないように）。同じ追記・同じ項目は重ねないので、やり直しても増えない
+- 外から拾った文章（Slack の本文など）をメモに入れるときは、引数ではなくファイルで渡す：`add --memo-file <ファイル>`・`update --append-memo-file <ファイル>`。引数に入れると、文章の中の `$(…)` などをシェルが実行してしまうことがある
+- 人の変更を上書きしないための指定：`--keep-existing` は、すでに値がある締切・優先度・工数・プロジェクトを変えない。`--if-unchanged-since <updatedAt>` は、読んだあとにほかで変更されていたら、何も変えずに失敗する（読み直して、もう一度判断する）
 - 毎朝の巡回のように同じものを見つけ直す使い方では、先に `nagi list --json`（必要なら `nagi list completed --json` も）で今あるタスクを読み、同じものは足さないようにする（`add` は重複を確かめない）
 - 終了コード：成功は 0、失敗（ログインが切れた・つながらない・保存できなかった・プロジェクトがない・日付が読めない）は 1、引数の誤りは 2。失敗の理由は標準エラーに出る。指定に誤りがあるときは、何も追加しない
 - ログインは、画面（`nagi`）か `nagi login` で済ませておく（トークンは同じ場所に置かれる）。手元にログインを置けない実行では、環境変数 `NAGI_TOKEN` にトークンを渡す
@@ -139,7 +148,7 @@ nagi --help
 ```text
 tui/src/
 ├── main.rs      # 起動（引数を読んで、画面か CLI へ）
-├── cli.rs       # 画面なしのコマンド（add・list・login・logout）と、引数の読み方
+├── cli.rs       # 画面なしのコマンド（add・list・show・update・done・projects・login・logout）と、引数の読み方
 ├── config.rs    # 接続先・トークン・控え・覚え書きの置き場
 ├── auth.rs      # ログイン（Worker の /auth/device/* を呼ぶ）
 ├── model.rs     # タスク・プロジェクト・操作の形（src/shared の model.ts・mutations.ts・api.ts と同じ約束）

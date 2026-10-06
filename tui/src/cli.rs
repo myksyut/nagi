@@ -13,12 +13,13 @@ use crate::auth::{self, DevicePoll};
 use crate::config::Config;
 use crate::data::net::{ApiClient, NetEvent};
 use crate::data::{
-    AddTask, Destination, Failure, Notice, OpResult, SaveFailure, StopReason, Store, open_store,
+    AddTask, Destination, Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReason,
+    Store, open_store,
 };
 use crate::dates::{
     add_days, deadline_status, format_day_heading, format_short_date_with_weekday, parse_date_input,
 };
-use crate::model::{Bucket, POINTS, Priority, Task};
+use crate::model::{Bucket, ChecklistItem, POINTS, Priority, Task, TaskChanges};
 use crate::ui::text::fold;
 
 /// Worker の応答を待つ時間
@@ -33,24 +34,41 @@ nagi — 自分専用の TODO アプリ
   nagi                       画面（TUI）を開く
   nagi add <タイトル> [...]  タスクを追加する（既定は受信箱）
   nagi list [リスト] [...]   タスクの一覧を出す
+  nagi show <ID>             タスクを1件、詳しく出す
+  nagi update <ID> [...]     既存のタスクに足す・属性を付ける
+  nagi done <ID>             タスクを完了にする
+  nagi projects              プロジェクトの一覧を出す
   nagi login                 ログインする（GitHub のデバイスフロー。コードを出して待つ）
   nagi logout                ログアウトする
 
 add の指定：
   --memo <文字>              メモ
+  --memo-file <ファイル>     メモをファイルから読む（外から拾った文章は、引数に入れずにこちらで渡す）
   --to <行き先>              inbox（既定）・today・later か、日付（予定へ。今日以前の日付なら今日へ）
   --project <名前>           プロジェクト（名前で指す。なければ失敗する）
   --deadline <日付>          締切
   --priority <high|medium|low>
   --points <1|2|3|5|8|13>
-  --json                     追加したタスクを JSON で出す
+  --add-check <項目>         チェックリストの項目（何度でも書ける）
 
 list の指定：
-  リスト                     inbox・today・upcoming・later・completed（省くと未完了のすべて）
-  --days <N>                 completed に出す日数（今日を含む。既定は 14）
-  --json                     JSON で出す（重複を避けるための照合などに）
+  リスト                     inbox・today・upcoming・later・completed・all（省くと未完了のすべて）
+  --days <N>                 completed・all に出す完了の日数（今日を含む。既定は 14）
+
+update の指定（足すものと属性だけ。タイトルの書き換え・メモの置き換え・チェックを外す・削除はできない）：
+  --append-memo <文字>       メモの後ろに足す（同じ文字がすでにあれば足さない）
+  --append-memo-file <ファイル>
+                             足す文字をファイルから読む
+  --add-check <項目>         チェックリストに項目を足す（同じ名前があれば足さない。何度でも書ける）
+  --check <項目>             項目にチェックを付ける（名前か id。何度でも書ける）
+  --to・--project・--deadline・--priority・--points
+                             add と同じ。--project・--deadline・--priority・--points は none で外す
+  --keep-existing            すでに値がある締切・優先度・工数・プロジェクトは変えない
+  --if-unchanged-since <updatedAt>
+                             読んだときの updatedAt と今が違えば、何も変えずに失敗する（done でも使える）
 
 共通：
+  --json                     結果を JSON で出す（add・list・show・update・done・projects）
   --server <URL>             接続する Worker（省くと環境変数 NAGI_SERVER、なければ本番）
   -h, --help                 この説明（nagi help、nagi add --help でも同じ）
   -V, --version              版
@@ -63,11 +81,15 @@ list の指定：
 pub struct AddArgs {
     pub title: String,
     pub memo: String,
+    /// メモをファイルから読む（外から拾った文章を、シェルの引数に入れずに渡すため）
+    pub memo_file: Option<String>,
     pub to: Option<String>,
     pub project: Option<String>,
     pub deadline: Option<String>,
     pub priority: Option<String>,
     pub points: Option<String>,
+    /// 一緒に作るチェックリストの項目
+    pub add_checks: Vec<String>,
     pub json: bool,
 }
 
@@ -80,6 +102,8 @@ pub enum ListName {
     Upcoming,
     Later,
     Completed,
+    /// 未完了のすべてと、直近に完了したもの
+    All,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -90,12 +114,52 @@ pub struct ListArgs {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct ShowArgs {
+    pub id: String,
+    pub json: bool,
+}
+
+/// 既存のタスクへの変更。足すもの（メモの追記・チェックリストの項目）と、属性の設定だけ
+/// （タイトルの書き換え・メモの置き換え・チェックを外す・削除は、ここからはできない）
+#[derive(Debug, Default, PartialEq, Eq)]
+pub struct UpdateArgs {
+    pub id: String,
+    pub append_memo: Option<String>,
+    /// 追記する文字をファイルから読む
+    pub append_memo_file: Option<String>,
+    pub add_checks: Vec<String>,
+    /// チェックを付ける項目（名前か id）
+    pub checks: Vec<String>,
+    pub to: Option<String>,
+    pub project: Option<String>,
+    pub deadline: Option<String>,
+    pub priority: Option<String>,
+    pub points: Option<String>,
+    /// すでに値がある属性（締切・優先度・工数・プロジェクト）は変えない
+    pub keep_existing: bool,
+    /// 読んだときの updatedAt。今の値と違えば（ほかで変更されていたら）、何も変えない
+    pub if_unchanged_since: Option<String>,
+    pub json: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct DoneArgs {
+    pub id: String,
+    pub if_unchanged_since: Option<String>,
+    pub json: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Tui,
     Help,
     Version,
     Add(AddArgs),
     List(ListArgs),
+    Show(ShowArgs),
+    Update(UpdateArgs),
+    Done(DoneArgs),
+    Projects { json: bool },
     Login,
     Logout,
 }
@@ -107,9 +171,49 @@ pub struct Invocation {
 }
 
 /// 値を取る指定
-const VALUE_FLAGS: [&str; 8] = [
-    "server", "memo", "to", "project", "deadline", "priority", "points", "days",
+const VALUE_FLAGS: [&str; 14] = [
+    "server",
+    "memo",
+    "to",
+    "project",
+    "deadline",
+    "priority",
+    "points",
+    "days",
+    "append-memo",
+    "memo-file",
+    "append-memo-file",
+    "add-check",
+    "check",
+    "if-unchanged-since",
 ];
+/// 値を取らない指定
+const SWITCHES: [&str; 4] = ["json", "help", "version", "keep-existing"];
+
+/// 指定の値を1つ取り出す（同じ指定が重なっていたら、最後のものを使う）
+fn take(values: &mut Vec<(&str, String)>, name: &str) -> Option<String> {
+    take_all(values, name).pop()
+}
+
+/// 指定の値をすべて取り出す（渡した順。何度も書ける指定のため）
+fn take_all(values: &mut Vec<(&str, String)>, name: &str) -> Vec<String> {
+    let mut taken = Vec::new();
+    values.retain(|(flag, value)| {
+        if *flag == name {
+            taken.push(value.clone());
+        }
+        *flag != name
+    });
+    taken
+}
+
+/// タスクの id を1つだけ受け取る
+fn single_id(command: &str, ids: &[&str]) -> Result<String, String> {
+    match ids {
+        [id] if !id.trim().is_empty() => Ok(id.trim().to_string()),
+        _ => Err(format!("{command} には、タスクの id を1つ渡します")),
+    }
+}
 
 /// 引数を読む。読めなければ、利用者に見せる文言を返す
 pub fn parse(args: &[String]) -> Result<Invocation, String> {
@@ -139,7 +243,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
                         .ok_or(format!("--{name} には値が要ります"))?,
                 };
                 values.push((name, value));
-            } else if ["json", "help", "version"].contains(&name) && inline.is_none() {
+            } else if SWITCHES.contains(&name) && inline.is_none() {
                 switches.push(name);
             } else {
                 return Err(format!("知らない指定です：{arg}"));
@@ -161,15 +265,10 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         });
     }
 
-    let mut take = |name: &str| -> Option<String> {
-        let index = values.iter().rposition(|(flag, _)| *flag == name)?;
-        let value = values.remove(index).1;
-        // 同じ指定が重なっていたら、最後のものを使う
-        values.retain(|(flag, _)| *flag != name);
-        Some(value)
-    };
-    let server = take("server");
+    let values = &mut values;
+    let server = take(values, "server");
     let json = switches.contains(&"json");
+    let keep_existing = switches.contains(&"keep-existing");
     let command = match positionals.split_first() {
         None => Command::Tui,
         Some((&"help", _)) => Command::Help,
@@ -184,12 +283,14 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             }
             Command::Add(AddArgs {
                 title: title.trim().to_string(),
-                memo: take("memo").unwrap_or_default(),
-                to: take("to"),
-                project: take("project"),
-                deadline: take("deadline"),
-                priority: take("priority"),
-                points: take("points"),
+                memo: take(values, "memo").unwrap_or_default(),
+                memo_file: take(values, "memo-file"),
+                to: take(values, "to"),
+                project: take(values, "project"),
+                deadline: take(values, "deadline"),
+                priority: take(values, "priority"),
+                points: take(values, "points"),
+                add_checks: take_all(values, "add-check"),
                 json,
             })
         }
@@ -197,11 +298,11 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             let list = match names {
                 [] => ListName::Open,
                 [name] => list_name(name).ok_or(format!(
-                    "知らないリストです：{name}（inbox・today・upcoming・later・completed）"
+                    "知らないリストです：{name}（inbox・today・upcoming・later・completed・all）"
                 ))?,
                 _ => return Err("list に渡せるリストは1つです".to_string()),
             };
-            let days = match take("days") {
+            let days = match take(values, "days") {
                 None => DEFAULT_COMPLETED_DAYS,
                 Some(text) => text
                     .parse::<i64>()
@@ -211,10 +312,35 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             };
             Command::List(ListArgs { list, days, json })
         }
+        Some((&"show", ids)) => Command::Show(ShowArgs {
+            id: single_id("show", ids)?,
+            json,
+        }),
+        Some((&"update", ids)) => Command::Update(UpdateArgs {
+            id: single_id("update", ids)?,
+            append_memo: take(values, "append-memo"),
+            append_memo_file: take(values, "append-memo-file"),
+            add_checks: take_all(values, "add-check"),
+            checks: take_all(values, "check"),
+            to: take(values, "to"),
+            project: take(values, "project"),
+            deadline: take(values, "deadline"),
+            priority: take(values, "priority"),
+            points: take(values, "points"),
+            keep_existing,
+            if_unchanged_since: take(values, "if-unchanged-since"),
+            json,
+        }),
+        Some((&"done", ids)) => Command::Done(DoneArgs {
+            id: single_id("done", ids)?,
+            if_unchanged_since: take(values, "if-unchanged-since"),
+            json,
+        }),
+        Some((&"projects", [])) => Command::Projects { json },
         Some((&"login", [])) => Command::Login,
         Some((&"logout", [])) => Command::Logout,
-        Some((&("login" | "logout"), _)) => {
-            return Err("login と logout には、ほかの引数を渡せません".to_string());
+        Some((&("projects" | "login" | "logout"), _)) => {
+            return Err("projects・login・logout には、ほかの引数を渡せません".to_string());
         }
         Some((other, _)) => return Err(format!("知らないコマンドです：{other}")),
     };
@@ -222,8 +348,11 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     if let Some((name, _)) = values.first() {
         return Err(format!("ここでは使えない指定です：--{name}"));
     }
-    if json && !matches!(command, Command::Add(_) | Command::List(_)) {
-        return Err("--json は add と list で使えます".to_string());
+    if json && matches!(command, Command::Tui | Command::Login | Command::Logout) {
+        return Err("--json は、ここでは使えません".to_string());
+    }
+    if keep_existing && !matches!(command, Command::Update(_)) {
+        return Err("--keep-existing は update で使えます".to_string());
     }
     Ok(Invocation { server, command })
 }
@@ -235,7 +364,8 @@ fn list_name(name: &str) -> Option<ListName> {
         "upcoming" | "予定" => ListName::Upcoming,
         "later" | "あとで" => ListName::Later,
         "completed" | "完了" => ListName::Completed,
-        "open" | "all" => ListName::Open,
+        "open" => ListName::Open,
+        "all" | "すべて" => ListName::All,
         _ => return None,
     })
 }
@@ -454,8 +584,9 @@ fn task_json(store: &Store, task: &Task) -> Value {
         "priority": task.priority,
         "points": task.points,
         "inProgress": task.is_in_progress(),
-        "checklist": task.checklist.iter().map(|item| json!({ "title": item.title, "done": item.done })).collect::<Vec<_>>(),
+        "checklist": task.checklist.iter().map(|item| json!({ "id": item.id, "title": item.title, "done": item.done })).collect::<Vec<_>>(),
         "createdAt": task.created_at,
+        "updatedAt": task.updated_at,
         "completedAt": task.completed_at,
     })
 }
@@ -500,6 +631,169 @@ fn task_line(store: &Store, task: &Task) -> String {
     }
 }
 
+// --- 既存のタスクへ足す変更の計算 --------------------------------------------------------
+
+/// メモに追記したあとのメモ。空の行をはさんで後ろに足す。追記する文字がすでにメモの中にあれば、
+/// 足さない（None。同じ追記をやり直しても重ならないように）
+fn appended_memo(memo: &str, addition: &str) -> Option<String> {
+    let addition = addition.trim();
+    if addition.is_empty() || memo.contains(addition) {
+        return None;
+    }
+    let body = memo.trim_end();
+    Some(if body.is_empty() {
+        addition.to_string()
+    } else {
+        format!("{body}\n\n{addition}")
+    })
+}
+
+/// チェックリストに項目を足す。同じ名前（全角・半角と大文字・小文字の違いは吸収）の項目があれば足さない
+fn with_added_checks(
+    checklist: &[ChecklistItem],
+    titles: &[String],
+    mut new_id: impl FnMut() -> String,
+) -> Vec<ChecklistItem> {
+    let mut next = checklist.to_vec();
+    for title in titles {
+        let title = title.trim();
+        if title.is_empty() || next.iter().any(|item| fold(&item.title) == fold(title)) {
+            continue;
+        }
+        next.push(ChecklistItem {
+            id: new_id(),
+            title: title.to_string(),
+            done: false,
+        });
+    }
+    next
+}
+
+/// 項目（名前か id で指す）にチェックを付ける。見つからなければ失敗。外すことはしない
+fn with_checked(
+    checklist: &[ChecklistItem],
+    keys: &[String],
+) -> Result<Vec<ChecklistItem>, String> {
+    let mut next = checklist.to_vec();
+    for key in keys {
+        let matches =
+            |item: &ChecklistItem| item.id == *key || fold(&item.title) == fold(key.trim());
+        // 同じ名前の項目がいくつかあれば、まだチェックの付いていないものから
+        let index = next
+            .iter()
+            .position(|item| matches(item) && !item.done)
+            .or_else(|| next.iter().position(matches))
+            .ok_or(format!("チェックリストに、その項目がありません：{key}"))?;
+        next[index].done = true;
+    }
+    Ok(next)
+}
+
+/// 文字を、引数かファイルのどちらかから受け取る（両方は渡せない）。
+/// ファイルから渡すのは、外から拾った文章を、シェルの引数に入れないため（`$(…)` などが実行されないように）
+fn text_or_file(
+    text: Option<&str>,
+    file: Option<&str>,
+    flag: &str,
+) -> Result<Option<String>, String> {
+    match (text, file) {
+        (Some(_), Some(_)) => Err(format!(
+            "--{flag} と --{flag}-file は、どちらか一方だけ渡します"
+        )),
+        (Some(text), None) => Ok(Some(text.to_string())),
+        (None, Some(path)) => std::fs::read_to_string(path)
+            .map(|text| Some(text.trim_end().to_string()))
+            .map_err(|error| format!("ファイルを読めません：{path}（{error}）")),
+        (None, None) => Ok(None),
+    }
+}
+
+/// 「none」（なし）なら None、それ以外は読んだ値
+fn optional<T>(
+    text: &str,
+    read: impl FnOnce(&str) -> Result<T, String>,
+) -> Result<Option<T>, String> {
+    match text {
+        "none" | "なし" => Ok(None),
+        other => read(other).map(Some),
+    }
+}
+
+/// id のタスク（削除済みは、ないものとして扱う）
+fn find_task(store: &Store, id: &str) -> Result<Task, String> {
+    store
+        .replica
+        .task(id)
+        .filter(|task| task.deleted_at.is_none())
+        .cloned()
+        .ok_or(format!("タスクが見つかりません：{id}"))
+}
+
+/// 読んだときから変わっていないかを確かめる（ほかの画面での手動の変更を、上書きしないため）
+fn ensure_unchanged(task: &Task, expected: Option<&str>) -> Result<(), String> {
+    match expected {
+        Some(expected) if expected != task.updated_at => Err(format!(
+            "ほかで変更されています（今の updatedAt は {}）。読み直してから、もう一度実行してください",
+            task.updated_at
+        )),
+        _ => Ok(()),
+    }
+}
+
+/// 人が読むための詳細
+fn task_detail(store: &Store, task: &Task) -> String {
+    let today = &store.today;
+    let mut lines = vec![task.title.clone()];
+    let state = if task.is_in_progress() {
+        "（進行中）"
+    } else {
+        ""
+    };
+    lines.push(format!("  リスト：{}{state}", list_of(task).1));
+    if let Some(on) = &task.scheduled_on {
+        lines.push(format!(
+            "  予定：{}",
+            format_short_date_with_weekday(on, today)
+        ));
+    }
+    if let Some(on) = &task.deadline_on {
+        lines.push(format!(
+            "  締切：{}（{}）",
+            format_short_date_with_weekday(on, today),
+            deadline_status(on, today).1
+        ));
+    }
+    if let Some(project) = task
+        .project_id
+        .as_deref()
+        .and_then(|id| store.replica.project(id))
+        .filter(|project| project.deleted_at.is_none())
+    {
+        lines.push(format!("  プロジェクト：{}", project.name));
+    }
+    if let Some(priority) = task.priority {
+        lines.push(format!("  優先度：{}", priority.label()));
+    }
+    if let Some(points) = task.points {
+        lines.push(format!("  工数：{points}"));
+    }
+    lines.push(format!("  id：{}", task.id));
+    lines.push(format!("  更新：{}", task.updated_at));
+    if !task.memo.trim().is_empty() {
+        lines.push("メモ：".to_string());
+        lines.extend(task.memo.lines().map(|line| format!("  {line}")));
+    }
+    if !task.checklist.is_empty() {
+        lines.push("チェックリスト：".to_string());
+        lines.extend(
+            task.checklist
+                .iter()
+                .map(|item| format!("  {} {}", if item.done { "☑" } else { "☐" }, item.title)),
+        );
+    }
+    lines.join("\n")
+}
+
 // --- コマンド ---------------------------------------------------------------------------
 
 fn add(config: &Config, args: AddArgs) -> Result<(), String> {
@@ -521,10 +815,16 @@ fn add(config: &Config, args: AddArgs) -> Result<(), String> {
     };
     let priority = args.priority.as_deref().map(parse_priority).transpose()?;
     let points = args.points.as_deref().map(parse_points).transpose()?;
+    let memo = text_or_file(
+        Some(args.memo.as_str()).filter(|memo| !memo.is_empty()),
+        args.memo_file.as_deref(),
+        "memo",
+    )?
+    .unwrap_or_default();
 
     let done = session.store.add_task(AddTask {
         title: args.title,
-        memo: args.memo,
+        memo,
         project_id,
         to,
     });
@@ -544,6 +844,18 @@ fn add(config: &Config, args: AddArgs) -> Result<(), String> {
     }
     if points.is_some() {
         accepted(session.store.set_points(&ids, points))?;
+    }
+    if !args.add_checks.is_empty() {
+        let store = &mut session.store;
+        let checklist = with_added_checks(&[], &args.add_checks, || store.new_id());
+        accepted(store.update_task(
+            &id,
+            TaskChanges {
+                checklist: Some(checklist),
+                ..Default::default()
+            },
+            PerformOptions::default(),
+        ))?;
     }
     session.flush()?;
 
@@ -573,11 +885,11 @@ fn list(config: &Config, args: ListArgs) -> Result<(), String> {
         (ListName::Upcoming, "予定", &lists.scheduled),
         (ListName::Later, "あとで", &lists.later),
     ] {
-        if args.list == ListName::Open || args.list == name {
+        if matches!(args.list, ListName::Open | ListName::All) || args.list == name {
             groups.push((label.to_string(), ids.iter().collect()));
         }
     }
-    if args.list == ListName::Completed {
+    if matches!(args.list, ListName::Completed | ListName::All) {
         // 今日を含む days 日ぶん（論理日付）
         let since = add_days(&store.today, -(args.days - 1));
         groups.push((
@@ -617,6 +929,145 @@ fn list(config: &Config, args: ListArgs) -> Result<(), String> {
     }
     if !any {
         emit!("タスクはありません");
+    }
+    Ok(())
+}
+
+fn show(config: &Config, args: ShowArgs) -> Result<(), String> {
+    let mut session = Session::open(config)?;
+    session.sync()?;
+    let store = &session.store;
+    let task = find_task(store, &args.id)?;
+    if args.json {
+        emit!("{}", task_json(store, &task));
+    } else {
+        emit!("{}", task_detail(store, &task));
+    }
+    Ok(())
+}
+
+fn update(config: &Config, args: UpdateArgs) -> Result<(), String> {
+    let mut session = Session::open(config)?;
+    session.sync()?;
+    let store = &mut session.store;
+    let task = find_task(store, &args.id)?;
+    ensure_unchanged(&task, args.if_unchanged_since.as_deref())?;
+    // 変える前に、指定をすべて確かめる（途中まで変えて止まらないように）
+    let today = store.today.clone();
+    let keep = args.keep_existing;
+    let mut changes = TaskChanges::default();
+    let addition = text_or_file(
+        args.append_memo.as_deref(),
+        args.append_memo_file.as_deref(),
+        "append-memo",
+    )?;
+    if let Some(addition) = &addition {
+        changes.memo = appended_memo(&task.memo, addition);
+    }
+    if !args.add_checks.is_empty() || !args.checks.is_empty() {
+        let added = with_added_checks(&task.checklist, &args.add_checks, || store.new_id());
+        changes.checklist = Some(with_checked(&added, &args.checks)?);
+    }
+    if let Some(text) = &args.priority
+        && !(keep && task.priority.is_some())
+    {
+        changes.priority = Some(optional(text, parse_priority)?);
+    }
+    if let Some(text) = &args.points
+        && !(keep && task.points.is_some())
+    {
+        changes.points = Some(optional(text, parse_points)?);
+    }
+    if let Some(name) = &args.project
+        && !(keep && task.project_id.is_some())
+    {
+        changes.project_id = Some(optional(name, |name| find_project(store, name))?);
+    }
+    let deadline = match &args.deadline {
+        Some(text) if !(keep && task.deadline_on.is_some()) => {
+            Some(optional(text, |text| parse_date(text, &today, "締切"))?)
+        }
+        _ => None,
+    };
+    let to = args
+        .to
+        .as_deref()
+        .map(|text| parse_destination(text, &today))
+        .transpose()?;
+
+    let ids = [task.id.clone()];
+    if !changes.is_empty() {
+        accepted(store.update_task(&task.id, changes, PerformOptions::default()))?;
+    }
+    if let Some(deadline) = &deadline {
+        accepted(store.set_deadline(&ids, deadline.as_deref()))?;
+    }
+    if let Some(to) = to {
+        accepted(store.move_tasks(&ids, to))?;
+    }
+    let changed = session.store.pending_count() > 0;
+    session.flush()?;
+
+    let store = &session.store;
+    let after = find_task(store, &args.id)?;
+    if args.json {
+        emit!("{}", task_json(store, &after));
+    } else if changed {
+        emit!("更新しました：{}", after.title);
+    } else {
+        emit!("変更はありません：{}", after.title);
+    }
+    Ok(())
+}
+
+fn done(config: &Config, args: DoneArgs) -> Result<(), String> {
+    let mut session = Session::open(config)?;
+    session.sync()?;
+    let task = find_task(&session.store, &args.id)?;
+    ensure_unchanged(&task, args.if_unchanged_since.as_deref())?;
+    let already = task.is_completed();
+    if !already {
+        accepted(session.store.complete_tasks(std::slice::from_ref(&task.id)))?;
+        session.flush()?;
+    }
+    let store = &session.store;
+    let after = find_task(store, &args.id)?;
+    if args.json {
+        emit!("{}", task_json(store, &after));
+    } else if already {
+        emit!("すでに完了しています：{}", after.title);
+    } else {
+        emit!("完了にしました：{}", after.title);
+    }
+    Ok(())
+}
+
+/// プロジェクトの一覧（アーカイブ済み・削除済みを除く。作成順）
+fn projects(config: &Config, json: bool) -> Result<(), String> {
+    let mut session = Session::open(config)?;
+    session.sync()?;
+    let store = &session.store;
+    let lists = store.lists();
+    let rows: Vec<(&String, &str, usize)> = lists
+        .projects
+        .iter()
+        .filter_map(|id| {
+            let project = store.replica.project(id)?;
+            Some((id, project.name.as_str(), lists.project(id).open_count()))
+        })
+        .collect();
+    if json {
+        let values: Vec<Value> = rows
+            .iter()
+            .map(|(id, name, open)| json!({ "id": id, "name": name, "open": open }))
+            .collect();
+        emit!("{}", Value::Array(values));
+    } else if rows.is_empty() {
+        emit!("プロジェクトはありません");
+    } else {
+        for (_, name, open) in rows {
+            emit!("{name}（未完了 {open}）");
+        }
     }
     Ok(())
 }
@@ -676,6 +1127,10 @@ pub fn run(config: &Config, command: Command) -> ExitCode {
     let result = match command {
         Command::Add(args) => add(config, args),
         Command::List(args) => list(config, args),
+        Command::Show(args) => show(config, args),
+        Command::Update(args) => update(config, args),
+        Command::Done(args) => done(config, args),
+        Command::Projects { json } => projects(config, json),
         Command::Login => login(config),
         Command::Logout => logout(config),
         Command::Tui | Command::Help | Command::Version => Ok(()),
@@ -744,12 +1199,29 @@ mod tests {
             Command::Add(AddArgs {
                 title: "PR のレビュー".into(),
                 memo: "Slack のスレッド\nhttps://example.com".into(),
+                memo_file: None,
                 to: Some("today".into()),
                 project: Some("AIPR".into()),
                 deadline: Some("金曜".into()),
                 priority: Some("high".into()),
                 points: Some("3".into()),
+                add_checks: vec![],
                 json: true,
+            })
+        );
+        // チェックリストの項目は、何度でも書ける（書いた順）
+        assert_eq!(
+            command(&[
+                "add",
+                "納品",
+                "--add-check",
+                "見積もり",
+                "--add-check=請求書"
+            ]),
+            Command::Add(AddArgs {
+                title: "納品".into(),
+                add_checks: vec!["見積もり".into(), "請求書".into()],
+                ..Default::default()
             })
         );
         // -- のあとは、- で始まっていてもタイトル
@@ -801,6 +1273,167 @@ mod tests {
         assert!(parsed(&["list", "somewhere"]).is_err());
         assert!(parsed(&["list", "--days", "0"]).is_err());
         assert!(parsed(&["list", "--memo", "x"]).is_err());
+    }
+
+    #[test]
+    fn show_と_update_と_done_は_id_と指定を読む() {
+        assert_eq!(
+            command(&["show", "0199-aaaa", "--json"]),
+            Command::Show(ShowArgs {
+                id: "0199-aaaa".into(),
+                json: true
+            })
+        );
+        assert_eq!(
+            command(&[
+                "update",
+                "0199-aaaa",
+                "--append-memo",
+                "10/6 Slack で再依頼",
+                "--add-check",
+                "見積もりを送る",
+                "--check",
+                "下書き",
+                "--check",
+                "c-2",
+                "--points",
+                "3",
+                "--deadline=none",
+                "--keep-existing",
+                "--if-unchanged-since",
+                "2026-10-06T01:02:03.000Z",
+            ]),
+            Command::Update(UpdateArgs {
+                id: "0199-aaaa".into(),
+                append_memo: Some("10/6 Slack で再依頼".into()),
+                add_checks: vec!["見積もりを送る".into()],
+                checks: vec!["下書き".into(), "c-2".into()],
+                points: Some("3".into()),
+                deadline: Some("none".into()),
+                keep_existing: true,
+                if_unchanged_since: Some("2026-10-06T01:02:03.000Z".into()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            command(&["done", "0199-aaaa"]),
+            Command::Done(DoneArgs {
+                id: "0199-aaaa".into(),
+                if_unchanged_since: None,
+                json: false
+            })
+        );
+        assert_eq!(
+            command(&["projects", "--json"]),
+            Command::Projects { json: true }
+        );
+        assert_eq!(
+            command(&["list", "all"]),
+            Command::List(ListArgs {
+                list: ListName::All,
+                days: DEFAULT_COMPLETED_DAYS,
+                json: false
+            })
+        );
+        // メモは、ファイルからも渡せる
+        assert_eq!(
+            command(&["add", "x", "--memo-file", "memo.txt"]),
+            Command::Add(AddArgs {
+                title: "x".into(),
+                memo_file: Some("memo.txt".into()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            command(&["update", "a", "--append-memo-file=add.txt"]),
+            Command::Update(UpdateArgs {
+                id: "a".into(),
+                append_memo_file: Some("add.txt".into()),
+                ..Default::default()
+            })
+        );
+        assert_eq!(
+            text_or_file(Some("直接"), None, "memo"),
+            Ok(Some("直接".to_string()))
+        );
+        assert!(text_or_file(Some("直接"), Some("memo.txt"), "memo").is_err());
+        assert!(text_or_file(None, Some("/nonexistent/memo.txt"), "memo").is_err());
+        assert_eq!(text_or_file(None, None, "memo"), Ok(None));
+        // id は1つだけ。update で使えない指定（メモの置き換えなど）は断る
+        assert!(parsed(&["update"]).is_err());
+        assert!(parsed(&["done", "a", "b"]).is_err());
+        assert!(parsed(&["update", "a", "--memo", "置き換え"]).is_err());
+        assert!(parsed(&["add", "x", "--keep-existing"]).is_err());
+        assert!(parsed(&["show", "a", "--check", "x"]).is_err());
+    }
+
+    fn item(id: &str, title: &str, done: bool) -> ChecklistItem {
+        ChecklistItem {
+            id: id.into(),
+            title: title.into(),
+            done,
+        }
+    }
+
+    #[test]
+    fn メモの追記は後ろに足し_同じ文字は重ねない() {
+        assert_eq!(appended_memo("", " 追記 "), Some("追記".into()));
+        assert_eq!(
+            appended_memo("元のメモ\n\n", "10/6 再依頼"),
+            Some("元のメモ\n\n10/6 再依頼".into())
+        );
+        assert_eq!(
+            appended_memo("元のメモ\n\n10/6 再依頼", "10/6 再依頼"),
+            None
+        );
+        assert_eq!(appended_memo("元のメモ", "  "), None);
+    }
+
+    #[test]
+    fn チェックリストは足すことと_チェックを付けることだけができる() {
+        let list = [item("a", "見積もり", true), item("b", "請求書", false)];
+        let mut next_id = 0;
+        let added = with_added_checks(
+            &list,
+            &[
+                "請求書".into(),
+                " 納品 ".into(),
+                "ＮＯＵＨＩＮ".into(),
+                "nouhin".into(),
+            ],
+            || {
+                next_id += 1;
+                format!("new-{next_id}")
+            },
+        );
+        // 同じ名前（全角・半角の違いも）は足さない。元の項目とチェックはそのまま
+        assert_eq!(
+            added,
+            vec![
+                item("a", "見積もり", true),
+                item("b", "請求書", false),
+                item("new-1", "納品", false),
+                item("new-2", "ＮＯＵＨＩＮ", false),
+            ]
+        );
+        // 名前でも id でも指せる。チェック済みはそのまま（外さない）
+        let checked = with_checked(
+            &added,
+            &["請求書".into(), "new-1".into(), "見積もり".into()],
+        );
+        assert_eq!(
+            checked.unwrap().iter().map(|i| i.done).collect::<Vec<_>>(),
+            vec![true, true, true, false]
+        );
+        assert!(with_checked(&added, &["ない項目".into()]).is_err());
+    }
+
+    #[test]
+    fn none_は外す指定として読む() {
+        assert_eq!(optional("none", parse_points), Ok(None));
+        assert_eq!(optional("なし", parse_priority), Ok(None));
+        assert_eq!(optional("5", parse_points), Ok(Some(5)));
+        assert!(optional("4", parse_points).is_err());
     }
 
     #[test]
