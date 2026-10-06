@@ -1,6 +1,6 @@
 # nagi
 
-自分専用の TODO アプリ。ターミナルで動く TUI から、キーボードだけで素早くタスクを片付ける。
+ターミナルで使う TODO アプリ。TUI から、キーボードだけで素早くタスクを片付ける。データは利用者ごとに分かれていて、ほかの利用者のタスクは見えない。
 
 名前は凪（なぎ）から。慌ただしい仕事のタスクを、静かに片付けていく道具。
 
@@ -25,15 +25,35 @@ Worker がすべてのリクエストを受ける（画面のファイルは配�
 | 口 | 内容 |
 | --- | --- |
 | `POST /auth/device/start` | ログインを始める（GitHub のデバイスフロー）。ログイン不要 |
-| `POST /auth/device/token` | 承認されたかを1回聞く。承認されていれば、セッションのトークンを返す |
+| `POST /auth/device/token` | 承認されたかを1回聞く。承認されていれば、セッションのトークンと利用者の ID を返す |
 | `POST /auth/logout` | `Authorization: Bearer <token>` のセッションを消す（204） |
-| `GET /api/session` | ログインしているかを確かめる（`{"authenticated":true}`） |
+| `GET /api/session` | ログインしているかと、だれとしてかを確かめる（`{"authenticated":true,"userId":"…"}`） |
 | `POST /api/sync`・`POST /api/mutate` | 差分の取得と、操作の書き込み。形は `src/shared/api.ts`・`src/shared/mutations.ts` |
 
 - `/api/*` には `Authorization: Bearer <token>` が要る。なし・無効・期限切れは 401 `{"error":"unauthorized"}`。セッションの期限は 1 年で、使うたびに（1 日 1 回まで）延びる。D1 にはトークンの SHA-256 だけを置く
 - 書き込み（POST）は、本文が JSON（`Content-Type: application/json`）でなければ 415。`Origin` は、付いているときだけ Worker の URL と同じかを確かめる（違えば 403）。ブラウザは POST に必ず `Origin` を付けるので、別のサイトからの書き込みは止まり、`Origin` を付けない TUI は通る
 - `/api/sync` と `/api/mutate` には `X-Api-Version`（`src/shared/api.ts` の `API_VERSION`）を付ける（違えば 409）
 - それ以外の URL は 404 `{"error":"not_found"}`
+
+### 利用者
+
+データは利用者ごとに分かれる。タスク・プロジェクト・同期の通し番号（seq）・日付の切り替え・セッションは、どれも利用者のもので、`/api/*` はログインしている利用者の行だけを読み書きする（ほかの利用者の行は、ID を知っていても、読めず・書けず・検証にも入らない。`src/worker/sync/isolation.test.ts` で確かめている）。利用者は、GitHub のアカウントで初めてログインしたときにできる。
+
+だれがログインできるかは、`wrangler.jsonc` の `vars` で決める（`src/worker/auth/users.ts`）。
+
+| 設定 | 意味 |
+| --- | --- |
+| `OWNER_GITHUB_USER_ID` | 持ち主の GitHub ユーザー ID。利用者を分ける前（`migrations/0004` より前）からあったデータは、この人のものになる。いつでもログインできる |
+| `SIGNUP` | `allowlist`（既定）なら、持ち主と `ALLOWED_GITHUB_USER_IDS` の人だけがログインできる。`open` なら、GitHub のアカウントがあればだれでも登録できる |
+| `ALLOWED_GITHUB_USER_IDS` | `allowlist` のときにログインできる GitHub ユーザー ID（カンマ区切り）。ID は `https://api.github.com/users/<ユーザー名>` の `id` |
+
+- 人を足すときは、`ALLOWED_GITHUB_USER_IDS` に ID を足して main に入れる（デプロイされる）。その人が `nagi login` すると、空の状態から使い始められる
+- 一覧から外した人は、ログインできなくなり、すでに出ているセッションも、次に使ったときに消える（`/api/*` は、セッションの持ち主がいまの設定でも使える人かを毎回確かめる）。データは残るので、一覧に戻せば、ログインし直して続きから使える
+- 設定が正しくないと（ID が数でない、`SIGNUP` が知らない値、だれもログインできない、など）、ログインも `/api/*` も、だれも通さない（500 `{"error":"config"}`）
+- 持ち主の行は、最初にログインした持ち主のもののままで、あとから `OWNER_GITHUB_USER_ID` を変えても移らない。持ち主に設定する前に、その人が許可した人として登録されていると、あとから設定しても持ち主にはならない（その人の利用者は、すでに別にあるため）
+- TUI の手元の複製は、いまはサーバーごとに 1 つで、利用者ごとには分かれていない。同じ PC で別の GitHub アカウントに入り直すときは、先に `nagi logout` する（手元の複製が消える）。ログアウトせずに入り直すと、前のアカウントの行が手元に残って混ざる
+- 日付の切り替えの時刻（午前 4 時）は、いまは全員が `APP_TIMEZONE`（日本時間）で決まる
+- 手元の開発（`AUTH_DISABLED`）では、持ち主として動く
 
 ### ログイン（GitHub のデバイスフロー）
 
@@ -49,12 +69,12 @@ GitHub とやり取りするのは Worker だけで、GitHub のアクセスト�
    | `slow_down` | 聞くのが速すぎる。次からは `interval`（秒）あける |
    | `expired` | コードの期限が切れた・コードが違う（1 からやり直す） |
    | `denied` | 利用者が GitHub で拒否した |
-   | `forbidden` | 承認されたが、許可していない GitHub ユーザーだった（セッションは作らない） |
-   | `ok` | ログインできた。`token`（セッションのトークン）と `expiresAt`（期限。ISO 8601）が付く |
+   | `forbidden` | 承認されたが、ログインできない GitHub ユーザーだった（利用者もセッションも作らない） |
+   | `ok` | ログインできた。`token`（セッションのトークン）・`expiresAt`（期限。ISO 8601）・`userId`（利用者の ID）が付く |
 
 4. そのあとは、`Authorization: Bearer <token>` を付けて `/api/*` を呼ぶ
 
-失敗の応答：設定の不備（`GITHUB_CLIENT_ID`・`ALLOWED_GITHUB_USER_ID`）は 500 `{"error":"config"}`、GitHub とのやり取りの失敗（OAuth App のデバイスフローが無効のときも）は 502 `{"error":"github"}`（理由は Worker のログに残る）、`/auth/device/token` の本文の形が違えば 400 `{"error":"invalid_request"}`。
+失敗の応答：設定の不備（`GITHUB_CLIENT_ID`、だれがログインできるかの `OWNER_GITHUB_USER_ID`・`SIGNUP`・`ALLOWED_GITHUB_USER_IDS`）は 500 `{"error":"config"}`、GitHub とのやり取りの失敗（OAuth App のデバイスフローが無効のときも）は 502 `{"error":"github"}`（理由は Worker のログに残る）、`/auth/device/token` の本文の形が違えば 400 `{"error":"invalid_request"}`。
 
 ## TUI
 
@@ -198,7 +218,7 @@ cargo fmt --check
 
 ## 事前準備（本番に出すまでに1回だけ）
 
-1. GitHub に `myksyut/nagi`（private）を作る（済み）
+1. GitHub に `myksyut/nagi` を作る（済み。公開のリポジトリ）
 2. Cloudflare の workers.dev のサブドメインを確かめる（済み）。サブドメインは `wizard1026miya` で、Worker の URL は `https://nagi.wizard1026miya.workers.dev` になる。プランは、まず無料のまま出す。1回の処理の CPU 時間（10ms）などの制限に当たったら（ダッシュボードやログに「exceeded CPU」のエラーが出る、同期が失敗するなど）、Workers Paid（月 $5）に切り替える
 3. M7 の wrangler を Cloudflare に接続する（済み）。M7 には画面がないので、デバイスコードでログインする。権限は nagi のデプロイに要るものだけに絞る
 
@@ -221,9 +241,9 @@ cargo fmt --check
    - Authorization callback URL：`https://nagi.wizard1026miya.workers.dev/auth/callback`（デバイスフローでは使わないが、必須の欄なのでそのまま残す）
    - **「Enable Device Flow」にチェックを入れて「Update application」を押す**。TUI のログインに要る。入れていないと、`/auth/device/start` が 502 `{"error":"github"}` を返し、Worker のログに `device_flow_disabled` が残る
    - Client secret は不要になった（デバイスフローでは使わない。Worker にも渡さない）
-6. Worker の設定値を入れる（どちらも `wrangler.jsonc` の `vars` に書いてある。シークレットはない）
+6. Worker の設定値を入れる（どれも `wrangler.jsonc` の `vars` に書いてある。シークレットはない）
    - `GITHUB_CLIENT_ID`：OAuth App の Client ID。秘密ではないので Git に入れてよい。ダッシュボードで入れた普通の変数は `wrangler deploy` のたびに上書きされるので、ここに書く
-   - `ALLOWED_GITHUB_USER_ID`：ログインを許可する GitHub ユーザー ID。`51072711`（myksyut）を書いてある
+   - `OWNER_GITHUB_USER_ID`・`SIGNUP`・`ALLOWED_GITHUB_USER_IDS`：だれがログインできるか（下の「利用者」）。持ち主に `51072711`（myksyut）を書いてある
    - 以前の Web 版で Cloudflare のダッシュボード（Worker `nagi` の Settings → Variables and Secrets）に入れた Secret `GITHUB_CLIENT_SECRET` は、もう使わないので消してよい
 
 ## 手元での動かし方
@@ -306,5 +326,7 @@ pnpm release
 中身は `pnpm db:migrate:remote`（本番の D1 にマイグレーション）→ `wrangler deploy`。`pnpm deploy` は pnpm の組み込みコマンドとぶつかるので使わない。
 
 出す前に中身だけ確かめたいときは、`pnpm exec wrangler deploy --dry-run` を実行する（Cloudflare には何も送らない）。
+
+**前の版に戻すとき**：`migrations/0004`（利用者）より前の版の Worker は、いまの D1 では動かない。セッションの表の名前を `user_sessions` に変えてあり、古い版はセッションを読めずに、どの口も 500 になる（古い版は利用者を区別しないので、動いてしまうと全員の行が全員に見える。それを防ぐため）。0004 より前の版へ戻すなら、D1 も Time Travel で 0004 を当てる前へ戻す（そのあとに書いたデータは消える）。0004 を当ててから新しい Worker が出るまでの数秒も、同じ理由で 500 になる。
 
 **TUI**：`tui/` を変えて main にマージすると、GitHub Actions が Mac（Apple シリコン）と Linux（x86_64）でビルドして、GitHub の Releases に出す（`.github/workflows/tui.yml`）。タグは `tui-v0.1.<実行の番号>` で、ファイルは `nagi-aarch64-apple-darwin.tar.gz` と `nagi-x86_64-unknown-linux-gnu.tar.gz`（中身はバイナリ `nagi`）。PR では、`tui/` を変えたときにビルドできるかだけを確かめる。

@@ -3,8 +3,9 @@ import { exports } from "cloudflare:workers";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/client";
-import { sessions } from "../db/schema";
+import { OWNER_USER_ID, sessions } from "../db/schema";
 import app from "../index";
+import { insertRawUser, resetSyncTables } from "../test/sync-app";
 import { sha256Hex } from "./crypto";
 import { isAuthDisabled } from "./middleware";
 import { generateSessionToken, SESSION_TTL_MS } from "./session";
@@ -13,15 +14,19 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const SESSION_URL = "https://nagi.example.com/api/session";
 
 beforeEach(async () => {
-  await env.DB.prepare("DELETE FROM sessions").run();
+  await env.DB.prepare("DELETE FROM user_sessions").run();
 });
 
-/** lastExtendedAt に延ばしたばかりのセッションを直に作り、そのトークンを返す */
-async function insertSession(lastExtendedAt: number = Date.now()): Promise<string> {
+/** lastExtendedAt に延ばしたばかりのセッション（持ち主は userId）を直に作り、そのトークンを返す */
+async function insertSession(
+  lastExtendedAt: number = Date.now(),
+  userId: string = OWNER_USER_ID,
+): Promise<string> {
   const token = generateSessionToken();
   await getDb(env.DB)
     .insert(sessions)
     .values({
+      userId,
       id: await sha256Hex(token),
       expiresAt: new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
       createdAt: new Date(lastExtendedAt).toISOString(),
@@ -81,7 +86,7 @@ describe("requireSession", () => {
     const res = await getSession({ Authorization: `Bearer ${token}` });
 
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ authenticated: true });
+    expect(await res.json()).toEqual({ authenticated: true, userId: OWNER_USER_ID });
     expect(res.headers.getSetCookie()).toHaveLength(0);
   });
 
@@ -158,7 +163,7 @@ describe("requireSession", () => {
       { ...env, AUTH_DISABLED: "true" },
     );
     expect(res.status).toBe(200);
-    expect(await res.json()).toEqual({ authenticated: true });
+    expect(await res.json()).toEqual({ authenticated: true, userId: OWNER_USER_ID });
   });
 
   it("AUTH_DISABLED でも localhost 以外ならトークンなしは 401", async () => {
@@ -169,4 +174,106 @@ describe("requireSession", () => {
     );
     expect(res.status).toBe(401);
   });
+});
+
+describe("セッションの持ち主が、いまの設定でも使える人か", () => {
+  const db = getDb(env.DB);
+  const sessionOf = (token: string, overrides: Partial<Cloudflare.Env>) =>
+    app.request(
+      SESSION_URL,
+      { headers: { Authorization: `Bearer ${token}` } },
+      { ...env, ...overrides },
+    );
+
+  beforeEach(async () => {
+    // 持ち主のほかの利用者を消し、持ち主はまだログインしたことがない状態（github_user_id が NULL）に戻す
+    await resetSyncTables(db);
+    await env.DB.prepare("UPDATE users SET github_user_id = NULL WHERE id = ?")
+      .bind(OWNER_USER_ID)
+      .run();
+  });
+
+  it("許可した人のセッションは通り、その人の userId が返る", async () => {
+    const userId = await insertRawUser(db, 1002);
+    const token = await insertSession(Date.now(), userId);
+
+    const res = await sessionOf(token, { ALLOWED_GITHUB_USER_IDS: "1002" });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ authenticated: true, userId });
+  });
+
+  it("許可から外した人のセッションは 401 になり、そのセッションは消える。ほかの人のセッションは残る", async () => {
+    const removed = await insertRawUser(db, 1002);
+    const kept = await insertRawUser(db, 1003);
+    const removedToken = await insertSession(Date.now(), removed);
+    const keptToken = await insertSession(Date.now(), kept);
+    const ownerToken = await insertSession();
+    const only1003 = { ALLOWED_GITHUB_USER_IDS: "1003" };
+
+    const res = await sessionOf(removedToken, only1003);
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized" });
+    expect(await storedExpiresAt(removedToken)).toBeUndefined();
+    expect((await sessionOf(keptToken, only1003)).status).toBe(200);
+    expect((await sessionOf(ownerToken, only1003)).status).toBe(200);
+    // 許可し直しても、消えたセッションは戻らない（ログインし直す）
+    expect((await sessionOf(removedToken, { ALLOWED_GITHUB_USER_IDS: "1002,1003" })).status).toBe(
+      401,
+    );
+  });
+
+  it("SIGNUP を open から allowlist に戻すと、一覧にない人のセッションは止まる", async () => {
+    const userId = await insertRawUser(db, 999);
+    const token = await insertSession(Date.now(), userId);
+
+    expect((await sessionOf(token, { SIGNUP: "open" })).status).toBe(200);
+    expect((await sessionOf(token, { SIGNUP: "allowlist" })).status).toBe(401);
+  });
+
+  it("持ち主は、GitHub ユーザーがまだ入っていなくても（利用者を分ける前からのセッション）通る", async () => {
+    const token = await insertSession();
+
+    // OWNER_GITHUB_USER_ID を外して、ほかの人だけを許可していても
+    const res = await sessionOf(token, {
+      OWNER_GITHUB_USER_ID: "",
+      ALLOWED_GITHUB_USER_IDS: "1002",
+    });
+
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ authenticated: true, userId: OWNER_USER_ID });
+  });
+
+  it("持ち主の行に入っている GitHub ユーザーが、設定の持ち主でも許可した人でもなくなったら、止まる", async () => {
+    await env.DB.prepare("UPDATE users SET github_user_id = 1001 WHERE id = ?")
+      .bind(OWNER_USER_ID)
+      .run();
+    const token = await insertSession();
+
+    expect((await sessionOf(token, {})).status).toBe(200);
+    expect(
+      (await sessionOf(token, { OWNER_GITHUB_USER_ID: "2002", ALLOWED_GITHUB_USER_IDS: "" }))
+        .status,
+    ).toBe(401);
+  });
+
+  it.each([
+    ["SIGNUP が知らない値", { SIGNUP: "everyone" }],
+    ["ALLOWED_GITHUB_USER_IDS に数でないものがある", { ALLOWED_GITHUB_USER_IDS: "abc" }],
+    ["だれもログインできない設定", { OWNER_GITHUB_USER_ID: "", ALLOWED_GITHUB_USER_IDS: "" }],
+  ])(
+    "設定が正しくなければ、有効なセッションでも通さない（500 の config）。セッションは消さない：%s",
+    async (_label, overrides) => {
+      const token = await insertSession();
+
+      const res = await sessionOf(token, overrides);
+
+      expect(res.status).toBe(500);
+      expect(await res.json()).toEqual({ error: "config" });
+      expect(await storedExpiresAt(token)).toBeDefined();
+      // トークンがなければ、設定を見る前に 401
+      expect((await app.request(SESSION_URL, {}, { ...env, ...overrides })).status).toBe(401);
+    },
+  );
 });

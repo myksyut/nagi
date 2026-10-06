@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/client";
-import { sessions } from "../db/schema";
+import { OWNER_USER_ID, sessions } from "../db/schema";
 import { decodeBase64Url } from "../test/base64url";
 import { sha256Hex } from "./crypto";
 import {
@@ -16,7 +16,7 @@ import {
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 beforeEach(async () => {
-  await env.DB.prepare("DELETE FROM sessions").run();
+  await env.DB.prepare("DELETE FROM user_sessions").run();
 });
 
 describe("generateSessionToken", () => {
@@ -35,8 +35,8 @@ describe("createSession", () => {
   it("作るたびに別のトークンと別の行になる", async () => {
     const db = getDb(env.DB);
     const now = new Date("2026-01-01T00:00:00.000Z");
-    const first = await createSession(db, now);
-    const second = await createSession(db, now);
+    const first = await createSession(db, OWNER_USER_ID, now);
+    const second = await createSession(db, OWNER_USER_ID, now);
 
     expect(decodeBase64Url(first.token)).toHaveLength(32);
     expect(decodeBase64Url(second.token)).toHaveLength(32);
@@ -49,7 +49,7 @@ describe("createSession", () => {
   it("トークンの SHA-256 だけを D1 に保存し、トークンそのものは保存しない", async () => {
     const db = getDb(env.DB);
     const now = new Date("2026-01-01T00:00:00.000Z");
-    const { token, expiresAt } = await createSession(db, now);
+    const { token, expiresAt } = await createSession(db, OWNER_USER_ID, now);
 
     expect(expiresAt.toISOString()).toBe(new Date(now.getTime() + SESSION_TTL_MS).toISOString());
 
@@ -82,6 +82,7 @@ describe("validateSession", () => {
     const lastExtendedAt = now.getTime() - (DAY_MS - 60 * 60 * 1000);
     const expiresAt = new Date(lastExtendedAt + SESSION_TTL_MS);
     await db.insert(sessions).values({
+      userId: OWNER_USER_ID,
       id: await sha256Hex(token),
       expiresAt: expiresAt.toISOString(),
       createdAt: new Date(lastExtendedAt).toISOString(),
@@ -105,6 +106,7 @@ describe("validateSession", () => {
     const lastExtendedAt = now.getTime() - DAY_MS;
     const expiresAt = new Date(lastExtendedAt + SESSION_TTL_MS);
     await db.insert(sessions).values({
+      userId: OWNER_USER_ID,
       id: await sha256Hex(token),
       expiresAt: expiresAt.toISOString(),
       createdAt: new Date(lastExtendedAt).toISOString(),
@@ -129,6 +131,7 @@ describe("validateSession", () => {
     const lastExtendedAt = now.getTime() - (DAY_MS + 60 * 60 * 1000);
     const expiresAt = new Date(lastExtendedAt + SESSION_TTL_MS);
     await db.insert(sessions).values({
+      userId: OWNER_USER_ID,
       id: await sha256Hex(token),
       expiresAt: expiresAt.toISOString(),
       createdAt: new Date(lastExtendedAt).toISOString(),
@@ -147,6 +150,7 @@ describe("validateSession", () => {
     const id = await sha256Hex(token);
     const lastExtendedAt = new Date("2026-01-01T00:00:00.000Z").getTime();
     await db.insert(sessions).values({
+      userId: OWNER_USER_ID,
       id,
       expiresAt: new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
       createdAt: new Date(lastExtendedAt).toISOString(),
@@ -179,6 +183,7 @@ describe("validateSession", () => {
     const token = generateSessionToken();
     const lastExtendedAt = new Date("2026-01-01T00:00:00.000Z").getTime();
     await db.insert(sessions).values({
+      userId: OWNER_USER_ID,
       id: await sha256Hex(token),
       expiresAt: new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
       createdAt: new Date(lastExtendedAt).toISOString(),
@@ -201,6 +206,7 @@ describe("validateSession", () => {
     const token = generateSessionToken();
     const expiresAt = new Date(now.getTime() - 1000);
     await db.insert(sessions).values({
+      userId: OWNER_USER_ID,
       id: await sha256Hex(token),
       expiresAt: expiresAt.toISOString(),
       createdAt: new Date(now.getTime() - SESSION_TTL_MS).toISOString(),
@@ -218,6 +224,7 @@ describe("validateSession", () => {
     const now = new Date("2026-01-10T00:00:00.000Z");
     const token = generateSessionToken();
     await db.insert(sessions).values({
+      userId: OWNER_USER_ID,
       id: await sha256Hex(token),
       expiresAt: now.toISOString(),
       createdAt: new Date(now.getTime() - SESSION_TTL_MS).toISOString(),
@@ -231,7 +238,7 @@ describe("deleteSession", () => {
   it("トークンに当たる行を消す", async () => {
     const db = getDb(env.DB);
     const now = new Date("2026-01-01T00:00:00.000Z");
-    const { token } = await createSession(db, now);
+    const { token } = await createSession(db, OWNER_USER_ID, now);
 
     await deleteSession(db, token);
 

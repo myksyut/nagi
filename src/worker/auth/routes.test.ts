@@ -2,9 +2,10 @@ import { env } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../db/client";
-import { sessions } from "../db/schema";
+import { meta, OWNER_USER_ID, sessions, users } from "../db/schema";
 import app from "../index";
 import { decodeBase64Url } from "../test/base64url";
+import { resetSyncTables } from "../test/sync-app";
 import { sha256Hex } from "./crypto";
 import {
   DEVICE_GRANT_TYPE,
@@ -13,11 +14,10 @@ import {
   GITHUB_USER_URL,
   SLOW_DOWN_FALLBACK_INTERVAL_SECONDS,
 } from "./github";
-import { parseAllowedUserId } from "./routes";
 import { SESSION_TTL_MS } from "./session";
 
 const BASE = "https://nagi.example.com";
-const ALLOWED_USER_ID = 1001; // vitest.config.ts の ALLOWED_GITHUB_USER_ID
+const OWNER_GITHUB_USER_ID = 1001; // vitest.config.ts の OWNER_GITHUB_USER_ID（SIGNUP は allowlist で、ほかに許可した人はいない）
 const GITHUB_ACCESS_TOKEN = "gho_test_token";
 
 const DEVICE_CODE_RESPONSE = {
@@ -29,7 +29,12 @@ const DEVICE_CODE_RESPONSE = {
 };
 
 beforeEach(async () => {
-  await env.DB.prepare("DELETE FROM sessions").run();
+  // 持ち主のほかの利用者を消し、持ち主もまだログインしたことがない状態に戻す
+  await resetSyncTables();
+  await env.DB.batch([
+    env.DB.prepare("DELETE FROM user_sessions"),
+    env.DB.prepare("UPDATE users SET github_user_id = NULL WHERE id = ?").bind(OWNER_USER_ID),
+  ]);
 });
 
 afterEach(() => {
@@ -42,7 +47,7 @@ function respond(response: MockResponse): Response {
   return typeof response === "function" ? response() : response;
 }
 
-/** GitHub とのやり取り（fetch）を差し替える。何も渡さなければ、許可したユーザーが承認した流れになる */
+/** GitHub とのやり取り（fetch）を差し替える。何も渡さなければ、持ち主（OWNER_GITHUB_USER_ID）が承認した流れになる */
 function mockGitHub(
   options: {
     deviceResponse?: MockResponse;
@@ -68,7 +73,7 @@ function mockGitHub(
     if (url === GITHUB_USER_URL) {
       return options.userResponse
         ? respond(options.userResponse)
-        : Response.json({ id: options.userId ?? ALLOWED_USER_ID });
+        : Response.json({ id: options.userId ?? OWNER_GITHUB_USER_ID });
     }
     throw new Error(`unexpected fetch: ${url} ${JSON.stringify(init)}`);
   });
@@ -105,6 +110,29 @@ async function sessionRows() {
   return getDb(env.DB).select().from(sessions);
 }
 
+async function userRows() {
+  return getDb(env.DB).select().from(users);
+}
+
+/** 設定（env）を差し替えて /auth/device/token を呼ぶ。GitHub では githubUserId の人が承認した流れにする */
+async function loginAs(githubUserId: number, overrides: Partial<Cloudflare.Env> = {}) {
+  vi.restoreAllMocks();
+  mockGitHub({ userId: githubUserId });
+  const res = await app.request(
+    `${BASE}/auth/device/token`,
+    postInit({ deviceCode: "device-code" }),
+    { ...env, ...overrides },
+  );
+  return (await res.json()) as { status: string; token?: string; userId?: string };
+}
+
+/** セッションのトークンの持ち主（users.id） */
+async function sessionUserId(token: string | undefined): Promise<string | undefined> {
+  if (token === undefined) throw new Error("トークンがありません");
+  const id = await sha256Hex(token);
+  return (await sessionRows()).find((row) => row.id === id)?.userId;
+}
+
 describe("POST /auth/device/start", () => {
   it("ログインなしで呼べて、GitHub のデバイスコードを返す。GitHub へは client_id だけを送る", async () => {
     const spy = mockGitHub();
@@ -135,8 +163,10 @@ describe("POST /auth/device/start", () => {
 
   it.each([
     ["GITHUB_CLIENT_ID が空", { GITHUB_CLIENT_ID: "" }],
-    ["ALLOWED_GITHUB_USER_ID が空", { ALLOWED_GITHUB_USER_ID: "" }],
-    ["ALLOWED_GITHUB_USER_ID が数でない", { ALLOWED_GITHUB_USER_ID: "not-a-number" }],
+    ["OWNER_GITHUB_USER_ID が数でない", { OWNER_GITHUB_USER_ID: "not-a-number" }],
+    ["SIGNUP が知らない値", { SIGNUP: "everyone" }],
+    ["ALLOWED_GITHUB_USER_IDS に数でないものがある", { ALLOWED_GITHUB_USER_IDS: "1002,abc" }],
+    ["allowlist なのに、ログインできる人がだれもいない", { OWNER_GITHUB_USER_ID: "" }],
   ])("%s なら 500 の config で、GitHub には問い合わせない", async (_label, overrides) => {
     const spy = vi.spyOn(globalThis, "fetch");
     const res = await app.request(`${BASE}/auth/device/start`, postInit({}), {
@@ -246,16 +276,22 @@ describe("POST /auth/device/token", () => {
     expect(await sessionRows()).toHaveLength(0);
   });
 
-  it("許可したユーザーが承認したら ok。セッションができ、そのトークンで /api/session が通る", async () => {
+  it("持ち主が承認したら ok。持ち主（OWNER_USER_ID）のセッションができ、そのトークンで /api/session が通る", async () => {
     const spy = mockGitHub();
 
     const res = await post("/auth/device/token", { deviceCode });
 
     expect(res.status).toBe(200);
     const text = await res.text();
-    const body = JSON.parse(text) as { status: string; token: string; expiresAt: string };
-    expect(Object.keys(body).sort()).toEqual(["expiresAt", "status", "token"]);
+    const body = JSON.parse(text) as {
+      status: string;
+      token: string;
+      expiresAt: string;
+      userId: string;
+    };
+    expect(Object.keys(body).sort()).toEqual(["expiresAt", "status", "token", "userId"]);
     expect(body.status).toBe("ok");
+    expect(body.userId).toBe(OWNER_USER_ID);
     // セッションのトークンは 32 バイトの乱数を base64url にしたもの
     expect(decodeBase64Url(body.token)).toHaveLength(32);
     // 期限は ISO 8601 で、今から 1 年
@@ -269,6 +305,11 @@ describe("POST /auth/device/token", () => {
     expect(rows).toHaveLength(1);
     expect(rows[0]?.id).toBe(await sha256Hex(body.token));
     expect(rows[0]?.expiresAt).toBe(body.expiresAt);
+    // 持ち主のセッション。新しい利用者は作らず、持ち主の行に GitHub のユーザー ID が入る
+    expect(rows[0]?.userId).toBe(OWNER_USER_ID);
+    expect((await userRows()).map((row) => [row.id, row.githubUserId])).toEqual([
+      [OWNER_USER_ID, OWNER_GITHUB_USER_ID],
+    ]);
     for (const value of Object.values(rows[0] ?? {})) {
       expect(value).not.toBe(body.token);
     }
@@ -294,7 +335,7 @@ describe("POST /auth/device/token", () => {
       headers: { Authorization: `Bearer ${body.token}` },
     });
     expect(sessionRes.status).toBe(200);
-    expect(await sessionRes.json()).toEqual({ authenticated: true });
+    expect(await sessionRes.json()).toEqual({ authenticated: true, userId: OWNER_USER_ID });
   });
 
   it("ログインするたびに、別のセッションのトークンが出る", async () => {
@@ -310,7 +351,7 @@ describe("POST /auth/device/token", () => {
     expect(await sessionRows()).toHaveLength(3);
   });
 
-  it("承認されても、違う GitHub ユーザーなら forbidden で、セッションは作らない", async () => {
+  it("承認されても、許可していない GitHub ユーザーなら forbidden で、利用者もセッションも作らない", async () => {
     const spy = mockGitHub({ userId: 999 });
 
     const res = await post("/auth/device/token", { deviceCode });
@@ -321,6 +362,158 @@ describe("POST /auth/device/token", () => {
     expect(text).not.toContain(GITHUB_ACCESS_TOKEN);
     expect(spy).toHaveBeenCalledTimes(2);
     expect(await sessionRows()).toHaveLength(0);
+    expect((await userRows()).map((row) => row.id)).toEqual([OWNER_USER_ID]);
+  });
+
+  describe("持ち主のほかの利用者", () => {
+    const ALLOW_1002_1003 = { ALLOWED_GITHUB_USER_IDS: " 1002, 1003 " };
+
+    it("許可した人が初めてログインすると、利用者と meta の行ができ、その人のセッションになる。2 回目は同じ利用者", async () => {
+      const first = await loginAs(1002, ALLOW_1002_1003);
+      expect(first.status).toBe("ok");
+
+      const created = (await userRows()).filter((row) => row.id !== OWNER_USER_ID);
+      expect(created).toHaveLength(1);
+      const userId = created[0]?.id ?? "";
+      expect(created[0]?.githubUserId).toBe(1002);
+      expect(first.userId).toBe(userId);
+      expect(await sessionUserId(first.token)).toBe(userId);
+      // 通し番号などは、その人のぶんが初期値で入る
+      const metaRows = await getDb(env.DB).select().from(meta);
+      expect(
+        metaRows
+          .filter((row) => row.userId === userId)
+          .map((row) => [row.key, row.value])
+          .sort(),
+      ).toEqual([
+        ["last_rollover_on", ""],
+        ["purged_through_seq", "0"],
+        ["seq", "0"],
+      ]);
+
+      const second = await loginAs(1002, ALLOW_1002_1003);
+      expect(second.status).toBe("ok");
+      expect(second.token).not.toBe(first.token);
+      expect(await sessionUserId(second.token)).toBe(userId);
+      expect(await userRows()).toHaveLength(2);
+    });
+
+    it("人ごとに別の利用者になる（持ち主とも別）", async () => {
+      const owner = await loginAs(OWNER_GITHUB_USER_ID, ALLOW_1002_1003);
+      const a = await loginAs(1002, ALLOW_1002_1003);
+      const b = await loginAs(1003, ALLOW_1002_1003);
+
+      const ids = [
+        await sessionUserId(owner.token),
+        await sessionUserId(a.token),
+        await sessionUserId(b.token),
+      ];
+      expect(ids[0]).toBe(OWNER_USER_ID);
+      expect(new Set(ids).size).toBe(3);
+      expect(await userRows()).toHaveLength(3);
+    });
+
+    it("同じ人のログインが同時に来ても、利用者は 1 人だけできる", async () => {
+      mockGitHub({ userId: 1002 });
+      const login = () =>
+        app.request(`${BASE}/auth/device/token`, postInit({ deviceCode: "device-code" }), {
+          ...env,
+          ...ALLOW_1002_1003,
+        });
+
+      const bodies = await Promise.all(
+        (await Promise.all([login(), login(), login()])).map(
+          (res) => res.json() as Promise<{ status: string; token: string }>,
+        ),
+      );
+
+      expect(bodies.map((body) => body.status)).toEqual(["ok", "ok", "ok"]);
+      const created = (await userRows()).filter((row) => row.id !== OWNER_USER_ID);
+      expect(created).toHaveLength(1);
+      for (const body of bodies) expect(await sessionUserId(body.token)).toBe(created[0]?.id);
+      expect(
+        (await getDb(env.DB).select().from(meta)).filter((row) => row.userId === created[0]?.id),
+      ).toHaveLength(3);
+    });
+
+    it("持ち主のログインが同時に来ても、どれも持ち主（OWNER_USER_ID）になり、利用者は増えない", async () => {
+      mockGitHub();
+      const login = () => post("/auth/device/token", { deviceCode: "device-code" });
+
+      const bodies = await Promise.all(
+        (await Promise.all([login(), login(), login()])).map(
+          (res) => res.json() as Promise<{ status: string; token: string; userId: string }>,
+        ),
+      );
+
+      expect(bodies.map((body) => [body.status, body.userId])).toEqual([
+        ["ok", OWNER_USER_ID],
+        ["ok", OWNER_USER_ID],
+        ["ok", OWNER_USER_ID],
+      ]);
+      expect((await userRows()).map((row) => [row.id, row.githubUserId])).toEqual([
+        [OWNER_USER_ID, OWNER_GITHUB_USER_ID],
+      ]);
+    });
+
+    it("持ち主に設定する前に、その人がふつうの利用者として登録されていたら、あとから設定しても持ち主にはならない", async () => {
+      // 持ち主を設定せずに、1001 を許可した人として登録した
+      const before = { OWNER_GITHUB_USER_ID: "", ALLOWED_GITHUB_USER_IDS: "1001" };
+      const first = await loginAs(1001, before);
+      expect(first.status).toBe("ok");
+      expect(first.userId).not.toBe(OWNER_USER_ID);
+
+      // あとから 1001 を持ち主に設定しても、1001 はもとの利用者のまま（持ち主の行は、だれのものでもないまま）
+      const second = await loginAs(1001, { OWNER_GITHUB_USER_ID: "1001" });
+      expect(second.userId).toBe(first.userId);
+      expect((await userRows()).map((row) => [row.id, row.githubUserId]).sort()).toEqual(
+        [
+          [OWNER_USER_ID, null],
+          [first.userId, 1001],
+        ].sort(),
+      );
+    });
+
+    it("許可から外した人は、利用者がいても forbidden（新しいセッションは作らない）", async () => {
+      expect((await loginAs(1002, ALLOW_1002_1003)).status).toBe("ok");
+      const sessionsBefore = await sessionRows();
+
+      expect((await loginAs(1002, { ALLOWED_GITHUB_USER_IDS: "1003" })).status).toBe("forbidden");
+
+      expect(await sessionRows()).toEqual(sessionsBefore);
+      expect(await userRows()).toHaveLength(2);
+    });
+
+    it("SIGNUP が open なら、許可の一覧にない人も登録できる（一覧が空でも、持ち主がいなくても）", async () => {
+      const open = { SIGNUP: "open", OWNER_GITHUB_USER_ID: "", ALLOWED_GITHUB_USER_IDS: "" };
+
+      const body = await loginAs(999, open);
+
+      expect(body.status).toBe("ok");
+      const created = (await userRows()).filter((row) => row.id !== OWNER_USER_ID);
+      expect(created.map((row) => row.githubUserId)).toEqual([999]);
+      expect(await sessionUserId(body.token)).toBe(created[0]?.id);
+    });
+
+    it("持ち主の行は、最初にログインした持ち主のもののまま（あとから OWNER_GITHUB_USER_ID を変えても、移らない）", async () => {
+      expect(await sessionUserId((await loginAs(OWNER_GITHUB_USER_ID)).token)).toBe(OWNER_USER_ID);
+
+      // 設定の持ち主を 2002 に変えた。2002 は持ち主の行を取れず、ふつうの利用者になる
+      const changed = { OWNER_GITHUB_USER_ID: "2002", ALLOWED_GITHUB_USER_IDS: "1001" };
+      const newcomer = await loginAs(2002, changed);
+      expect(newcomer.status).toBe("ok");
+      const newcomerId = await sessionUserId(newcomer.token);
+      expect(newcomerId).not.toBe(OWNER_USER_ID);
+
+      // もとの持ち主は、許可されていれば、これまでどおり持ち主の行でログインする
+      expect(await sessionUserId((await loginAs(1001, changed)).token)).toBe(OWNER_USER_ID);
+      expect((await userRows()).map((row) => [row.id, row.githubUserId]).sort()).toEqual(
+        [
+          [OWNER_USER_ID, 1001],
+          [newcomerId, 2002],
+        ].sort(),
+      );
+    });
   });
 
   it.each([
@@ -349,7 +542,8 @@ describe("POST /auth/device/token", () => {
 
   it.each([
     ["GITHUB_CLIENT_ID が空", { GITHUB_CLIENT_ID: "" }],
-    ["ALLOWED_GITHUB_USER_ID が数でない", { ALLOWED_GITHUB_USER_ID: "not-a-number" }],
+    ["OWNER_GITHUB_USER_ID が数でない", { OWNER_GITHUB_USER_ID: "not-a-number" }],
+    ["ALLOWED_GITHUB_USER_IDS に数でないものがある", { ALLOWED_GITHUB_USER_IDS: "1002,abc" }],
   ])("%s なら 500 の config で、GitHub には問い合わせない", async (_label, overrides) => {
     const spy = vi.spyOn(globalThis, "fetch");
     const res = await app.request(`${BASE}/auth/device/token`, postInit({ deviceCode }), {
@@ -409,6 +603,7 @@ describe("POST /auth/logout", () => {
     await getDb(env.DB)
       .insert(sessions)
       .values({
+        userId: OWNER_USER_ID,
         id: await sha256Hex(token),
         expiresAt: new Date(Date.now() + SESSION_TTL_MS).toISOString(),
         createdAt: new Date().toISOString(),
@@ -461,28 +656,5 @@ describe("POST /auth/logout", () => {
   it("知らないトークンでも 204", async () => {
     const res = await post("/auth/logout", {}, { Authorization: "Bearer unknown-token" });
     expect(res.status).toBe(204);
-  });
-});
-
-describe("parseAllowedUserId", () => {
-  it.each([
-    ["1001", 1001],
-    ["1", 1],
-    ["9007199254740991", 9007199254740991], // Number.MAX_SAFE_INTEGER
-  ])("%s は %i", (input, expected) => {
-    expect(parseAllowedUserId(input)).toBe(expected);
-  });
-
-  it.each([
-    [undefined],
-    [""],
-    ["0"],
-    ["-5"],
-    ["abc"],
-    ["01"],
-    ["1.5"],
-    ["9007199254740993"], // MAX_SAFE_INTEGER を超える
-  ])("%s は null", (input) => {
-    expect(parseAllowedUserId(input)).toBeNull();
   });
 });

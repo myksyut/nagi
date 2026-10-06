@@ -25,12 +25,15 @@ export default defineConfig(async () => {
                 d1Databases: {
                   MIGRATION_TEST_DB: "migration-test",
                   MIGRATION_0003_TEST_DB: "migration-0003-test",
+                  MIGRATION_0004_TEST_DB: "migration-0004-test",
                 },
                 // テスト用の値。wrangler.jsonc や .dev.vars の値より優先される
                 bindings: {
                   TEST_MIGRATIONS: migrations,
                   GITHUB_CLIENT_ID: "test-client-id",
-                  ALLOWED_GITHUB_USER_ID: "1001",
+                  OWNER_GITHUB_USER_ID: "1001",
+                  SIGNUP: "allowlist",
+                  ALLOWED_GITHUB_USER_IDS: "",
                   AUTH_DISABLED: "false",
                 },
               },

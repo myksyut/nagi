@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { and, eq, gte, inArray, lte } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/client";
-import { tasks } from "../db/schema";
+import { OWNER_USER_ID, tasks } from "../db/schema";
 import {
   apiApp,
   insertRawProjects,
@@ -81,7 +81,7 @@ describe("★ カーソルとページ分けで取りこぼしがない", () => 
     let cursor = 0;
     const collected: number[] = [];
     for (let i = 0; i < 10; i++) {
-      const res = await readChanges(db, { cursor, baseCursor: 0 }, pageSize);
+      const res = await readChanges(db, OWNER_USER_ID, { cursor, baseCursor: 0 }, pageSize);
       if (res.reset) throw new Error("予期しない reset");
       expect(res.rows.length).toBeLessThanOrEqual(pageSize);
       collected.push(...res.rows.map((r) => r.row.seq));
@@ -140,22 +140,22 @@ describe("★ reset", () => {
   it("baseCursorが0なら、purged_through_seqが0より大きくてもresetにならない", async () => {
     await setMeta(db, "seq", "5");
     await setMeta(db, "purged_through_seq", "3");
-    const res = await readChanges(db, { cursor: 0, baseCursor: 0 });
+    const res = await readChanges(db, OWNER_USER_ID, { cursor: 0, baseCursor: 0 });
     expect(res.reset).toBe(false);
   });
 
   it("0 < baseCursor < purged_through_seq ならreset。baseCursor == purged_through_seq ならresetにならない", async () => {
     await setMeta(db, "seq", "10");
     await setMeta(db, "purged_through_seq", "5");
-    expect((await readChanges(db, { cursor: 0, baseCursor: 3 })).reset).toBe(true);
-    expect((await readChanges(db, { cursor: 0, baseCursor: 5 })).reset).toBe(false);
+    expect((await readChanges(db, OWNER_USER_ID, { cursor: 0, baseCursor: 3 })).reset).toBe(true);
+    expect((await readChanges(db, OWNER_USER_ID, { cursor: 0, baseCursor: 5 })).reset).toBe(false);
   });
 
   it("baseCursorやcursorがmeta.seqより大きいならreset", async () => {
     await setMeta(db, "seq", "10");
     await setMeta(db, "purged_through_seq", "0");
-    expect((await readChanges(db, { cursor: 0, baseCursor: 11 })).reset).toBe(true);
-    expect((await readChanges(db, { cursor: 11, baseCursor: 0 })).reset).toBe(true);
+    expect((await readChanges(db, OWNER_USER_ID, { cursor: 0, baseCursor: 11 })).reset).toBe(true);
+    expect((await readChanges(db, OWNER_USER_ID, { cursor: 11, baseCursor: 0 })).reset).toBe(true);
   });
 
   it("★ 無限ループにならない：物理削除のあと（消した行のseqが残っている行のseqより大きい場合を含む）に、baseCursor: 0から小さいpageSizeでページをたどると、resetが一度も返らずに最後までたどり着く。最後のnextCursorをbaseCursorにして次の同期をしてもresetにならない", async () => {
@@ -169,7 +169,7 @@ describe("★ reset", () => {
     const baseCursor = 0;
     const collected: number[] = [];
     for (let i = 0; i < 20; i++) {
-      const res = await readChanges(db, { cursor, baseCursor }, 3);
+      const res = await readChanges(db, OWNER_USER_ID, { cursor, baseCursor }, 3);
       if (res.reset) throw new Error("予期しない reset");
       collected.push(...res.rows.map((r) => r.row.seq));
       cursor = res.nextCursor;
@@ -178,7 +178,7 @@ describe("★ reset", () => {
     expect(collected).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14]);
     expect(cursor).toBe(20);
 
-    const next = await readChanges(db, { cursor, baseCursor: cursor });
+    const next = await readChanges(db, OWNER_USER_ID, { cursor, baseCursor: cursor });
     expect(next.reset).toBe(false);
   });
 });

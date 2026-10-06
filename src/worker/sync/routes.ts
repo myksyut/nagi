@@ -55,21 +55,27 @@ export type SyncRoutesOptions = {
   now: () => Date;
 };
 
-/** /api/sync と /api/mutate。ログインの確認（/api/*）は index.ts でかける */
+/** /api/sync と /api/mutate。ログインの確認（/api/*）は index.ts でかける。どちらも、ログインしている利用者の行だけを扱う */
 export function createSyncRoutes({ now }: SyncRoutesOptions) {
   return new Hono<AppEnv>()
     .post("/sync", requireApiVersion, async (c) => {
       const parsed = await parseJsonBody(c, syncRequestSchema);
       if (!parsed.ok) return c.json(parsed.error, 400);
       const db = getDb(c.env.DB);
+      const userId = c.get("userId");
       // 差分を読む前に、必要なら日付の切り替えを進める（移した行も、この応答か次のページで届く）
-      await rolloverIfDue(db, now(), c.env.APP_TIMEZONE);
-      return c.json((await readChanges(db, parsed.data)) satisfies SyncResponse);
+      await rolloverIfDue(db, userId, now(), c.env.APP_TIMEZONE);
+      return c.json((await readChanges(db, userId, parsed.data)) satisfies SyncResponse);
     })
     .post("/mutate", requireApiVersion, async (c) => {
       const parsed = await parseJsonBody(c, mutationBatchSchema);
       if (!parsed.ok) return c.json(parsed.error, 400);
-      const outcome = await applyMutationBatch(getDb(c.env.DB), parsed.data, now());
+      const outcome = await applyMutationBatch(
+        getDb(c.env.DB),
+        c.get("userId"),
+        parsed.data,
+        now(),
+      );
       if (!outcome.ok) {
         const error: ApiErrorResponse = {
           error: "invalid_request",

@@ -1,12 +1,56 @@
 import { sql } from "drizzle-orm";
-import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
+import {
+  check,
+  index,
+  integer,
+  primaryKey,
+  sqliteTable,
+  text,
+  uniqueIndex,
+} from "drizzle-orm/sqlite-core";
 import { BUCKETS, type ChecklistItem } from "../../shared/model";
 import { PROJECT_COLORS } from "../../shared/palette";
 import { type Points, PRIORITIES } from "../../shared/priority-points";
 
-/** ログインのセッション。id はセッションのトークンの SHA-256（16進）。トークンそのものは保存しない */
-export const sessions = sqliteTable("sessions", {
+/**
+ * 利用者。タスク・プロジェクト・通し番号（meta）・セッションは、どれも利用者ごとに分ける（user_id）。
+ * id は、この表で振る ID（UUID）。GitHub のユーザー ID とは別にしてある（ログインの方法を足せるように）
+ */
+export const users = sqliteTable(
+  "users",
+  {
+    id: text("id").primaryKey(),
+    /**
+     * GitHub のユーザー ID。OWNER_USER_ID の行（利用者を分ける前からあったデータの持ち主）は、
+     * その利用者が最初にログインするまで NULL（src/worker/auth/users.ts）
+     */
+    githubUserId: integer("github_user_id"),
+    /** ISO 8601（UTC） */
+    createdAt: text("created_at").notNull(),
+  },
+  (t) => [uniqueIndex("users_github_user_id_idx").on(t.githubUserId)],
+);
+
+/**
+ * 利用者を分ける前（4 番目の版より前）からあった行の持ち主。行はマイグレーション（migrations/0004）で入れてある。
+ * 設定の OWNER_GITHUB_USER_ID の GitHub ユーザーが、この利用者としてログインする
+ */
+export const OWNER_USER_ID = "owner";
+
+/** 各表の user_id。持ち主の利用者 */
+const userId = () =>
+  text("user_id")
+    .notNull()
+    .references(() => users.id);
+
+/**
+ * ログインのセッション。id はセッションのトークンの SHA-256（16進）。トークンそのものは保存しない。
+ * 表の名前は、4 番目の版で sessions から user_sessions に変えた。利用者を分ける前の版の Worker は user_id を見ないので、
+ * その版に戻すと、全員の行が全員に見えてしまう。名前を変えておけば、古い版はセッションを読めず、どの口も 500 になる
+ */
+export const sessions = sqliteTable("user_sessions", {
   id: text("id").primaryKey(),
+  userId: userId(),
   /** ISO 8601（UTC） */
   expiresAt: text("expires_at").notNull(),
   /** ISO 8601（UTC） */
@@ -20,7 +64,9 @@ export const sessions = sqliteTable("sessions", {
 export const tasks = sqliteTable(
   "tasks",
   {
-    id: text("id").primaryKey(),
+    userId: userId(),
+    /** 画面が振る ID。利用者の中で重ならない（主キーは user_id と id） */
+    id: text("id").notNull(),
     title: text("title").notNull(),
     memo: text("memo").notNull().default(""),
     bucket: text("bucket", { enum: BUCKETS }).notNull(),
@@ -43,9 +89,10 @@ export const tasks = sqliteTable(
     seq: integer("seq").notNull(),
   },
   (t) => [
-    uniqueIndex("tasks_seq_idx").on(t.seq),
-    index("tasks_bucket_scheduled_on_idx").on(t.bucket, t.scheduledOn),
-    index("tasks_deadline_on_idx").on(t.deadlineOn),
+    primaryKey({ columns: [t.userId, t.id] }),
+    uniqueIndex("tasks_seq_idx").on(t.userId, t.seq),
+    index("tasks_bucket_scheduled_on_idx").on(t.userId, t.bucket, t.scheduledOn),
+    index("tasks_deadline_on_idx").on(t.userId, t.deadlineOn),
     // 列名はテーブル名を付けずに書く（drizzle-kit がテーブルを作り直すときに、別名のテーブルでも通るように）
     check("tasks_bucket_check", sql`bucket IN ('inbox', 'today', 'scheduled', 'later')`),
     // bucket が scheduled のときだけ scheduled_on が入る
@@ -62,7 +109,8 @@ export const tasks = sqliteTable(
 export const projects = sqliteTable(
   "projects",
   {
-    id: text("id").primaryKey(),
+    userId: userId(),
+    id: text("id").notNull(),
     name: text("name").notNull(),
     /**
      * 2 番目の版で追加（migrations/0002）。パレットの色の名前（src/shared/palette.ts）。
@@ -75,24 +123,39 @@ export const projects = sqliteTable(
     deletedAt: text("deleted_at"),
     seq: integer("seq").notNull(),
   },
-  (t) => [uniqueIndex("projects_seq_idx").on(t.seq)],
+  (t) => [
+    primaryKey({ columns: [t.userId, t.id] }),
+    uniqueIndex("projects_seq_idx").on(t.userId, t.seq),
+  ],
 );
 
 /**
- * key と value の表。行はマイグレーションで入れておく
+ * 利用者ごとの key と value の表。行は、利用者を作るときに入れる（src/worker/auth/users.ts。
+ * OWNER_USER_ID の行はマイグレーションで入れてある）
  * - seq：これまでに振った通し番号の最大値
  * - last_rollover_on：最後に日付の切り替えを終えた日（論理日付。まだなら ""）
  * - purged_through_seq：物理削除した行の seq の最大値
  * value は TEXT。数として使うときは SQL の中で CAST する
  */
-export const meta = sqliteTable("meta", {
-  key: text("key").primaryKey(),
-  value: text("value").notNull(),
-});
+export const meta = sqliteTable(
+  "meta",
+  {
+    userId: userId(),
+    key: text("key").notNull(),
+    value: text("value").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.key] })],
+);
 
 /** 反映済みの操作のまとまり。再送による二重の書き込みを防ぐ。7 日たったら消す */
-export const appliedMutations = sqliteTable("applied_mutations", {
-  id: text("id").primaryKey(),
-  /** ISO 8601（UTC） */
-  appliedAt: text("applied_at").notNull(),
-});
+export const appliedMutations = sqliteTable(
+  "applied_mutations",
+  {
+    userId: userId(),
+    /** 画面が振る、まとまりの ID。利用者の中で重ならない */
+    id: text("id").notNull(),
+    /** ISO 8601（UTC） */
+    appliedAt: text("applied_at").notNull(),
+  },
+  (t) => [primaryKey({ columns: [t.userId, t.id] })],
+);

@@ -3,7 +3,7 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { compareRank } from "../../shared/rank";
 import { getDb } from "../db/client";
-import { meta, tasks } from "../db/schema";
+import { meta, OWNER_USER_ID, tasks } from "../db/schema";
 import { interceptedDb } from "../test/intercept-d1";
 import { insertRawTask, parseBatch, resetSyncTables, setMeta, taskInput } from "../test/sync-app";
 import { applyMutationBatch } from "./mutate";
@@ -46,6 +46,7 @@ describe("C: 日付の切り替えの最中に確定した期限のタスク", (
         if (n !== 2) return;
         const created = await applyMutationBatch(
           db,
+          OWNER_USER_ID,
           parseBatch([
             { type: "task.create", task: taskInput({ bucket: "scheduled", scheduledOn: TODAY }) },
           ]),
@@ -56,7 +57,7 @@ describe("C: 日付の切り替えの最中に確定した期限のタスク", (
       },
     });
 
-    const first = await rolloverIfDue(idb, NOW, "Asia/Tokyo");
+    const first = await rolloverIfDue(idb, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(first.ran).toBe(true);
     expect(first.moved).toBe(1); // このバッチが移すのは、読み取り時点の候補（original）だけ
     expect(await lastRolloverOn()).toBe(""); // 期限のタスクがまだ残っているので進まない
@@ -66,7 +67,7 @@ describe("C: 日付の切り替えの最中に確定した期限のタスク", (
     expect(injectedAfterFirst?.bucket).toBe("scheduled"); // まだ移っていない
 
     // もう一度呼ぶと、残っていたタスクが移り、last_rollover_on が今日になる
-    const second = await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    const second = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(second.ran).toBe(true);
     expect(second.moved).toBe(1);
     expect(await lastRolloverOn()).toBe(TODAY);
@@ -103,6 +104,7 @@ describe("C: 日付の切り替えの最中に確定した期限のタスク", (
         if (n !== 2) return;
         const created = await applyMutationBatch(
           db,
+          OWNER_USER_ID,
           parseBatch([
             { type: "task.create", task: taskInput({ bucket: "inbox", deadlineOn: TODAY }) },
           ]),
@@ -113,7 +115,7 @@ describe("C: 日付の切り替えの最中に確定した期限のタスク", (
       },
     });
 
-    const first = await rolloverIfDue(idb, NOW, "Asia/Tokyo");
+    const first = await rolloverIfDue(idb, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(first.ran).toBe(true);
     expect(first.moved).toBe(1);
     expect(await lastRolloverOn()).toBe("");
@@ -121,7 +123,7 @@ describe("C: 日付の切り替えの最中に確定した期限のタスク", (
     if (injectedId === undefined) throw new Error("下ごしらえの id が読めません");
     expect((await taskById(injectedId))?.bucket).toBe("inbox");
 
-    const second = await rolloverIfDue(db, NOW, "Asia/Tokyo");
+    const second = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(second.ran).toBe(true);
     expect(second.moved).toBe(1);
     expect(await lastRolloverOn()).toBe(TODAY);

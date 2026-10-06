@@ -2,7 +2,7 @@ import { env } from "cloudflare:test";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/client";
-import { appliedMutations, projects, tasks } from "../db/schema";
+import { appliedMutations, OWNER_USER_ID, projects, tasks } from "../db/schema";
 import { interceptedDb } from "../test/intercept-d1";
 import { parseBatch, projectInput, resetSyncTables, snapshot, taskInput } from "../test/sync-app";
 import { applyMutationBatch } from "./mutate";
@@ -24,12 +24,12 @@ describe("A: 同時の再送（isApplied のあとに先行バッチが確定す
         if (triggered || !sql.includes("applied_mutations")) return;
         triggered = true;
         // 先行リクエスト（同じ ID のまとまり）が、こちらの isApplied のあとに確定する
-        const racer = await applyMutationBatch(db, batch, now);
+        const racer = await applyMutationBatch(db, OWNER_USER_ID, batch, now);
         expect(racer.ok).toBe(true);
       },
     });
 
-    const outcome = await applyMutationBatch(idb, batch, now);
+    const outcome = await applyMutationBatch(idb, OWNER_USER_ID, batch, now);
     expect(triggered).toBe(true);
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) throw new Error("unreachable");
@@ -54,12 +54,12 @@ describe("A: 同時の再送（isApplied のあとに先行バッチが確定す
       afterQuery: async (sql) => {
         if (triggered || !sql.includes("applied_mutations")) return;
         triggered = true;
-        const racer = await applyMutationBatch(db, batch, now);
+        const racer = await applyMutationBatch(db, OWNER_USER_ID, batch, now);
         expect(racer.ok).toBe(true);
       },
     });
 
-    const outcome = await applyMutationBatch(idb, batch, now);
+    const outcome = await applyMutationBatch(idb, OWNER_USER_ID, batch, now);
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) throw new Error("unreachable");
     expect(outcome.duplicate).toBe(true);
@@ -75,6 +75,7 @@ describe("B: 検証のあとで対象の行が物理削除される", () => {
   it("★ task.update：バッチ実行の直前に対象行が消えると、400 task_not_found で何も書かれない", async () => {
     const existing = await applyMutationBatch(
       db,
+      OWNER_USER_ID,
       parseBatch([{ type: "task.create", task: taskInput() }]),
       now,
     );
@@ -95,7 +96,7 @@ describe("B: 検証のあとで対象の行が物理削除される", () => {
       },
     });
 
-    const outcome = await applyMutationBatch(idb, batch, now);
+    const outcome = await applyMutationBatch(idb, OWNER_USER_ID, batch, now);
     expect(outcome.ok).toBe(false);
     if (outcome.ok) throw new Error("unreachable");
     expect(outcome.reason).toBe("task_not_found");
@@ -113,7 +114,7 @@ describe("B: 検証のあとで対象の行が物理削除される", () => {
     expect(appliedRows).toHaveLength(0);
 
     // 同じ ID で送り直しても、また 400 になる（反映済みとは見なされない）
-    const resend = await applyMutationBatch(db, batch, now);
+    const resend = await applyMutationBatch(db, OWNER_USER_ID, batch, now);
     expect(resend.ok).toBe(false);
     if (resend.ok) throw new Error("unreachable");
     expect(resend.reason).toBe("task_not_found");
@@ -122,6 +123,7 @@ describe("B: 検証のあとで対象の行が物理削除される", () => {
   it("project.update でも同じことを確かめる（project_not_found）", async () => {
     const existing = await applyMutationBatch(
       db,
+      OWNER_USER_ID,
       parseBatch([{ type: "project.create", project: projectInput() }]),
       now,
     );
@@ -141,7 +143,7 @@ describe("B: 検証のあとで対象の行が物理削除される", () => {
       },
     });
 
-    const outcome = await applyMutationBatch(idb, batch, now);
+    const outcome = await applyMutationBatch(idb, OWNER_USER_ID, batch, now);
     expect(outcome.ok).toBe(false);
     if (outcome.ok) throw new Error("unreachable");
     expect(outcome.reason).toBe("project_not_found");
@@ -179,17 +181,17 @@ describe("D: バッチの途中の制約違反で全体が戻る", () => {
       async () => {
         const before = await snapshot(db);
 
-        await expect(applyMutationBatch(db, batch, now)).rejects.toThrow();
+        await expect(applyMutationBatch(db, OWNER_USER_ID, batch, now)).rejects.toThrow();
         expect(await snapshot(db)).toEqual(before);
 
         // トリガーがあるあいだは、同じ ID で送り直しても失敗する
-        await expect(applyMutationBatch(db, batch, now)).rejects.toThrow();
+        await expect(applyMutationBatch(db, OWNER_USER_ID, batch, now)).rejects.toThrow();
         expect(await snapshot(db)).toEqual(before);
       },
     );
 
     // トリガーを消してから同じ ID で送り直すと、200 で2行とも書かれる
-    const outcome = await applyMutationBatch(db, batch, now);
+    const outcome = await applyMutationBatch(db, OWNER_USER_ID, batch, now);
     expect(outcome.ok).toBe(true);
     if (!outcome.ok) throw new Error("unreachable");
     expect(outcome.duplicate).toBe(false);
@@ -199,6 +201,7 @@ describe("D: バッチの途中の制約違反で全体が戻る", () => {
   it("既存の行の更新が途中で失敗する場合（BEFORE UPDATE のトリガー）も、全体が戻る", async () => {
     const created = await applyMutationBatch(
       db,
+      OWNER_USER_ID,
       parseBatch([
         { type: "task.create", task: taskInput({ title: "task-a" }) },
         { type: "task.create", task: taskInput({ title: "task-b" }) },
@@ -221,7 +224,7 @@ describe("D: バッチの途中の制約違反で全体が戻る", () => {
           { type: "task.update", id: idB, changes: { title: "boom-update" } },
         ]);
 
-        await expect(applyMutationBatch(db, batch, now)).rejects.toThrow();
+        await expect(applyMutationBatch(db, OWNER_USER_ID, batch, now)).rejects.toThrow();
 
         expect(await snapshot(db)).toEqual(before);
         const stillA = await db.select().from(tasks).where(eq(tasks.id, idA)).get();
@@ -237,6 +240,7 @@ describe("E: 検証のあとでチェックリストがほかの書き込みで�
     const b = { id: crypto.randomUUID(), title: "B", done: false };
     const created = await applyMutationBatch(
       db,
+      OWNER_USER_ID,
       parseBatch([{ type: "task.create", task: taskInput({ checklist: [a, b] }) }]),
       now,
     );
@@ -257,6 +261,7 @@ describe("E: 検証のあとでチェックリストがほかの書き込みで�
         // 検証が終わったあと、書き込みの直前に、ほかの画面の操作が A をチェックする
         const racer = await applyMutationBatch(
           db,
+          OWNER_USER_ID,
           parseBatch([
             {
               type: "task.update",
@@ -272,7 +277,7 @@ describe("E: 検証のあとでチェックリストがほかの書き込みで�
     });
     const before = await snapshot(db);
 
-    const outcome = await applyMutationBatch(idb, batch, now);
+    const outcome = await applyMutationBatch(idb, OWNER_USER_ID, batch, now);
     expect(outcome.ok).toBe(false);
     if (outcome.ok) throw new Error("unreachable");
     expect(outcome.reason).toBe("checklist_conflict");
