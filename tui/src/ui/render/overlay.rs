@@ -519,6 +519,12 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) {
     let Some(login) = &app.login else {
         return;
     };
+    // この端末だけで使っているときは、やめて戻れる
+    let leave = if app.config.is_cloud() {
+        "q で終了"
+    } else {
+        "Esc で戻る"
+    };
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled(
             "nagi",
@@ -532,10 +538,20 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) {
     }
     match &login.step {
         LoginStep::Idle => {
-            lines.push(Line::from("GitHub でログインします"));
+            if app.config.is_cloud() {
+                lines.push(Line::from("GitHub でログインします"));
+            } else {
+                lines.push(Line::from(
+                    "GitHub でログインすると、クラウドと同期して使えます",
+                ));
+                lines.push(Line::from(Span::styled(
+                    "この端末のタスクはそのまま残り、ログアウトすると戻ります",
+                    theme::muted(),
+                )));
+            }
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
-                "Enter で始める　q で終了",
+                format!("Enter で始める　{leave}"),
                 theme::faint(),
             )));
         }
@@ -578,7 +594,7 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) {
                 theme::faint(),
             )));
             lines.push(Line::default());
-            lines.push(Line::from(Span::styled("q で終了", theme::faint())));
+            lines.push(Line::from(Span::styled(leave, theme::faint())));
         }
         LoginStep::Failed(message) => {
             for text in wrap(message, 60) {
@@ -589,7 +605,7 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) {
             }
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
-                "Enter でやり直す　q で終了",
+                format!("Enter でやり直す　{leave}"),
                 theme::faint(),
             )));
         }
