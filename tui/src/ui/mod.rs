@@ -45,10 +45,11 @@ const QUIT_GRACE: Duration = Duration::from_secs(4);
 pub fn build_store(
     config: &Config,
     token: Option<String>,
+    user_id: Option<&str>,
     events: Sender<AppEvent>,
     generation: u64,
 ) -> Store {
-    open_store(config, token, move |event| {
+    open_store(config, token, user_id, move |event| {
         let _ = events.send(AppEvent::Net(generation, event));
     })
 }
@@ -57,8 +58,9 @@ pub fn run(config: Config) -> io::Result<()> {
     let (events, inbox) = mpsc::channel::<AppEvent>();
     let token = config.load_token();
     let needs_login = token.is_none() && !config.is_local();
-    let store = build_store(&config, token, events.clone(), 0);
-    let mut app = App::new(config, store, events.clone());
+    let user_id = crate::auth::current_user_id(&config);
+    let store = build_store(&config, token, user_id.as_deref(), events.clone(), 0);
+    let mut app = App::new(config, store, user_id, events.clone());
     if needs_login {
         app.show_login(None);
     } else {

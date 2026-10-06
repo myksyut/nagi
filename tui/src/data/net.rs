@@ -60,6 +60,26 @@ impl ApiClient {
         Ok((status, text))
     }
 
+    /// GET。応答の本文と HTTP の状態を返す。待つ時間は呼ぶ側が決める（画面を出す前に呼ぶものは、短くする）
+    pub fn get_raw(&self, path: &str, timeout: Duration) -> Result<(u16, String), ApiFailure> {
+        let mut request = self
+            .agent
+            .get(format!("{}{path}", self.base))
+            .config()
+            .timeout_global(Some(timeout))
+            .build();
+        if let Some(token) = &self.token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        let mut response = request.call().map_err(|_| ApiFailure::Network)?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|_| ApiFailure::Network)?;
+        Ok((status, text))
+    }
+
     fn post<T: DeserializeOwned>(
         &self,
         path: &str,

@@ -1,4 +1,4 @@
-//! 設定と置き場。Worker の URL、ログインのトークン、手元の控え、画面の覚え書き（リスト｜ボード・並び方）
+//! 設定と置き場。Worker の URL、ログイン（トークンと利用者の ID）、手元の控え、画面の覚え書き（リスト｜ボード・並び方）
 
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs;
@@ -70,9 +70,58 @@ impl Config {
             .any(|local| host == *local || host.starts_with(&format!("{local}:")))
     }
 
-    /// 手元の控え（Worker ごとに分ける）
-    pub fn db_path(&self) -> PathBuf {
+    /// 手元の控え。Worker と利用者ごとに分ける（別の利用者でログインし直しても、前の利用者の行が混ざらないように）。
+    /// user_id は、いまのログインの持ち主（Worker の利用者の ID）。分からないとき（利用者の ID を返さない古い Worker・
+    /// まだ確かめられていない・手元の開発サーバー）は None で、Worker ごとの 1 つを使う。
+    /// 利用者を分ける前からある控え（Worker ごとの 1 つ）は、持ち主の印（adopt_shared_db）があれば、その利用者のものとして使う
+    pub fn db_path(&self, user_id: Option<&str>) -> PathBuf {
+        let shared = self.shared_db_path();
+        let Some(user_id) = user_id else {
+            return shared;
+        };
+        if self.shared_db_owner().as_deref() == Some(user_id) {
+            return shared;
+        }
+        self.data_dir
+            .join(format!("{}--{}.db", slug(&self.server), slug(user_id)))
+    }
+
+    /// Worker ごとに 1 つの控え（利用者を分ける前の置き場）
+    fn shared_db_path(&self) -> PathBuf {
         self.data_dir.join(format!("{}.db", slug(&self.server)))
+    }
+
+    /// Worker ごとに 1 つの控えが、だれのものかの印（控えの隣に置く）
+    fn shared_db_owner_path(&self) -> PathBuf {
+        self.data_dir
+            .join(format!("{}.db.owner", slug(&self.server)))
+    }
+
+    fn shared_db_owner(&self) -> Option<String> {
+        let text = fs::read_to_string(self.shared_db_owner_path()).ok()?;
+        Some(text.trim().to_string()).filter(|id| !id.is_empty())
+    }
+
+    /// Worker ごとに 1 つの控えを、この利用者のものにする（ファイルは動かさず、印を付けるだけ）。
+    /// 利用者を分ける前からのログインの持ち主が分かったときに呼ぶ。控えがない・もう印があるなら、何もしない
+    pub fn adopt_shared_db(&self, user_id: &str) {
+        if self.shared_db_path().exists() && self.shared_db_owner().is_none() {
+            let _ = fs::write(self.shared_db_owner_path(), user_id);
+        }
+    }
+
+    /// 利用者の控えを消す（ログアウト）。Worker ごとに 1 つの控えを使っていたなら、その印も消す
+    pub fn remove_db(&self, user_id: Option<&str>) {
+        let path = self.db_path(user_id);
+        if path == self.shared_db_path() {
+            let _ = fs::remove_file(self.shared_db_owner_path());
+        }
+        // SQLite の WAL のファイルも残さない
+        for suffix in ["", "-wal", "-shm"] {
+            let mut name = path.clone().into_os_string();
+            name.push(suffix);
+            let _ = fs::remove_file(name);
+        }
     }
 
     pub fn log_path(&self) -> PathBuf {
@@ -99,15 +148,21 @@ impl Config {
 
     /// 保存してあるログインのトークン（環境変数は見ない。ログアウトで消す対象）
     pub fn saved_token(&self) -> Option<String> {
-        let text = fs::read_to_string(self.session_path()).ok()?;
-        let session: Session = serde_json::from_str(&text).ok()?;
-        Some(session.token).filter(|token| !token.is_empty())
+        self.saved_session().map(|session| session.token)
     }
 
-    /// ログインのトークンを、自分だけが読めるファイルに保存する
-    pub fn save_token(&self, token: &str) -> std::io::Result<()> {
+    /// 保存してあるログイン（トークンと、分かっていれば利用者の ID）
+    pub fn saved_session(&self) -> Option<Session> {
+        let text = fs::read_to_string(self.session_path()).ok()?;
+        let session: Session = serde_json::from_str(&text).ok()?;
+        Some(session).filter(|session| !session.token.is_empty())
+    }
+
+    /// ログイン（トークンと、Worker が返した利用者の ID）を、自分だけが読めるファイルに保存する
+    pub fn save_session(&self, token: &str, user_id: Option<&str>) -> std::io::Result<()> {
         let session = Session {
             token: token.to_string(),
+            user_id: user_id.map(str::to_string),
         };
         write_private(&self.session_path(), &serde_json::to_string(&session)?)
     }
@@ -130,9 +185,13 @@ impl Config {
     }
 }
 
-#[derive(Serialize, Deserialize)]
-struct Session {
-    token: String,
+/// 保存してあるログイン
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Session {
+    pub token: String,
+    /// トークンの持ち主（Worker の利用者の ID）。利用者の ID を返さないころにログインしたものには、ない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub user_id: Option<String>,
 }
 
 #[cfg(unix)]
@@ -165,4 +224,151 @@ pub struct Prefs {
     /// サイドバーを畳んでいるか（印だけの細い帯）
     #[serde(default)]
     pub sidebar_rail: bool,
+}
+
+#[cfg(test)]
+impl Config {
+    /// テスト用：置き場を指定して作る（環境変数を見ない）
+    pub fn at(server: &str, dir: &Path) -> Config {
+        let config = Config {
+            server: server.to_string(),
+            config_dir: dir.join("config"),
+            data_dir: dir.join("data"),
+        };
+        fs::create_dir_all(&config.config_dir).unwrap();
+        fs::create_dir_all(&config.data_dir).unwrap();
+        config
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SERVER: &str = "https://nagi.example.com";
+
+    fn temp_dir(name: &str) -> PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nagi-config-test-{}-{name}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    fn file_name(path: &Path) -> String {
+        path.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn 控えは利用者ごとに分かれ_分からないときはworkerごとの1つ() {
+        let config = Config::at(SERVER, &temp_dir("paths"));
+        assert_eq!(file_name(&config.db_path(None)), "nagi.example.com.db");
+        assert_eq!(
+            file_name(&config.db_path(Some("owner"))),
+            "nagi.example.com--owner.db"
+        );
+        let uuid = "0199c1a0-7d4e-7b1a-9d2e-3f4a5b6c7d8e";
+        assert_eq!(
+            file_name(&config.db_path(Some(uuid))),
+            format!("nagi.example.com--{uuid}.db")
+        );
+        assert_ne!(config.db_path(Some("a")), config.db_path(Some("b")));
+        // ファイル名に使えない文字は置き換える（置き場の外へ出ない）
+        assert_eq!(
+            file_name(&config.db_path(Some("../x/y"))),
+            "nagi.example.com--.._x_y.db"
+        );
+        assert_eq!(
+            config.db_path(Some("../x/y")).parent(),
+            config.db_path(None).parent()
+        );
+    }
+
+    #[test]
+    fn 利用者を分ける前の控えは_印を付けた利用者のものとして使う() {
+        let config = Config::at(SERVER, &temp_dir("adopt"));
+        let shared = config.db_path(None);
+
+        // 控えがなければ、印は付かない
+        config.adopt_shared_db("owner");
+        assert_ne!(config.db_path(Some("owner")), shared);
+
+        fs::write(&shared, b"db").unwrap();
+        config.adopt_shared_db("owner");
+        assert_eq!(config.db_path(Some("owner")), shared);
+        // ほかの利用者は、自分の控えを使う。印は、あとから付け替わらない
+        assert_ne!(config.db_path(Some("other")), shared);
+        config.adopt_shared_db("other");
+        assert_eq!(config.db_path(Some("owner")), shared);
+        assert_ne!(config.db_path(Some("other")), shared);
+    }
+
+    #[test]
+    fn 控えを消すと_walのファイルと印も消える_ほかの利用者の控えは残る() {
+        let config = Config::at(SERVER, &temp_dir("remove"));
+        let shared = config.db_path(None);
+        let other = config.db_path(Some("other"));
+        let with = |path: &Path, suffix: &str| {
+            let mut name = path.to_path_buf().into_os_string();
+            name.push(suffix);
+            PathBuf::from(name)
+        };
+        for path in [&shared, &other] {
+            for suffix in ["", "-wal", "-shm"] {
+                fs::write(with(path, suffix), b"x").unwrap();
+            }
+        }
+        config.adopt_shared_db("owner");
+
+        config.remove_db(Some("owner"));
+
+        for suffix in ["", "-wal", "-shm"] {
+            assert!(!with(&shared, suffix).exists());
+            assert!(with(&other, suffix).exists());
+        }
+        // 印も消えたので、次に同じ場所にできる控えは、だれのものでもない
+        fs::write(&shared, b"db").unwrap();
+        assert_ne!(config.db_path(Some("owner")), shared);
+
+        config.remove_db(Some("other"));
+        assert!(!other.exists());
+        assert!(shared.exists());
+    }
+
+    #[test]
+    fn ログインは_トークンと利用者のidを保存する_古い形のファイルも読める() {
+        let config = Config::at(SERVER, &temp_dir("session"));
+        assert_eq!(config.saved_session(), None);
+
+        config.save_session("token-1", Some("user-1")).unwrap();
+        assert_eq!(
+            config.saved_session(),
+            Some(Session {
+                token: "token-1".to_string(),
+                user_id: Some("user-1".to_string()),
+            })
+        );
+        assert_eq!(config.saved_token().as_deref(), Some("token-1"));
+
+        // 利用者の ID を返さないころのファイル（token だけ）
+        fs::write(config.session_path(), r#"{"token":"old-token"}"#).unwrap();
+        assert_eq!(
+            config.saved_session(),
+            Some(Session {
+                token: "old-token".to_string(),
+                user_id: None,
+            })
+        );
+        // ID が分からないログインは、ID の項目を書かない（古い版の nagi も読める形のまま）
+        config.save_session("token-2", None).unwrap();
+        assert_eq!(
+            fs::read_to_string(config.session_path()).unwrap(),
+            r#"{"token":"token-2"}"#
+        );
+
+        config.clear_token();
+        assert_eq!(config.saved_session(), None);
+    }
 }
