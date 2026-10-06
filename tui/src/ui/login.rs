@@ -183,11 +183,11 @@ impl App {
 
     /// ログアウト。Worker のセッションを消し、手元のトークンと控えも消して、ログインの画面へ
     pub fn logout(&mut self) {
-        if self.config.is_local() && self.config.load_token().is_none() {
+        if self.config.is_local() && self.config.saved_token().is_none() {
             self.toast_info("手元の開発サーバーでは、ログインなしで使っています");
             return;
         }
-        if let Some(token) = self.config.load_token() {
+        if let Some(token) = self.config.saved_token() {
             let client = ApiClient::new(&self.config.server, Some(token));
             thread::spawn(move || auth::logout(&client));
         }

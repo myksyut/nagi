@@ -1,6 +1,7 @@
-//! nagi：自分専用の TODO アプリの TUI。データは Worker（Cloudflare）にあり、手元には控え（SQLite）を持つ
+//! nagi：自分専用の TODO アプリの TUI と CLI。データは Worker（Cloudflare）にあり、手元には控え（SQLite）を持つ
 
 mod auth;
+mod cli;
 mod config;
 mod data;
 mod dates;
@@ -11,6 +12,7 @@ mod ui;
 
 use std::process::ExitCode;
 
+use cli::Command;
 use config::{Config, DEFAULT_SERVER};
 
 /// 版。Release のビルドでは、ワークフロー（tui.yml）が NAGI_VERSION に Release の版（0.1.<実行の番号>）を入れる。
@@ -20,52 +22,39 @@ const VERSION: &str = match option_env!("NAGI_VERSION") {
     None => env!("CARGO_PKG_VERSION"),
 };
 
-const HELP: &str = "\
-nagi — 自分専用の TODO アプリ
-
-使い方：
-  nagi [--server <URL>]
-
-  --server <URL>   接続する Worker（省くと環境変数 NAGI_SERVER、なければ本番）
-                   手元の開発サーバーなら http://localhost:5317
-  -h, --help       この説明
-  -V, --version    版
-
-キーの一覧は、起動してから ? で見られます";
-
 fn main() -> ExitCode {
-    let mut server = None;
-    let mut args = std::env::args().skip(1);
-    while let Some(arg) = args.next() {
-        match arg.as_str() {
-            "-h" | "--help" => {
-                println!("{HELP}\n\n本番：{DEFAULT_SERVER}");
-                return ExitCode::SUCCESS;
-            }
-            "-V" | "--version" => {
-                println!("nagi {VERSION}");
-                return ExitCode::SUCCESS;
-            }
-            "--server" => match args.next() {
-                Some(url) => server = Some(url),
-                None => {
-                    eprintln!("--server には URL が要ります");
-                    return ExitCode::from(2);
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let invocation = match cli::parse(&args) {
+        Ok(invocation) => invocation,
+        Err(message) => {
+            eprintln!("{message}\n\n使い方は `nagi --help` で見られます");
+            return ExitCode::from(2);
+        }
+    };
+    match invocation.command {
+        Command::Help => {
+            cli::emit(&format!("{}\n\n本番：{DEFAULT_SERVER}", cli::HELP));
+            ExitCode::SUCCESS
+        }
+        Command::Version => {
+            cli::emit(&format!("nagi {VERSION}"));
+            ExitCode::SUCCESS
+        }
+        Command::Tui => {
+            let config = Config::new(invocation.server);
+            log::init(&config.log_path());
+            match ui::run(config) {
+                Ok(()) => ExitCode::SUCCESS,
+                Err(error) => {
+                    eprintln!("端末を使えませんでした：{error}");
+                    ExitCode::FAILURE
                 }
-            },
-            other => {
-                eprintln!("知らない引数です：{other}\n\n{HELP}");
-                return ExitCode::from(2);
             }
         }
-    }
-    let config = Config::new(server);
-    log::init(&config.log_path());
-    match ui::run(config) {
-        Ok(()) => ExitCode::SUCCESS,
-        Err(error) => {
-            eprintln!("端末を使えませんでした：{error}");
-            ExitCode::FAILURE
+        command => {
+            let config = Config::new(invocation.server);
+            log::init(&config.log_path());
+            cli::run(&config, command)
         }
     }
 }

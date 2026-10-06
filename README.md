@@ -78,7 +78,7 @@ nagi                                   # 本番（https://nagi.wizard1026miya.wo
 nagi --server http://localhost:5317    # 手元の Worker（pnpm dev）につなぐ。環境変数 NAGI_SERVER でも渡せる
 ```
 
-- 初めて起動すると、ログインの画面が出る。Enter を押すと URL（<https://github.com/login/device>）とコードが出るので、手元のブラウザで開いてコードを打ち込み、承認する。承認されると自動で一覧に移る。**画面に出たコード以外は承認しない**（`/auth/device/start` は誰でも呼べるので、他人が出したコードを承認すると、その相手にセッションが渡る）
+- 初めて起動すると、ログインの画面が出る（画面を開かずに `nagi login` でもよい）。Enter を押すと URL（<https://github.com/login/device>）とコードが出るので、手元のブラウザで開いてコードを打ち込み、承認する。承認されると自動で一覧に移る。**画面に出たコード以外は承認しない**（`/auth/device/start` は誰でも呼べるので、他人が出したコードを承認すると、その相手にセッションが渡る）
 - ログインのトークンは `~/.config/nagi/session-<接続先>.json`（自分だけが読める）に置く。期限は 1 年で、使うたびに延びる。Ctrl+K の「ログアウト」で、Worker のセッション・手元のトークン・手元の控えを消す
 - 手元の Worker（`localhost`）は `AUTH_DISABLED` でログインなしで使える
 - データの控えは `~/.local/share/nagi/<接続先>.db`（SQLite）。起動するとまず控えを読んで描き、そのあと差分を取る。記録は `~/.local/share/nagi/nagi.log`、画面の覚え書き（リスト｜ボード・並び方）は `~/.config/nagi/prefs.json`（置き場は `XDG_CONFIG_HOME`・`XDG_DATA_HOME` で変えられる）
@@ -103,6 +103,30 @@ nagi --server http://localhost:5317    # 手元の Worker（pnpm dev）につな
 - y（c でもよい）は、選んでいるタスクのタイトルとメモをクリップボードに入れる（1行目にタイトル、空の行をはさんでメモ。何件かあるときは `---` の行で区切る。`tui/src/ui/clipboard.rs`）。端末のクリップボードには OSC 52 のエスケープシーケンスで入れるので、SSH の先で動かしていても手元の端末に届く。受け取るかどうかは端末の設定による（iTerm2 は「Applications in terminal may access clipboard」を有効にする。tmux の中で使うときは `set -g set-clipboard on`）
 - 日本語の入力は、端末の IME にそのまま任せる
 
+### CLI（画面なし）
+
+エージェントや定期の実行から使うためのコマンド。データの決まり（置き場・並び順キー・締切で今日へ移すなど）は、画面と同じデータ層を通る。
+
+```sh
+nagi add "PR #128 のレビュー"                    # 受信箱へ
+nagi add "見積もりの返信" --memo "Slack のスレッド https://…" --deadline 金曜
+nagi add "歯医者に電話" --to 明日                 # 予定へ（今日以前の日付なら今日へ）
+nagi add "請求書の確認" --to today --project AIPR --priority high --points 3 --json
+nagi list                                        # 未完了のすべて（受信箱・今日・予定・あとで）
+nagi list inbox --json                           # 受信箱だけを JSON で
+nagi list completed --days 7 --json              # 直近 7 日（今日を含む）に完了したもの
+nagi login                                       # 画面なしでログイン（URL とコードを出して、承認を待つ）
+nagi logout
+nagi --help
+```
+
+- `add` の行き先（`--to`）は `inbox`（既定）・`today`・`later` か日付。日付と締切は、画面の日付の入力と同じ書き方（`2026-10-09`・`明日`・`金曜`・`来週月曜`・`3日後`・`10/3`）で渡せる。`--project` は名前で指す（なければ追加せずに失敗する。プロジェクトは作らない）
+- `--json`：`add` は追加したタスクを、`list` はタスクの配列を出す。1件の形は `id`・`title`・`memo`・`list`（`inbox`・`today`・`upcoming`・`later`・`completed`）・`scheduledOn`・`deadlineOn`・`project`（名前）・`priority`・`points`・`inProgress`・`checklist`・`createdAt`・`completedAt`
+- 毎朝の巡回のように同じものを見つけ直す使い方では、先に `nagi list --json`（必要なら `nagi list completed --json` も）で今あるタスクを読み、同じものは足さないようにする（`add` は重複を確かめない）
+- 終了コード：成功は 0、失敗（ログインが切れた・つながらない・保存できなかった・プロジェクトがない・日付が読めない）は 1、引数の誤りは 2。失敗の理由は標準エラーに出る。指定に誤りがあるときは、何も追加しない
+- ログインは、画面（`nagi`）か `nagi login` で済ませておく（トークンは同じ場所に置かれる）。手元にログインを置けない実行では、環境変数 `NAGI_TOKEN` にトークンを渡す
+- 画面を開いたまま実行してよい（手元の控えは共有する。画面には、次の同期か Ctrl+R で出る）
+
 ### Web 版との違い
 
 - ドラッグの代わりにキーを使う：並べ替えは Alt+↑↓、日付の移動は d・⇧D・< >、ボードの列の移動は s（進行中にする／未着手に戻す。完了のカードは進行中で戻る）と x（完了／完了を外す）
@@ -114,7 +138,8 @@ nagi --server http://localhost:5317    # 手元の Worker（pnpm dev）につな
 
 ```text
 tui/src/
-├── main.rs      # 引数（--server）と起動
+├── main.rs      # 起動（引数を読んで、画面か CLI へ）
+├── cli.rs       # 画面なしのコマンド（add・list・login・logout）と、引数の読み方
 ├── config.rs    # 接続先・トークン・控え・覚え書きの置き場
 ├── auth.rs      # ログイン（Worker の /auth/device/* を呼ぶ）
 ├── model.rs     # タスク・プロジェクト・操作の形（src/shared の model.ts・mutations.ts・api.ts と同じ約束）
