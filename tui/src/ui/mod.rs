@@ -17,7 +17,6 @@ use std::sync::mpsc::{self, RecvTimeoutError, Sender};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use chrono::Utc;
 use crossterm::event::{
     self, DisableBracketedPaste, DisableFocusChange, EnableBracketedPaste, EnableFocusChange, Event,
 };
@@ -26,12 +25,8 @@ use crossterm::execute;
 use self::app::App;
 use self::login::LoginEvent;
 use crate::config::Config;
-use crate::data::local_db::LocalDb;
-use crate::data::net::{ApiClient, NetEvent, NetTransport};
-use crate::data::store::StoreOptions;
-use crate::data::{StopReason, Store};
-use crate::dates::APP_TIME_ZONE;
-use crate::log;
+use crate::data::net::NetEvent;
+use crate::data::{StopReason, Store, open_store};
 
 /// 画面のスレッドへ届くもの。通信とログインの知らせには、作ったときの世代を付ける
 /// （ログインし直してストアを作り直したあとに届いた、古い通信の結果を捨てるため）
@@ -46,31 +41,15 @@ const TICK: Duration = Duration::from_millis(250);
 /// 終了のときに、送信中の操作が保存されるのを待つ時間
 const QUIT_GRACE: Duration = Duration::from_secs(4);
 
-/// ストアと通信のスレッドを作る。手元の控えが開けなければ、保存せずに動く
+/// ストアと通信のスレッドを作る。通信の結果は、世代を付けて画面のスレッドへ送る
 pub fn build_store(
     config: &Config,
     token: Option<String>,
     events: Sender<AppEvent>,
     generation: u64,
 ) -> Store {
-    let client = ApiClient::new(&config.server, token);
-    let transport = NetTransport::spawn(client, move |event| {
+    open_store(config, token, move |event| {
         let _ = events.send(AppEvent::Net(generation, event));
-    });
-    let local = match LocalDb::open(&config.db_path()) {
-        Ok(local) => Some(local),
-        Err(error) => {
-            log::error(&format!(
-                "手元の控えを開けないため、保存せずに動きます: {error}"
-            ));
-            None
-        }
-    };
-    Store::new(StoreOptions {
-        transport: Box::new(transport),
-        local,
-        clock: Box::new(Utc::now),
-        tz: APP_TIME_ZONE,
     })
 }
 

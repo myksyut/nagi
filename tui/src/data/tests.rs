@@ -150,6 +150,7 @@ fn 追加はすぐ表示に重なり_確定すると送信中から外れる() {
         .store
         .add_task(AddTask {
             title: "牛乳を買う".into(),
+            memo: String::new(),
             project_id: None,
             to: Destination::Inbox,
         })
@@ -239,6 +240,7 @@ fn ログインが切れたら止まり_送信中の操作を捨てる() {
     h.store
         .add_task(AddTask {
             title: "戻ってくる追加".into(),
+            memo: String::new(),
             project_id: None,
             to: Destination::Inbox,
         })
@@ -292,6 +294,7 @@ fn 追加の逆は削除で_一覧から消える() {
         .store
         .add_task(AddTask {
             title: "やっぱりやめる".into(),
+            memo: String::new(),
             project_id: None,
             to: Destination::Today,
         })

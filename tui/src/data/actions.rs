@@ -44,6 +44,7 @@ impl Destination {
 #[derive(Clone, Debug)]
 pub struct AddTask {
     pub title: String,
+    pub memo: String,
     pub project_id: Option<String>,
     pub to: Destination,
 }
@@ -264,7 +265,7 @@ impl Store {
         let task = NewTask {
             id: self.new_id(),
             title: input.title,
-            memo: String::new(),
+            memo: input.memo,
             bucket,
             scheduled_on: to.scheduled_on(),
             project_id: input.project_id,

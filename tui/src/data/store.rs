@@ -305,6 +305,11 @@ impl Store {
         self.replica.pending().len()
     }
 
+    /// 差分を取っている途中か
+    pub fn is_syncing(&self) -> bool {
+        self.syncing
+    }
+
     /// たまった知らせを受け取る
     pub fn take_notices(&mut self) -> Vec<Notice> {
         std::mem::take(&mut self.notices)

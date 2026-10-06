@@ -14,5 +14,40 @@ pub mod store;
 mod tests;
 pub mod undo;
 
+use chrono::Utc;
+
+use self::local_db::LocalDb;
+use self::net::{ApiClient, NetEvent, NetTransport};
+use self::store::StoreOptions;
+use crate::config::Config;
+use crate::dates::APP_TIME_ZONE;
+use crate::log;
+
 pub use actions::{AddTask, Destination, Placement};
 pub use store::{Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReason, Store};
+
+/// ストアと通信のスレッドを作る。通信の結果は notify に渡る（画面や CLI が受け取って、ストアへ届ける）。
+/// 手元の控えが開けなければ、保存せずに動く
+pub fn open_store(
+    config: &Config,
+    token: Option<String>,
+    notify: impl Fn(NetEvent) + Send + Clone + 'static,
+) -> Store {
+    let client = ApiClient::new(&config.server, token);
+    let transport = NetTransport::spawn(client, notify);
+    let local = match LocalDb::open(&config.db_path()) {
+        Ok(local) => Some(local),
+        Err(error) => {
+            log::error(&format!(
+                "手元の控えを開けないため、保存せずに動きます: {error}"
+            ));
+            None
+        }
+    };
+    Store::new(StoreOptions {
+        transport: Box::new(transport),
+        local,
+        clock: Box::new(Utc::now),
+        tz: APP_TIME_ZONE,
+    })
+}

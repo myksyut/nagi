@@ -614,6 +614,7 @@ impl App {
         }
         let result = self.store.add_task(AddTask {
             title: title.trim().to_string(),
+            memo: String::new(),
             project_id: view.add_to.project_id.clone(),
             to: view.add_to.to.clone(),
         });
@@ -643,6 +644,7 @@ impl App {
         };
         match self.store.add_task(AddTask {
             title: title.trim().to_string(),
+            memo: String::new(),
             project_id,
             to,
         }) {
