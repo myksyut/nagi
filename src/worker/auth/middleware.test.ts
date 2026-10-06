@@ -5,16 +5,40 @@ import { beforeEach, describe, expect, it } from "vitest";
 import { getDb } from "../db/client";
 import { sessions } from "../db/schema";
 import app from "../index";
-import { cookieHeader, findSetCookie } from "../test/cookies";
 import { sha256Hex } from "./crypto";
 import { isAuthDisabled } from "./middleware";
-import { generateSessionToken, SESSION_COOKIE, SESSION_TTL_MS } from "./session";
+import { generateSessionToken, SESSION_TTL_MS } from "./session";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
+const SESSION_URL = "https://nagi.example.com/api/session";
 
 beforeEach(async () => {
   await env.DB.prepare("DELETE FROM sessions").run();
 });
+
+/** lastExtendedAt に延ばしたばかりのセッションを直に作り、そのトークンを返す */
+async function insertSession(lastExtendedAt: number = Date.now()): Promise<string> {
+  const token = generateSessionToken();
+  await getDb(env.DB)
+    .insert(sessions)
+    .values({
+      id: await sha256Hex(token),
+      expiresAt: new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
+      createdAt: new Date(lastExtendedAt).toISOString(),
+    });
+  return token;
+}
+
+async function storedExpiresAt(token: string): Promise<string | undefined> {
+  const row = await getDb(env.DB).query.sessions.findFirst({
+    where: eq(sessions.id, await sha256Hex(token)),
+  });
+  return row?.expiresAt;
+}
+
+function getSession(headers: Record<string, string> = {}) {
+  return exports.default.fetch(SESSION_URL, { headers });
+}
 
 describe("isAuthDisabled", () => {
   const disabledEnv = { AUTH_DISABLED: "true" };
@@ -39,104 +63,95 @@ describe("isAuthDisabled", () => {
 });
 
 describe("requireSession", () => {
-  it("Cookie がなければ 401", async () => {
-    const res = await exports.default.fetch("https://nagi.example.com/api/session");
+  it("Authorization がなければ 401", async () => {
+    const res = await getSession();
     expect(res.status).toBe(401);
     expect(await res.json()).toEqual({ error: "unauthorized" });
   });
 
-  it("知らない Cookie なら 401 で、Cookie を消す", async () => {
-    const res = await exports.default.fetch("https://nagi.example.com/api/session", {
-      headers: { Cookie: cookieHeader({ [SESSION_COOKIE]: generateSessionToken() }) },
-    });
+  it("知らないトークンなら 401", async () => {
+    const res = await getSession({ Authorization: `Bearer ${generateSessionToken()}` });
     expect(res.status).toBe(401);
-    const cleared = findSetCookie(res.headers.getSetCookie(), SESSION_COOKIE);
-    expect(cleared?.value).toBe("");
+    expect(await res.json()).toEqual({ error: "unauthorized" });
   });
 
-  it("有効な Cookie なら 200 で、延長していなければ Set-Cookie を出さない", async () => {
-    const db = getDb(env.DB);
-    const token = generateSessionToken();
-    const now = new Date();
-    // 直前に延長したばかり（1 日たっていない）
-    await db.insert(sessions).values({
-      id: await sha256Hex(token),
-      expiresAt: new Date(now.getTime() + SESSION_TTL_MS).toISOString(),
-      createdAt: now.toISOString(),
-    });
+  it("有効なトークンなら 200。Set-Cookie は出さない", async () => {
+    const token = await insertSession();
 
-    const res = await exports.default.fetch("https://nagi.example.com/api/session", {
-      headers: { Cookie: cookieHeader({ [SESSION_COOKIE]: token }) },
-    });
+    const res = await getSession({ Authorization: `Bearer ${token}` });
+
     expect(res.status).toBe(200);
     expect(await res.json()).toEqual({ authenticated: true });
-    expect(findSetCookie(res.headers.getSetCookie(), SESSION_COOKIE)).toBeUndefined();
+    expect(res.headers.getSetCookie()).toHaveLength(0);
   });
 
-  it("延長した場合は __Host-sid を出し直す", async () => {
-    const db = getDb(env.DB);
-    const token = generateSessionToken();
-    const now = Date.now();
-    // 最後に延ばしたのは 1 日と少し前 → このリクエストで延長される
-    const lastExtendedAt = now - (DAY_MS + 60 * 60 * 1000);
-    await db.insert(sessions).values({
-      id: await sha256Hex(token),
-      expiresAt: new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
-      createdAt: new Date(lastExtendedAt).toISOString(),
-    });
+  it("Cookie にトークンがあっても見ない（401）", async () => {
+    const token = await insertSession();
 
-    const res = await exports.default.fetch("https://nagi.example.com/api/session", {
-      headers: { Cookie: cookieHeader({ [SESSION_COOKIE]: token }) },
-    });
-    expect(res.status).toBe(200);
-    const reissued = findSetCookie(res.headers.getSetCookie(), SESSION_COOKIE);
-    expect(reissued?.value).toBe(token);
-    expect(reissued?.attrs.HttpOnly).toBe(true);
-    expect(reissued?.attrs.Secure).toBe(true);
-    expect(reissued?.attrs.SameSite).toBe("Lax");
-    expect(reissued?.attrs.Path).toBe("/");
+    const res = await getSession({ Cookie: `__Host-sid=${token}` });
 
-    const row = await db.query.sessions.findFirst({
-      where: eq(sessions.id, await sha256Hex(token)),
-    });
-    expect(new Date(row?.expiresAt ?? 0).getTime()).toBeGreaterThan(now + SESSION_TTL_MS - 5000);
+    expect(res.status).toBe(401);
+    expect(res.headers.getSetCookie()).toHaveLength(0);
   });
 
-  it("並列のリクエストで延長しても、どちらの Cookie も D1 と同じ期限になる", async () => {
-    const db = getDb(env.DB);
-    const token = generateSessionToken();
-    const id = await sha256Hex(token);
-    const lastExtendedAt = Date.now() - 2 * DAY_MS;
-    await db.insert(sessions).values({
-      id,
-      expiresAt: new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
-      createdAt: new Date(lastExtendedAt).toISOString(),
-    });
-
-    const request = () =>
-      exports.default.fetch("https://nagi.example.com/api/session", {
-        headers: { Cookie: cookieHeader({ [SESSION_COOKIE]: token }) },
-      });
-    const responses = await Promise.all([request(), request()]);
-
-    const row = await db.query.sessions.findFirst({ where: eq(sessions.id, id) });
-    // Cookie の Expires は秒単位
-    const storedSeconds = Math.floor(new Date(row?.expiresAt ?? 0).getTime() / 1000);
-    // 後から読んだほうが延長済みの行を見た場合は、出し直さない（Cookie はそのまま）。
-    // 出し直した Cookie は、どれも D1 と同じ期限でなければならない
-    const reissued = responses.map((res) => {
-      expect(res.status).toBe(200);
-      return findSetCookie(res.headers.getSetCookie(), SESSION_COOKIE);
-    });
-    const cookies = reissued.filter((cookie) => cookie !== undefined);
-    expect(cookies.length).toBeGreaterThan(0);
-    for (const cookie of cookies) {
-      expect(cookie.value).toBe(token);
-      expect(new Date(String(cookie.attrs.Expires)).getTime() / 1000).toBe(storedSeconds);
+  it("Bearer の形でなければ 401（有効なトークンでも）", async () => {
+    const token = await insertSession();
+    for (const authorization of [token, `Basic ${token}`, `Token ${token}`, "Bearer"]) {
+      const res = await getSession({ Authorization: authorization });
+      expect(res.status).toBe(401);
     }
   });
 
-  it("AUTH_DISABLED かつ localhost なら Cookie なしでも 200", async () => {
+  it("期限切れのトークンは 401 で、行も消える", async () => {
+    // 1 年と 1 分前に延ばしたきり → 期限は 1 分前
+    const token = await insertSession(Date.now() - SESSION_TTL_MS - 60 * 1000);
+
+    const res = await getSession({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(401);
+    expect(await res.json()).toEqual({ error: "unauthorized" });
+    expect(await storedExpiresAt(token)).toBeUndefined();
+  });
+
+  it("最後に延ばしてから 1 日たっていなければ、期限は延ばさない", async () => {
+    const lastExtendedAt = Date.now() - (DAY_MS - 60 * 60 * 1000);
+    const token = await insertSession(lastExtendedAt);
+
+    const res = await getSession({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(200);
+    expect(await storedExpiresAt(token)).toBe(
+      new Date(lastExtendedAt + SESSION_TTL_MS).toISOString(),
+    );
+  });
+
+  it("最後に延ばしてから 1 日たっていれば、期限を今から 1 年に延ばす", async () => {
+    const now = Date.now();
+    // 最後に延ばしたのは 1 日と少し前 → このリクエストで延長される
+    const token = await insertSession(now - (DAY_MS + 60 * 60 * 1000));
+
+    const res = await getSession({ Authorization: `Bearer ${token}` });
+
+    expect(res.status).toBe(200);
+    const expiresAt = new Date((await storedExpiresAt(token)) ?? 0).getTime();
+    expect(expiresAt).toBeGreaterThan(now + SESSION_TTL_MS - 5000);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + SESSION_TTL_MS);
+  });
+
+  it("並列のリクエストで延長しても、どちらも 200 で、期限は今から 1 年になる", async () => {
+    const now = Date.now();
+    const token = await insertSession(now - 2 * DAY_MS);
+
+    const request = () => getSession({ Authorization: `Bearer ${token}` });
+    const responses = await Promise.all([request(), request()]);
+
+    for (const res of responses) expect(res.status).toBe(200);
+    const expiresAt = new Date((await storedExpiresAt(token)) ?? 0).getTime();
+    expect(expiresAt).toBeGreaterThan(now + SESSION_TTL_MS - 5000);
+    expect(expiresAt).toBeLessThanOrEqual(Date.now() + SESSION_TTL_MS);
+  });
+
+  it("AUTH_DISABLED かつ localhost ならトークンなしでも 200", async () => {
     const res = await app.request(
       "http://localhost:5317/api/session",
       {},
@@ -146,7 +161,7 @@ describe("requireSession", () => {
     expect(await res.json()).toEqual({ authenticated: true });
   });
 
-  it("AUTH_DISABLED でも localhost 以外なら Cookie なしは 401", async () => {
+  it("AUTH_DISABLED でも localhost 以外ならトークンなしは 401", async () => {
     const res = await app.request(
       "https://nagi.example.com/api/session",
       {},

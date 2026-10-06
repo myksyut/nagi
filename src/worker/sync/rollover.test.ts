@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
-import { compareRank, rankAfter, ranksBetween } from "@shared/rank";
 import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
+import { compareRank, rankAfter, ranksBetween } from "../../shared/rank";
 import { getDb } from "../db/client";
 import { appliedMutations, meta, projects, tasks } from "../db/schema";
 import {

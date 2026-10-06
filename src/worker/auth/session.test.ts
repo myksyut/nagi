@@ -167,7 +167,7 @@ describe("validateSession", () => {
       new Date(nowA.getTime() + SESSION_TTL_MS).toISOString(),
       new Date(nowB.getTime() + SESSION_TTL_MS).toISOString(),
     ]).toContain(stored);
-    // どちらの応答も D1 と同じ期限で Cookie を出し直す（古い期限に戻らない）
+    // どちらの結果も D1 と同じ期限になる（古い期限に戻らない）
     expect(a?.extended).toBe(true);
     expect(b?.extended).toBe(true);
     expect(a?.expiresAt.toISOString()).toBe(stored);

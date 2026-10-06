@@ -1,6 +1,5 @@
 import { sql } from "drizzle-orm";
 import { check, index, integer, sqliteTable, text, uniqueIndex } from "drizzle-orm/sqlite-core";
-// drizzle-kit もこのファイルを読むので、パスの別名（@shared）は使わない
 import { BUCKETS, type ChecklistItem } from "../../shared/model";
 import { PROJECT_COLORS } from "../../shared/palette";
 import { type Points, PRIORITIES } from "../../shared/priority-points";

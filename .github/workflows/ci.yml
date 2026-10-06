@@ -1,5 +1,6 @@
 name: CI
 
+# Worker（TypeScript）と TUI（Rust）を確かめる。main では、この CI が全部通ったあとに deploy.yml が本番に出す
 on:
   pull_request:
   push:
@@ -28,3 +29,23 @@ jobs:
       - run: pnpm install --frozen-lockfile
       - run: pnpm check
       - run: pnpm test
+
+  # TUI（tui/）の整形・lint・テスト。配るバイナリのビルドは tui.yml で行う
+  tui:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    defaults:
+      run:
+        working-directory: tui
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: tui
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test

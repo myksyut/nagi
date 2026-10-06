@@ -14,10 +14,6 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "noFallthroughCasesInSwitch": true,
-    "noUncheckedSideEffectImports": true,
-    "paths": {
-      "@/*": ["./src/client/*"],
-      "@shared/*": ["./src/shared/*"]
-    }
+    "noUncheckedSideEffectImports": true
   }
 }

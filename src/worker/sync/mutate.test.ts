@@ -1,8 +1,9 @@
 import { env } from "cloudflare:test";
-import { API_VERSION, API_VERSION_HEADER } from "@shared/api";
-import { POINTS, PRIORITIES } from "@shared/priority-points";
 import { eq, inArray } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
+import { API_VERSION, API_VERSION_HEADER } from "../../shared/api";
+import { POINTS, PRIORITIES } from "../../shared/priority-points";
+import { createSession } from "../auth/session";
 import { getDb } from "../db/client";
 import { appliedMutations, meta, projects, tasks } from "../db/schema";
 import { createApp } from "../index";
@@ -1074,6 +1075,38 @@ describe("版とログイン", () => {
       expect(res.status).toBe(401);
     },
   );
+
+  it("Bearer のセッションがあれば、Origin なしで読み書きできる（TUI と同じ呼び方）", async () => {
+    const { token } = await createSession(db, new Date());
+    const app = createApp();
+    const call = (path: string, body: unknown, authorization: string = `Bearer ${token}`) =>
+      app.request(
+        `https://nagi.example.com${path}`,
+        {
+          method: "POST",
+          headers: {
+            Authorization: authorization,
+            "Content-Type": "application/json",
+            [API_VERSION_HEADER]: String(API_VERSION),
+          },
+          body: JSON.stringify(body),
+        },
+        env,
+      );
+
+    const task = taskInput({ title: "TUI から" });
+    const mutateRes = await call("/api/mutate", mutationBatch([{ type: "task.create", task }]));
+    expect(mutateRes.status).toBe(200);
+
+    const syncRes = await call("/api/sync", { cursor: 0, baseCursor: 0 });
+    expect(syncRes.status).toBe(200);
+    const rows = (await syncBody(syncRes)).rows.map(asTaskRow);
+    expect(rows.map((row) => row.title)).toEqual(["TUI から"]);
+
+    // 知らないトークンでは読めない
+    const resUnknown = await call("/api/sync", { cursor: 0, baseCursor: 0 }, "Bearer unknown");
+    expect(resUnknown.status).toBe(401);
+  });
 
   it("Originが違うと403", async () => {
     const { app } = apiApp();

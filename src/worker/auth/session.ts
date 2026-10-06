@@ -3,8 +3,6 @@ import type { Db } from "../db/client";
 import { sessions } from "../db/schema";
 import { encodeBase64Url, randomBytes, sha256Hex } from "./crypto";
 
-export const SESSION_COOKIE = "__Host-sid";
-
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** 有効期限は 1 年。使うたびに延長する */
 export const SESSION_TTL_MS = 365 * DAY_MS;
@@ -14,13 +12,16 @@ const EXTEND_INTERVAL_MS = DAY_MS;
 export type Session = {
   expiresAt: Date;
   /**
-   * 有効期限が延びたので、Cookie をこの期限で出し直す。
+   * 有効期限が延びた（expiresAt は延びたあとの期限）。
    * 並列のリクエストが先に延ばしていた場合も、その延ばした期限で true になる
    */
   extended: boolean;
 };
 
-/** 32 バイトの乱数のトークン。Cookie に入れ、D1 にはその SHA-256 だけを保存する */
+/**
+ * 32 バイトの乱数のトークン。ログインした TUI に渡し、`Authorization: Bearer` で受け取る。
+ * D1 にはその SHA-256 だけを保存する
+ */
 export function generateSessionToken(): string {
   return encodeBase64Url(randomBytes(32));
 }
@@ -65,8 +66,8 @@ export async function validateSession(db: Db, token: string, now: Date): Promise
     .where(and(eq(sessions.id, id), eq(sessions.expiresAt, row.expiresAt)));
   if (result.meta.changes > 0) return { expiresAt: extendedAt, extended: true };
 
-  // 先を越された（ほかのリクエストが延ばした、またはログアウトで消えた）。今の行に合わせる。
-  // 古い期限の Cookie を出すと、先に延ばしたリクエストの Cookie を上書きしてしまうため
+  // 先を越された（ほかのリクエストが延ばした、またはログアウトで消えた）。今の行に合わせる
+  // （消えていたら、ないセッションを有効として返さない）
   const latest = await db.query.sessions.findFirst({ where: eq(sessions.id, id) });
   if (!latest) return null;
   return { expiresAt: new Date(latest.expiresAt), extended: true };

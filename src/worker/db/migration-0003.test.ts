@@ -1,7 +1,7 @@
 import { applyD1Migrations, env } from "cloudflare:test";
-import { POINTS, PRIORITIES } from "@shared/priority-points";
 import { eq } from "drizzle-orm";
 import { describe, expect, it } from "vitest";
+import { POINTS, PRIORITIES } from "../../shared/priority-points";
 import { getDb } from "./client";
 import { meta, projects, tasks } from "./schema";
 

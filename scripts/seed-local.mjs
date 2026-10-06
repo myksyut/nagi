@@ -1,5 +1,5 @@
-// 速さの確認用のデータを、手元のサーバー（http://localhost:5317、.dev.vars の AUTH_DISABLED=true）の
-// /api/mutate で入れる。送り先は localhost だけで、本番の D1 には触らない（README「速さの確認」）。
+// 試すためのデータを、手元の Worker（pnpm dev。http://localhost:5317、.dev.vars の AUTH_DISABLED=true）の
+// /api/mutate で入れる。送り先は localhost だけで、本番の D1 には触らない（README「手元での動かし方」）。
 //   node scripts/seed-local.mjs today100     … 今日に 100 件、受信箱とあとでに 10 件ずつ、プロジェクト 2 つ
 //                                              （優先度と工数は一部のタスクにだけ付ける）
 //   node scripts/seed-local.mjs fill 20000   … タスクの合計がこの件数になるまで、完了ログ（過去 2 年に散らばる完了）を足す
@@ -34,8 +34,8 @@ function uuidv7() {
 async function api(path, body) {
   const response = await fetch(BASE + path, {
     method: "POST",
+    // TUI と同じ呼び方（Origin は付けない。手元では AUTH_DISABLED なので Authorization も要らない）
     headers: {
-      Origin: BASE,
       "Content-Type": "application/json",
       "X-Api-Version": API_VERSION,
     },
