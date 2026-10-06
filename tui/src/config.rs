@@ -12,6 +12,8 @@ pub const DEFAULT_SERVER: &str = "https://nagi.wizard1026miya.workers.dev";
 pub struct Config {
     /// Worker の URL（末尾の / なし）
     pub server: String,
+    /// Worker を、`--server` か NAGI_SERVER で名指ししたか
+    explicit_server: bool,
     config_dir: PathBuf,
     data_dir: PathBuf,
 }
@@ -46,11 +48,13 @@ fn slug(server: &str) -> String {
 impl Config {
     /// server は `--server`、なければ環境変数 NAGI_SERVER、なければ本番
     pub fn new(server: Option<String>) -> Config {
-        let server = server
-            .or_else(|| std::env::var("NAGI_SERVER").ok().filter(|s| !s.is_empty()))
-            .unwrap_or_else(|| DEFAULT_SERVER.to_string());
+        let explicit =
+            server.or_else(|| std::env::var("NAGI_SERVER").ok().filter(|s| !s.is_empty()));
+        let explicit_server = explicit.is_some();
+        let server = explicit.unwrap_or_else(|| DEFAULT_SERVER.to_string());
         let config = Config {
             server: server.trim_end_matches('/').to_string(),
+            explicit_server,
             config_dir: base_dir("XDG_CONFIG_HOME", ".config"),
             data_dir: base_dir("XDG_DATA_HOME", ".local/share"),
         };
@@ -59,8 +63,22 @@ impl Config {
         config
     }
 
+    /// Worker（クラウド）と同期して使うか。false なら、この端末だけで使う（ローカル。ログインなし・Worker なし）。
+    /// クラウドになるのは、ログインしてあるとき（保存してあるログインか NAGI_TOKEN）と、Worker を名指ししたとき
+    /// （`--server`・NAGI_SERVER。手元の開発サーバーや、自分で立てた Worker）
+    pub fn is_cloud(&self) -> bool {
+        self.explicit_server
+            || std::env::var("NAGI_TOKEN").is_ok_and(|token| !token.is_empty())
+            || self.saved_session().is_some()
+    }
+
+    /// この端末だけで使うときのデータ（Worker とは同期しない）
+    pub fn device_db_path(&self) -> PathBuf {
+        self.data_dir.join("local.db")
+    }
+
     /// 手元の開発サーバーか（AUTH_DISABLED でログインなしで使える）
-    pub fn is_local(&self) -> bool {
+    pub fn is_dev_server(&self) -> bool {
         let host = self
             .server
             .trim_start_matches("https://")
@@ -232,6 +250,7 @@ impl Config {
     pub fn at(server: &str, dir: &Path) -> Config {
         let config = Config {
             server: server.to_string(),
+            explicit_server: false,
             config_dir: dir.join("config"),
             data_dir: dir.join("data"),
         };

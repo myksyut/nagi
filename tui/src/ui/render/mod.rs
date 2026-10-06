@@ -348,6 +348,8 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         None if app.should_quit => ("保存しています…".to_string(), theme::muted()),
         None if app.store.pending_count() > 0 => ("保存中…".to_string(), theme::muted()),
         None if !app.store.synced => ("同期中…".to_string(), theme::muted()),
+        // この端末だけで使っている（Worker とは同期していない）
+        None if !app.config.is_cloud() => ("ローカル".to_string(), theme::faint()),
         None => (String::new(), theme::muted()),
     };
     let state_width = width(&state);

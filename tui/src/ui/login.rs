@@ -68,6 +68,8 @@ impl App {
 
     pub fn handle_login_key(&mut self, key: &KeyEvent) {
         match key.code {
+            // この端末だけで使っているときは、ログインをやめて戻れる
+            KeyCode::Esc if !self.config.is_cloud() => self.cancel_login(),
             KeyCode::Char('q') | KeyCode::Esc => self.should_quit = true,
             KeyCode::Enter => {
                 let idle = self.login.as_ref().is_some_and(|login| {
@@ -78,6 +80,38 @@ impl App {
                 }
             }
             _ => {}
+        }
+    }
+
+    /// ログインをやめて、この端末のデータに戻る。ログインを始めると世代が進んで、前のストアへの知らせは
+    /// 捨てられるので、ストアを作り直す
+    fn cancel_login(&mut self) {
+        self.login = None;
+        if self.rebuild_store(None) {
+            self.sync_now();
+            self.reconcile();
+        }
+    }
+
+    /// ストアと、その相手（通信か、この端末のデータ）を作り直す。作れなければ、前のストアのまま false
+    fn rebuild_store(&mut self, token: Option<String>) -> bool {
+        self.generation += 1;
+        match build_store(
+            &self.config,
+            token,
+            self.user_id.as_deref(),
+            self.events.clone(),
+            self.generation,
+        ) {
+            Ok(store) => {
+                self.store = store;
+                true
+            }
+            Err(message) => {
+                crate::log::error(&message);
+                self.toast_error("データを開けませんでした", Some(&message));
+                false
+            }
         }
     }
 
@@ -148,23 +182,24 @@ impl App {
             }
             LoginEvent::Polled(Ok(result)) => match result {
                 DevicePoll::Ok { token, user_id } => {
+                    // この端末だけで使っていたなら、そのデータはそのまま残る（クラウドへは移さない）
+                    let left_on_device = !self.config.is_cloud();
                     if let Err(error) = self.config.save_session(&token, user_id.as_deref()) {
                         crate::log::error(&format!("トークンを保存できませんでした: {error}"));
                     }
                     self.login = None;
                     // 新しいログインで、ストアと通信を作り直す。手元の控えは、ログインした利用者のものを開く
                     // （前と別の利用者なら別の控えなので、前の利用者の行は混ざらない）
-                    self.generation += 1;
                     self.user_id = user_id;
-                    self.store = build_store(
-                        &self.config,
-                        Some(token),
-                        self.user_id.as_deref(),
-                        self.events.clone(),
-                        self.generation,
-                    );
-                    self.sync_now();
-                    self.reconcile();
+                    if self.rebuild_store(Some(token)) {
+                        self.sync_now();
+                        self.reconcile();
+                    }
+                    if left_on_device {
+                        self.toast_info(
+                            "クラウドと同期します。この端末のタスクはそのまま残り、ログアウトすると戻ります",
+                        );
+                    }
                 }
                 DevicePoll::Expired => {
                     login.step = LoginStep::Failed(
@@ -184,9 +219,10 @@ impl App {
         }
     }
 
-    /// ログアウト。Worker のセッションを消し、手元のトークンと控えも消して、ログインの画面へ
+    /// ログアウト。Worker のセッションを消し、手元のトークンと控えも消す。そのあとは、この端末のデータに戻る
+    /// （Worker を名指しして使っているときは、ログインの画面へ）
     pub fn logout(&mut self) {
-        if self.config.is_local() && self.config.saved_token().is_none() {
+        if self.config.is_dev_server() && self.config.saved_token().is_none() {
             self.toast_info("手元の開発サーバーでは、ログインなしで使っています");
             return;
         }
@@ -195,17 +231,17 @@ impl App {
             thread::spawn(move || auth::logout(&client));
         }
         self.config.clear_token();
-        // 手元の控えを消して、空のストアにする（通信はしない）
-        self.generation += 1;
+        // 手元の控えを消す
         self.config.remove_db(self.user_id.as_deref());
         self.user_id = None;
-        self.store = build_store(
-            &self.config,
-            None,
-            None,
-            self.events.clone(),
-            self.generation,
-        );
-        self.show_login(Some("ログアウトしました"));
+        let rebuilt = self.rebuild_store(None);
+        if self.config.is_cloud() {
+            // Worker を名指しして使っている：空のストアのまま、ログインの画面へ（通信はしない）
+            self.show_login(Some("ログアウトしました"));
+        } else if rebuilt {
+            self.sync_now();
+            self.reconcile();
+            self.toast_info("ログアウトしました。この端末のデータに戻りました");
+        }
     }
 }

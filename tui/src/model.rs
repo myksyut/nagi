@@ -266,7 +266,7 @@ pub enum Mutation {
 }
 
 /// 操作の対象の行
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum RowKind {
     Task,
     Project,
