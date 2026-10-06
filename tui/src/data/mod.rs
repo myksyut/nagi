@@ -27,15 +27,17 @@ pub use actions::{AddTask, Destination, Placement};
 pub use store::{Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReason, Store};
 
 /// ストアと通信のスレッドを作る。通信の結果は notify に渡る（画面や CLI が受け取って、ストアへ届ける）。
+/// user_id は token の持ち主（auth::current_user_id）。手元の控えは、利用者ごとのものを開く。
 /// 手元の控えが開けなければ、保存せずに動く
 pub fn open_store(
     config: &Config,
     token: Option<String>,
+    user_id: Option<&str>,
     notify: impl Fn(NetEvent) + Send + Clone + 'static,
 ) -> Store {
     let client = ApiClient::new(&config.server, token);
     let transport = NetTransport::spawn(client, notify);
-    let local = match LocalDb::open(&config.db_path()) {
+    let local = match LocalDb::open(&config.db_path(user_id)) {
         Ok(local) => Some(local),
         Err(error) => {
             log::error(&format!(

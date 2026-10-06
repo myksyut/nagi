@@ -147,16 +147,19 @@ impl App {
                 login.step = LoginStep::Failed(message);
             }
             LoginEvent::Polled(Ok(result)) => match result {
-                DevicePoll::Ok(token) => {
-                    if let Err(error) = self.config.save_token(&token) {
+                DevicePoll::Ok { token, user_id } => {
+                    if let Err(error) = self.config.save_session(&token, user_id.as_deref()) {
                         crate::log::error(&format!("トークンを保存できませんでした: {error}"));
                     }
                     self.login = None;
-                    // 新しいログインで、ストアと通信を作り直す
+                    // 新しいログインで、ストアと通信を作り直す。手元の控えは、ログインした利用者のものを開く
+                    // （前と別の利用者なら別の控えなので、前の利用者の行は混ざらない）
                     self.generation += 1;
+                    self.user_id = user_id;
                     self.store = build_store(
                         &self.config,
                         Some(token),
+                        self.user_id.as_deref(),
                         self.events.clone(),
                         self.generation,
                     );
@@ -194,8 +197,15 @@ impl App {
         self.config.clear_token();
         // 手元の控えを消して、空のストアにする（通信はしない）
         self.generation += 1;
-        let _ = std::fs::remove_file(self.config.db_path());
-        self.store = build_store(&self.config, None, self.events.clone(), self.generation);
+        self.config.remove_db(self.user_id.as_deref());
+        self.user_id = None;
+        self.store = build_store(
+            &self.config,
+            None,
+            None,
+            self.events.clone(),
+            self.generation,
+        );
         self.show_login(Some("ログアウトしました"));
     }
 }

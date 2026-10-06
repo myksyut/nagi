@@ -214,6 +214,8 @@ pub enum TextField {
 pub struct App {
     pub config: Config,
     pub store: Store,
+    /// いまのログインの持ち主（Worker の利用者の ID。分からなければ None）。手元の控えは、この利用者のもの
+    pub user_id: Option<String>,
     pub screen: Screen,
     /// ショートカットのページから戻る先
     pub previous_screen: Screen,
@@ -255,12 +257,18 @@ pub struct App {
 }
 
 impl App {
-    pub fn new(config: Config, store: Store, events: Sender<AppEvent>) -> App {
+    pub fn new(
+        config: Config,
+        store: Store,
+        user_id: Option<String>,
+        events: Sender<AppEvent>,
+    ) -> App {
         let today = store.today.clone();
         let prefs = config.load_prefs();
         App {
             config,
             store,
+            user_id,
             screen: Screen::Today,
             previous_screen: Screen::Today,
             focus: Focus::Main,
