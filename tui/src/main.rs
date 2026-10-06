@@ -1,4 +1,5 @@
-//! nagi：自分専用の TODO アプリの TUI と CLI。データは Worker（Cloudflare）にあり、手元には控え（SQLite）を持つ
+//! nagi：TODO アプリの TUI と CLI。データは、この端末だけに置くか（ローカル）、ログインして Worker（Cloudflare）と
+//! 同期する（そのときは、手元に控えの SQLite を持つ）
 
 mod auth;
 mod cli;
@@ -46,7 +47,7 @@ fn main() -> ExitCode {
             match ui::run(config) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
-                    eprintln!("端末を使えませんでした：{error}");
+                    eprintln!("起動できませんでした：{error}");
                     ExitCode::FAILURE
                 }
             }
