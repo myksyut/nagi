@@ -114,7 +114,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                 let inner = cell_width - 1;
                 let day_entries = entries.get(day).map_or(&[][..], Vec::as_slice);
                 if row == 0 {
-                    // 日付の行。今日は紫、ほかの月の日は控えめに
+                    // 日付の行。今日は青、ほかの月の日は控えめに
                     let number: u32 = day[8..].parse().unwrap_or(0);
                     let style = if *day == today {
                         theme::accent().add_modifier(Modifier::BOLD)
