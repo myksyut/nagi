@@ -95,6 +95,7 @@ pub enum Action {
     FocusSidebar,
     ToggleSidebar,
     Sync,
+    Login,
     Logout,
     Quit,
 }
@@ -310,6 +311,7 @@ pub fn bindings() -> Vec<Binding> {
         ),
         binding("ショートカットの一覧", G::Global, &["?"], A::Shortcuts),
         binding("今すぐ同期", G::Global, &["Ctrl+r"], A::Sync),
+        binding("ログイン（クラウドと同期する）", G::Global, &[], A::Login),
         binding("ログアウト", G::Global, &[], A::Logout),
         binding("終了", G::Global, &["q", "Ctrl+c"], A::Quit),
     ];
@@ -581,8 +583,10 @@ impl App {
             | A::FocusSidebar
             | A::ToggleSidebar
             | A::Sync
-            | A::Logout
             | A::Quit => true,
+            // この端末だけで使っているときはログイン、Worker と同期しているときはログアウト
+            A::Login => !self.config.is_cloud(),
+            A::Logout => self.config.is_cloud(),
         }
     }
 
@@ -835,6 +839,7 @@ impl App {
                 self.sync_now();
                 self.toast_info("同期しています");
             }
+            A::Login => self.show_login(None),
             A::Logout => self.logout(),
             A::Quit => self.should_quit = true,
         }

@@ -4,6 +4,7 @@
 //! - 知らせ：store.take_notices()
 
 pub mod actions;
+pub mod device;
 pub mod lists;
 pub mod local_db;
 pub mod net;
@@ -16,6 +17,7 @@ pub mod undo;
 
 use chrono::Utc;
 
+use self::device::{DeviceDb, DeviceTransport};
 use self::local_db::LocalDb;
 use self::net::{ApiClient, NetEvent, NetTransport};
 use self::store::StoreOptions;
@@ -26,16 +28,30 @@ use crate::log;
 pub use actions::{AddTask, Destination, Placement};
 pub use store::{Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReason, Store};
 
-/// ストアと通信のスレッドを作る。通信の結果は notify に渡る（画面や CLI が受け取って、ストアへ届ける）。
-/// 手元の控えが開けなければ、保存せずに動く
+/// ストアと、その相手（通信か、この端末のデータ）のスレッドを作る。結果は notify に渡る（画面や CLI が受け取って、
+/// ストアへ届ける）。
+/// - この端末だけで使うとき（Config::is_cloud が false）：相手は、この端末のデータ（device.rs）。それが正本なので、
+///   手元の控えは持たない。データのファイルを開けなければ、動かさずに理由を返す
+/// - Worker と同期するとき：相手は通信。user_id は token の持ち主（auth::current_user_id）で、手元の控えは、
+///   利用者ごとのものを開く。手元の控えが開けなければ、保存せずに動く
 pub fn open_store(
     config: &Config,
     token: Option<String>,
+    user_id: Option<&str>,
     notify: impl Fn(NetEvent) + Send + Clone + 'static,
-) -> Store {
+) -> Result<Store, String> {
+    if !config.is_cloud() {
+        let db = DeviceDb::open(&config.device_db_path())?;
+        return Ok(Store::new(StoreOptions {
+            transport: Box::new(DeviceTransport::spawn(db, APP_TIME_ZONE, notify)),
+            local: None,
+            clock: Box::new(Utc::now),
+            tz: APP_TIME_ZONE,
+        }));
+    }
     let client = ApiClient::new(&config.server, token);
     let transport = NetTransport::spawn(client, notify);
-    let local = match LocalDb::open(&config.db_path()) {
+    let local = match LocalDb::open(&config.db_path(user_id)) {
         Ok(local) => Some(local),
         Err(error) => {
             log::error(&format!(
@@ -44,10 +60,10 @@ pub fn open_store(
             None
         }
     };
-    Store::new(StoreOptions {
+    Ok(Store::new(StoreOptions {
         transport: Box::new(transport),
         local,
         clock: Box::new(Utc::now),
         tz: APP_TIME_ZONE,
-    })
+    }))
 }

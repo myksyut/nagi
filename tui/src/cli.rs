@@ -11,6 +11,7 @@ use serde_json::{Value, json};
 
 use crate::auth::{self, DevicePoll};
 use crate::config::Config;
+use crate::data::device::DeviceDb;
 use crate::data::net::{ApiClient, NetEvent};
 use crate::data::{
     AddTask, Destination, Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReason,
@@ -28,7 +29,9 @@ const WAIT: Duration = Duration::from_secs(60);
 const DEFAULT_COMPLETED_DAYS: i64 = 14;
 
 pub const HELP: &str = "\
-nagi — 自分専用の TODO アプリ
+nagi — ターミナルで使う TODO アプリ
+
+ログインしなければ、データはこの端末だけに置く（ローカル）。ログインすると、クラウドと同期して使う。
 
 使い方：
   nagi                       画面（TUI）を開く
@@ -38,8 +41,8 @@ nagi — 自分専用の TODO アプリ
   nagi update <ID> [...]     既存のタスクに足す・属性を付ける
   nagi done <ID>             タスクを完了にする
   nagi projects              プロジェクトの一覧を出す
-  nagi login                 ログインする（GitHub のデバイスフロー。コードを出して待つ）
-  nagi logout                ログアウトする
+  nagi login                 ログインして、クラウドと同期する（GitHub のデバイスフロー。コードを出して待つ）
+  nagi logout                ログアウトして、この端末のデータに戻る
 
 add の指定：
   --memo <文字>              メモ
@@ -69,7 +72,8 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
 
 共通：
   --json                     結果を JSON で出す（add・list・show・update・done・projects）
-  --server <URL>             接続する Worker（省くと環境変数 NAGI_SERVER、なければ本番）
+  --server <URL>             接続する Worker（省くと環境変数 NAGI_SERVER。どちらもなければ、ログインしていれば本番、
+                             していなければこの端末のデータ）
   -h, --help                 この説明（nagi help、nagi add --help でも同じ）
   -V, --version              版
 
@@ -397,17 +401,23 @@ struct Session {
 impl Session {
     fn open(config: &Config) -> Result<Session, String> {
         let token = config.load_token();
-        if token.is_none() && !config.is_local() {
+        // Worker を名指ししたのにログインがない（この端末だけで使うときは、ログインは要らない）
+        if config.is_cloud() && token.is_none() && !config.is_dev_server() {
             return Err("ログインしていません。先に `nagi login` を実行してください".to_string());
         }
+        let user_id = auth::current_user_id(config);
         let (sender, events) = channel();
-        let store = open_store(config, token, move |event| {
+        let store = open_store(config, token, user_id.as_deref(), move |event| {
             let _ = sender.send(event);
-        });
+        })?;
         Ok(Session {
             store,
             events,
-            server: config.server.clone(),
+            server: if config.is_cloud() {
+                config.server.clone()
+            } else {
+                "この端末のデータ".to_string()
+            },
         })
     }
 
@@ -1090,11 +1100,21 @@ fn login(config: &Config) -> Result<(), String> {
             // 通信のつまずきは、次の回でもう一度確かめる
             Ok(DevicePoll::Pending) | Err(_) => {}
             Ok(DevicePoll::SlowDown(next)) => interval = next.max(interval + 1),
-            Ok(DevicePoll::Ok(token)) => {
+            Ok(DevicePoll::Ok { token, user_id }) => {
                 config
-                    .save_token(&token)
+                    .save_session(&token, user_id.as_deref())
                     .map_err(|error| format!("トークンを保存できませんでした：{error}"))?;
-                emit!("ログインしました");
+                emit!("ログインしました。クラウドと同期します");
+                // この端末だけで使っていたときのデータは、そのまま残る（クラウドへは移さない）
+                let left = DeviceDb::open(&config.device_db_path())
+                    .ok()
+                    .and_then(|db| db.count().ok())
+                    .unwrap_or(0);
+                if left > 0 {
+                    emit!(
+                        "この端末のタスクとプロジェクト（{left} 件）はそのまま残り、`nagi logout` で戻ります"
+                    );
+                }
                 return Ok(());
             }
             Ok(DevicePoll::Expired) => {
@@ -1110,12 +1130,21 @@ fn login(config: &Config) -> Result<(), String> {
 
 /// ログアウト。Worker のセッションを消し、手元のトークンと控えも消す
 fn logout(config: &Config) -> Result<(), String> {
-    match config.saved_token() {
-        Some(token) => {
-            auth::logout(&ApiClient::new(&config.server, Some(token)));
+    match config.saved_session() {
+        Some(session) => {
+            // 持ち主の分からないログイン（利用者の ID を返さないころのもの）は、消す前に聞いておく（どの控えかを決めるため）
+            let user_id = session
+                .user_id
+                .clone()
+                .or_else(|| auth::current_user_id(config));
+            auth::logout(&ApiClient::new(&config.server, Some(session.token)));
             config.clear_token();
-            let _ = std::fs::remove_file(config.db_path());
-            emit!("ログアウトしました");
+            config.remove_db(user_id.as_deref());
+            if config.is_cloud() {
+                emit!("ログアウトしました");
+            } else {
+                emit!("ログアウトしました。このあとは、この端末のデータを使います");
+            }
         }
         None => emit!("ログインしていません"),
     }

@@ -41,14 +41,15 @@ const TICK: Duration = Duration::from_millis(250);
 /// 終了のときに、送信中の操作が保存されるのを待つ時間
 const QUIT_GRACE: Duration = Duration::from_secs(4);
 
-/// ストアと通信のスレッドを作る。通信の結果は、世代を付けて画面のスレッドへ送る
+/// ストアと、その相手（通信か、この端末のデータ）のスレッドを作る。結果は、世代を付けて画面のスレッドへ送る
 pub fn build_store(
     config: &Config,
     token: Option<String>,
+    user_id: Option<&str>,
     events: Sender<AppEvent>,
     generation: u64,
-) -> Store {
-    open_store(config, token, move |event| {
+) -> Result<Store, String> {
+    open_store(config, token, user_id, move |event| {
         let _ = events.send(AppEvent::Net(generation, event));
     })
 }
@@ -56,9 +57,12 @@ pub fn build_store(
 pub fn run(config: Config) -> io::Result<()> {
     let (events, inbox) = mpsc::channel::<AppEvent>();
     let token = config.load_token();
-    let needs_login = token.is_none() && !config.is_local();
-    let store = build_store(&config, token, events.clone(), 0);
-    let mut app = App::new(config, store, events.clone());
+    // この端末だけで使うときは、ログインは要らない
+    let needs_login = config.is_cloud() && token.is_none() && !config.is_dev_server();
+    let user_id = crate::auth::current_user_id(&config);
+    let store = build_store(&config, token, user_id.as_deref(), events.clone(), 0)
+        .map_err(io::Error::other)?;
+    let mut app = App::new(config, store, user_id, events.clone());
     if needs_login {
         app.show_login(None);
     } else {
