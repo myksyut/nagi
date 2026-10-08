@@ -3,7 +3,9 @@ name = "nagi"
 version = "0.1.0"
 edition = "2024"
 rust-version = "1.88"
-description = "自分専用の TODO アプリ nagi の TUI"
+description = "ターミナルで使う TODO アプリ nagi の TUI と CLI"
+license = "MIT"
+repository = "https://github.com/myksyut/nagi"
 publish = false
 
 [[bin]]
@@ -14,6 +16,7 @@ path = "src/main.rs"
 base64 = "0.22.1"
 chrono = "0.4.45"
 chrono-tz = "0.10.4"
+iana-time-zone = "0.1"
 crossterm = "0.29.0"
 ratatui = "0.30.2"
 regex = "1.13.1"

@@ -1012,6 +1012,7 @@ dependencies = [
  "chrono",
  "chrono-tz",
  "crossterm",
+ "iana-time-zone",
  "ratatui",
  "regex",
  "rusqlite",

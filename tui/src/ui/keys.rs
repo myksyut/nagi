@@ -311,7 +311,12 @@ pub fn bindings() -> Vec<Binding> {
         ),
         binding("ショートカットの一覧", G::Global, &["?"], A::Shortcuts),
         binding("今すぐ同期", G::Global, &["Ctrl+r"], A::Sync),
-        binding("ログイン（クラウドと同期する）", G::Global, &[], A::Login),
+        binding(
+            "クラウドと同期する（ログイン。いまは招待制）",
+            G::Global,
+            &[],
+            A::Login,
+        ),
         binding("ログアウト", G::Global, &[], A::Logout),
         binding("終了", G::Global, &["q", "Ctrl+c"], A::Quit),
     ];

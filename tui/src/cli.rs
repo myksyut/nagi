@@ -41,7 +41,7 @@ nagi — ターミナルで使う TODO アプリ
   nagi update <ID> [...]     既存のタスクに足す・属性を付ける
   nagi done <ID>             タスクを完了にする
   nagi projects              プロジェクトの一覧を出す
-  nagi login                 ログインして、クラウドと同期する（GitHub のデバイスフロー。コードを出して待つ）
+  nagi login                 ログインして、クラウドと同期する（GitHub のデバイスフロー。いまは招待した人だけ）
   nagi logout                ログアウトして、この端末のデータに戻る
 
 add の指定：
@@ -1122,7 +1122,10 @@ fn login(config: &Config) -> Result<(), String> {
             }
             Ok(DevicePoll::Denied) => return Err("GitHub で承認されませんでした".to_string()),
             Ok(DevicePoll::Forbidden) => {
-                return Err("この GitHub アカウントでは、nagi を使えません".to_string());
+                return Err(
+                    "この GitHub アカウントは、まだクラウドとの同期に招待されていません"
+                        .to_string(),
+                );
             }
         }
     }

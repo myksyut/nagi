@@ -211,7 +211,8 @@ impl App {
                 }
                 DevicePoll::Forbidden => {
                     login.step = LoginStep::Failed(
-                        "この GitHub アカウントでは、nagi を使えません".to_string(),
+                        "この GitHub アカウントは、まだクラウドとの同期に招待されていません"
+                            .to_string(),
                     );
                 }
                 DevicePoll::Pending | DevicePoll::SlowDown(_) => {}

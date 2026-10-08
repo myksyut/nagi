@@ -9,6 +9,17 @@ use regex::Regex;
 use unicode_normalization::UnicodeNormalization;
 
 pub const APP_TIME_ZONE: Tz = chrono_tz::Asia::Tokyo;
+
+/// この端末のタイムゾーン（この端末だけで使うとき、日付の切り替えと「今日」に使う）。
+/// 環境変数 TZ（IANA の名前。例：Asia/Tokyo）があればそれ、なければ OS の設定。分からなければ APP_TIME_ZONE
+pub fn device_time_zone() -> Tz {
+    let named = |name: String| name.parse::<Tz>().ok();
+    std::env::var("TZ")
+        .ok()
+        .and_then(named)
+        .or_else(|| iana_time_zone::get_timezone().ok().and_then(named))
+        .unwrap_or(APP_TIME_ZONE)
+}
 /// この時刻（時）に論理日付が切り替わる
 pub const DAY_START_HOUR: u32 = 4;
 
