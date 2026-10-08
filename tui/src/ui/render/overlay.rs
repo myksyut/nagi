@@ -545,6 +545,10 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) {
                     "GitHub でログインすると、クラウドと同期して使えます",
                 ));
                 lines.push(Line::from(Span::styled(
+                    "クラウドとの同期は、いまは招待した人だけが使えます",
+                    theme::muted(),
+                )));
+                lines.push(Line::from(Span::styled(
                     "この端末のタスクはそのまま残り、ログアウトすると戻ります",
                     theme::muted(),
                 )));

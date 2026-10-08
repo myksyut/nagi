@@ -82,7 +82,15 @@ GitHub とやり取りするのは Worker だけで、GitHub のアクセスト�
 
 ### 入れ方
 
-- **Releases から**：[GitHub の Releases](https://github.com/myksyut/nagi/releases) の `tui-v…` から、自分の環境のファイル（Mac は `nagi-aarch64-apple-darwin.tar.gz`、Linux は `nagi-x86_64-unknown-linux-gnu.tar.gz`）を落として展開し、`nagi` を PATH の通った場所に置く。Mac でブラウザから落としたときは、`xattr -d com.apple.quarantine nagi` を実行してから使う（Apple の開発者の署名はしていない）。`gh release download --repo myksyut/nagi --pattern 'nagi-aarch64-apple-darwin.tar.gz'` で落とせば、この手間は要らない
+- **Homebrew**（Mac の Apple シリコン・Linux の x86_64）：
+
+  ```sh
+  brew install myksyut/tap/nagi
+  brew upgrade nagi        # 更新
+  ```
+
+  formula は [myksyut/homebrew-tap](https://github.com/myksyut/homebrew-tap) にあり、Release が出るたびに `scripts/homebrew-formula.sh` で更新される（`.github/workflows/tui.yml` の `tap`。tap のリポジトリへ push する secret `TAP_GITHUB_TOKEN` がないときは飛ばすので、手で更新する）
+- **Releases から**：[GitHub の Releases](https://github.com/myksyut/nagi/releases) の `tui-v…` から、自分の環境のファイル（Mac は `nagi-aarch64-apple-darwin.tar.gz`、Linux は `nagi-x86_64-unknown-linux-musl.tar.gz`。静的に組んであるので、glibc の版を問わず動く）を落として展開し、`nagi` を PATH の通った場所に置く。Mac でブラウザから落としたときは、`xattr -d com.apple.quarantine nagi` を実行してから使う（Apple の開発者の署名はしていない）。`gh release download --repo myksyut/nagi --pattern 'nagi-aarch64-apple-darwin.tar.gz'` で落とせば、この手間は要らない
 - 入っている版は `nagi --version` で分かる（Release のタグ `tui-v0.1.<番号>` と同じ番号。手元でビルドしたものは `Cargo.toml` の版）
 - **手元でビルド**：Rust（1.88 以降）と C のコンパイラ（SQLite を一緒にビルドする）を入れて、`cargo install --path tui`。M7 には Rust を入れていないので、nix で一時的に使う
 
@@ -99,8 +107,8 @@ nagi login                             # ログインして、本番（https://n
 nagi --server http://localhost:5317    # 手元の Worker（pnpm dev）につなぐ。環境変数 NAGI_SERVER でも渡せる
 ```
 
-- **ローカル**：ログインしていないあいだは、データを `~/.local/share/nagi/local.db`（SQLite）だけに置く。通信はしない（一番下に「ローカル」と出る）。Worker がやっている処理（操作の検証・通し番号・午前 4 時の日付の切り替え）は、同じ決まりで手元で行う（`tui/src/data/device.rs`）。画面と CLI を同時に使ってよい
-- **クラウド**：ログインしてあるとき（保存してあるログインか `NAGI_TOKEN`）と、Worker を名指ししたとき（`--server`・`NAGI_SERVER`）は、その Worker と同期する
+- **ローカル**：ログインしていないあいだは、データを `~/.local/share/nagi/local.db`（SQLite）だけに置く。通信はしない（一番下に「ローカル」と出る）。Worker がやっている処理（操作の検証・通し番号・午前 4 時の日付の切り替え）は、同じ決まりで手元で行う（`tui/src/data/device.rs`）。日付は、この端末のタイムゾーン（環境変数 `TZ` があればそれ）で決める。画面と CLI を同時に使ってよい。控えを取るなら、`local.db` を写せばよい
+- **クラウド**：ログインしてあるとき（保存してあるログインか `NAGI_TOKEN`）と、Worker を名指ししたとき（`--server`・`NAGI_SERVER`）は、その Worker と同期する。本番のクラウドは、いまは招待した人（`ALLOWED_GITHUB_USER_IDS`）だけが使える
 - 画面からログインするには、Ctrl+K の「ログイン（クラウドと同期する）」。ログインしても、この端末のデータ（`local.db`）はそのまま残り、クラウドへは移らない。ログアウトすると、この端末のデータに戻る
 
 ### ログインと同期
@@ -337,4 +345,8 @@ pnpm release
 
 **前の版に戻すとき**：`migrations/0004`（利用者）より前の版の Worker は、いまの D1 では動かない。セッションの表の名前を `user_sessions` に変えてあり、古い版はセッションを読めずに、どの口も 500 になる（古い版は利用者を区別しないので、動いてしまうと全員の行が全員に見える。それを防ぐため）。0004 より前の版へ戻すなら、D1 も Time Travel で 0004 を当てる前へ戻す（そのあとに書いたデータは消える）。0004 を当ててから新しい Worker が出るまでの数秒も、同じ理由で 500 になる。
 
-**TUI**：`tui/` を変えて main にマージすると、GitHub Actions が Mac（Apple シリコン）と Linux（x86_64）でビルドして、GitHub の Releases に出す（`.github/workflows/tui.yml`）。タグは `tui-v0.1.<実行の番号>` で、ファイルは `nagi-aarch64-apple-darwin.tar.gz` と `nagi-x86_64-unknown-linux-gnu.tar.gz`（中身はバイナリ `nagi`）。PR では、`tui/` を変えたときにビルドできるかだけを確かめる。
+**TUI**：`tui/` を変えて main にマージすると、GitHub Actions が Mac（Apple シリコン）と Linux（x86_64）でビルドして、GitHub の Releases に出す（`.github/workflows/tui.yml`）。タグは `tui-v0.1.<実行の番号>` で、ファイルは `nagi-aarch64-apple-darwin.tar.gz` と `nagi-x86_64-unknown-linux-musl.tar.gz`（中身はバイナリ `nagi`。Linux は musl で静的に組む）。そのあと、Homebrew の tap の formula を更新する（上の「入れ方」）。PR では、`tui/` を変えたときにビルドできるかだけを確かめる。
+
+## ライセンス
+
+MIT（`LICENSE`）。

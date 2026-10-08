@@ -22,7 +22,7 @@ use self::local_db::LocalDb;
 use self::net::{ApiClient, NetEvent, NetTransport};
 use self::store::StoreOptions;
 use crate::config::Config;
-use crate::dates::APP_TIME_ZONE;
+use crate::dates::{APP_TIME_ZONE, device_time_zone};
 use crate::log;
 
 pub use actions::{AddTask, Destination, Placement};
@@ -31,9 +31,11 @@ pub use store::{Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReas
 /// ストアと、その相手（通信か、この端末のデータ）のスレッドを作る。結果は notify に渡る（画面や CLI が受け取って、
 /// ストアへ届ける）。
 /// - この端末だけで使うとき（Config::is_cloud が false）：相手は、この端末のデータ（device.rs）。それが正本なので、
-///   手元の控えは持たない。データのファイルを開けなければ、動かさずに理由を返す
+///   手元の控えは持たない。データのファイルを開けなければ、動かさずに理由を返す。
+///   日付の切り替え（午前 4 時）と「今日」は、この端末のタイムゾーンで決める
 /// - Worker と同期するとき：相手は通信。user_id は token の持ち主（auth::current_user_id）で、手元の控えは、
-///   利用者ごとのものを開く。手元の控えが開けなければ、保存せずに動く
+///   利用者ごとのものを開く。手元の控えが開けなければ、保存せずに動く。
+///   日付は、Worker が切り替える時刻に合わせて APP_TIME_ZONE（日本時間）で決める（利用者ごとの設定は、まだない）
 pub fn open_store(
     config: &Config,
     token: Option<String>,
@@ -42,11 +44,12 @@ pub fn open_store(
 ) -> Result<Store, String> {
     if !config.is_cloud() {
         let db = DeviceDb::open(&config.device_db_path())?;
+        let tz = device_time_zone();
         return Ok(Store::new(StoreOptions {
-            transport: Box::new(DeviceTransport::spawn(db, APP_TIME_ZONE, notify)),
+            transport: Box::new(DeviceTransport::spawn(db, tz, notify)),
             local: None,
             clock: Box::new(Utc::now),
-            tz: APP_TIME_ZONE,
+            tz,
         }));
     }
     let client = ApiClient::new(&config.server, token);
