@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1440" height="840" viewBox="0 0 1440 840">
+<rect width="1440" height="840" fill="#0f1420"/>
+<g transform="translate(96,252) scale(2.8)">
+  <circle cx="60" cy="46" r="19" fill="#60a5fa"/>
+  <rect x="18" y="70" width="84" height="7" rx="3.5" fill="#e6e8ef"/>
+  <rect x="40" y="86" width="40" height="5" rx="2.5" fill="#60a5fa" opacity="0.5"/>
+</g><text x="504" y="470" font-family="Plus Jakarta Sans" font-weight="600" font-size="192" letter-spacing="-8" fill="#e6e8ef">nagi</text><text x="504" y="540" font-family="Source Han Sans JP, Source Han Sans" font-weight="500" font-size="34" letter-spacing="2" fill="#8a93a6">ターミナルの、静かな TODO</text><text x="96" y="776" font-family="Source Han Sans JP, Source Han Sans" font-weight="500" font-size="26" letter-spacing="1.5" fill="#8a93a6">A　水平線 — 風がやんで、海が止まる</text><text x="1344" y="776" text-anchor="end" font-family="Plus Jakarta Sans" font-weight="500" font-size="26" letter-spacing="1" fill="#8a93a6">Plus Jakarta Sans 600</text>
+</svg>
