@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="-8 -8 824 264" role="img" aria-label="nagi">
+<defs>
+<linearGradient id="sun" gradientUnits="userSpaceOnUse" x1="0" y1="106" x2="0" y2="270"><stop offset="0" stop-color="#FFD47A"/><stop offset="1" stop-color="#FF6A4D"/></linearGradient>
+<linearGradient id="dot" gradientUnits="userSpaceOnUse" x1="0" y1="-65" x2="0" y2="-31"><stop offset="0" stop-color="#FFD47A"/><stop offset="1" stop-color="#FF6A4D"/></linearGradient>
+<linearGradient id="water" gradientUnits="userSpaceOnUse" x1="0" y1="292" x2="0" y2="424"><stop offset="0" stop-color="#FF7E5F" stop-opacity="0.95"/><stop offset="1" stop-color="#8B6CFF" stop-opacity="0.3"/></linearGradient>
+<linearGradient id="horizon" gradientUnits="userSpaceOnUse" x1="66" y1="0" x2="446" y2="0"><stop offset="0" stop-color="#FFB36B" stop-opacity="0"/><stop offset="0.25" stop-color="#FFB36B"/><stop offset="0.75" stop-color="#FFB36B"/><stop offset="1" stop-color="#FFB36B" stop-opacity="0"/></linearGradient>
+</defs>
+<g transform="translate(-51.48 -82.68) scale(0.78)">
+<circle cx="256" cy="188" r="82" fill="url(#sun)"/>
+<rect x="66" y="289" width="380" height="6" rx="3" fill="url(#horizon)"/>
+<g fill="url(#water)">
+<rect x="172" y="318" width="168" height="13" rx="6.5"/>
+<rect x="195" y="346" width="122" height="11" rx="5.5"/>
+<rect x="214" y="372" width="84" height="9" rx="4.5"/>
+<rect x="230" y="396" width="52" height="7" rx="3.5"/>
+<rect x="244" y="418" width="24" height="6" rx="3"/>
+</g>
+</g>
+<g transform="translate(377 67)">
+<g fill="none" stroke="#EEF0F5" stroke-width="22" stroke-linecap="round" stroke-linejoin="round">
+<path d="M0 100V45A45 45 0 0 1 90 45V100"/>
+<circle cx="180" cy="50" r="50"/>
+<path d="M230 0V100"/>
+<circle cx="320" cy="50" r="50"/>
+<path d="M370 0V112A48 48 0 0 1 282 140"/>
+<path d="M420 0V100"/>
+</g>
+<circle cx="420" cy="-48" r="17" fill="url(#dot)"/>
+</g>
+</svg>

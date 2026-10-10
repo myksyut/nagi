@@ -1,8 +1,13 @@
-# nagi
+<h1>
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="assets/logo-dark.svg">
+    <img src="assets/logo-light.svg" alt="nagi" width="360">
+  </picture>
+</h1>
 
 ターミナルで使う TODO アプリ。TUI から、キーボードだけで素早くタスクを片付ける。ログインしなければ、データはこの端末だけに置く（ローカル。サーバーは要らない）。ログインすると、クラウドと同期して、ほかの端末からも同じタスクを使える。クラウドのデータは利用者ごとに分かれていて、ほかの利用者のタスクは見えない。
 
-名前は凪（なぎ）から。慌ただしい仕事のタスクを、静かに片付けていく道具。
+名前は凪（なぎ）から。慌ただしい仕事のタスクを、静かに片付けていく道具。ロゴは、風のない海の水平線に浮かぶ太陽と、静かな水面に映る光。
 
 ## 構成
 
@@ -15,6 +20,7 @@ src/
 └── shared/      # Worker が使う型・検証スキーマ・論理日付・並び順キー・API の版
 migrations/      # D1 のマイグレーション（Drizzle で生成し、wrangler で適用）
 scripts/         # 手元の D1 に、試すためのデータを入れるスクリプト
+assets/          # ロゴ（README の頭に置く明るい背景用・暗い背景用）とアイコン
 wrangler.jsonc   # Worker・D1 の設定
 ```
 
