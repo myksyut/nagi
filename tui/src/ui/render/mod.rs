@@ -4,6 +4,7 @@ mod board;
 mod calendar;
 mod detail;
 mod list;
+mod logo;
 mod overlay;
 mod timeline;
 
