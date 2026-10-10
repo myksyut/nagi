@@ -9,6 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::calendar::filter_label;
+use super::logo::{LOGO_HEIGHT, logo_lines};
 use super::{centered, clear_for_popup};
 use crate::data::sort::TaskSort;
 use crate::dates::{format_long_date, parse_date_input};
@@ -619,6 +620,13 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) {
         format!("接続先：{}", app.config.server),
         theme::faint(),
     )));
+    let fits_logo = area.height >= lines.len() as u16 + LOGO_HEIGHT + 1 + 2;
+    if fits_logo {
+        let mut with_logo = logo_lines(login.shown_at.elapsed());
+        with_logo.push(Line::default());
+        with_logo.append(&mut lines);
+        lines = with_logo;
+    }
     let rect = centered(area, 64, lines.len() as u16 + 2);
     frame.render_widget(Paragraph::new(lines), rect);
 }

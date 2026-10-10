@@ -33,6 +33,8 @@ pub struct Login {
     pub reason: Option<String>,
     /// 確かめに行くスレッドを止める合図
     cancel: Arc<AtomicBool>,
+    /// ロゴの日の出の起点。Enter で作り直しても、日の出をやり直さない
+    pub shown_at: Instant,
 }
 
 impl Login {
@@ -41,6 +43,7 @@ impl Login {
             step: LoginStep::Idle,
             reason: reason.map(str::to_string),
             cancel: Arc::new(AtomicBool::new(false)),
+            shown_at: Instant::now(),
         }
     }
 }
@@ -118,7 +121,11 @@ impl App {
     /// デバイスフローを始める。コードの発行と、承認の確かめは別のスレッドで行う
     fn start_login(&mut self) {
         let reason = self.login.as_ref().and_then(|login| login.reason.clone());
+        let shown_at = self.login.as_ref().map(|login| login.shown_at);
         let mut login = Login::new(reason.as_deref());
+        if let Some(shown_at) = shown_at {
+            login.shown_at = shown_at;
+        }
         login.step = LoginStep::Starting;
         let cancel = Arc::clone(&login.cancel);
         self.login = Some(login);
