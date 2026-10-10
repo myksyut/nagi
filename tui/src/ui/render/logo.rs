@@ -1,4 +1,4 @@
-//! ログインの画面のロゴ。日の出のあと、水面の映りがゆっくり揺れる
+//! ロゴ。日の出のあと、水面の映りがゆっくり揺れる
 
 use std::time::Duration;
 
@@ -9,7 +9,10 @@ pub const LOGO_WIDTH: u16 = 24;
 pub const LOGO_HEIGHT: u16 = 10;
 
 /// 混ぜる下地の色。端末の本当の背景色は読み取れず、ほかの配色も暗い端末を前提にしているため、暗い背景だと決めている
-const BG: [u8; 3] = [13, 17, 23];
+const TERMINAL_RGB: [u8; 3] = [13, 17, 23];
+pub const TERMINAL_GROUND: Color = Color::Rgb(TERMINAL_RGB[0], TERMINAL_RGB[1], TERMINAL_RGB[2]);
+/// 日の出が終わるまでの時間（水面の揺れが始まる 2.3 秒の少しあと）
+const SUNRISE: Duration = Duration::from_millis(2500);
 const SUN_TOP: [u8; 3] = [0xFF, 0xD4, 0x7A];
 const SUN_BOTTOM: [u8; 3] = [0xFF, 0x6A, 0x4D];
 const HORIZON: [u8; 3] = [0xFF, 0xB3, 0x6B];
@@ -73,7 +76,7 @@ const EMPTY: Cell = Cell {
 };
 
 /// 4x4 に分けて数えた、1 ピクセルの太陽の色（かかっていなければ None）
-fn sun_pixel(x: usize, y: usize, cy: f32, glow: f32) -> Option<Color> {
+fn sun_pixel(x: usize, y: usize, cy: f32, glow: f32, ground: [u8; 3]) -> Option<Color> {
     let mut hit = 0;
     for sy in 0..4 {
         for sx in 0..4 {
@@ -89,16 +92,16 @@ fn sun_pixel(x: usize, y: usize, cy: f32, glow: f32) -> Option<Color> {
     }
     let t = (y as f32 - (cy - RADIUS)) / (2.0 * RADIUS - 1.0);
     let sun = mix(SUN_TOP, SUN_BOTTOM, t);
-    Some(rgb(mix(BG, sun, (hit as f32 / 13.0).min(1.0) * glow)))
+    Some(rgb(mix(ground, sun, (hit as f32 / 13.0).min(1.0) * glow)))
 }
 
-fn render(scene: &Scene) -> Vec<Line<'static>> {
+fn render(scene: &Scene, ground: [u8; 3]) -> Vec<Line<'static>> {
     let mut grid = vec![[EMPTY; WIDTH]; LOGO_HEIGHT as usize];
 
     for (r, row) in grid.iter_mut().take(SUN_ROWS).enumerate() {
         for (x, cell) in row.iter_mut().enumerate() {
-            let top = sun_pixel(x, r * 2, scene.sun_cy, scene.glow);
-            let bottom = sun_pixel(x, r * 2 + 1, scene.sun_cy, scene.glow);
+            let top = sun_pixel(x, r * 2, scene.sun_cy, scene.glow, ground);
+            let bottom = sun_pixel(x, r * 2 + 1, scene.sun_cy, scene.glow, ground);
             *cell = match (top, bottom) {
                 (Some(top), Some(bottom)) => Cell {
                     ch: '▀',
@@ -129,7 +132,7 @@ fn render(scene: &Scene) -> Vec<Line<'static>> {
         let edge = ((1.0 - dist) / 0.5).min(1.0) * ((scene.reach - dist) / 0.15 + 0.2).min(1.0);
         *cell = Cell {
             ch: '─',
-            fg: Some(rgb(mix(BG, HORIZON, edge))),
+            fg: Some(rgb(mix(ground, HORIZON, edge))),
             bg: None,
         };
     }
@@ -150,7 +153,7 @@ fn render(scene: &Scene) -> Vec<Line<'static>> {
             .map_or(1.0, |p| 0.82 + 0.18 * (p * 1.3 + i as f32 * 2.4).sin());
         let water = mix(WATER_TOP, WATER_BOTTOM, t);
         let alpha = (0.95 - t * 0.55) * (scene.spread * 1.4).min(1.0) * shine;
-        let fg = rgb(mix(BG, water, alpha));
+        let fg = rgb(mix(ground, water, alpha));
         let row = &mut grid[SUN_ROWS + 1 + i];
         let (first, last) = (left_edge.floor() as usize, right_edge.ceil() as usize);
         for (x, cell) in row.iter_mut().enumerate().take(last).skip(first) {
@@ -194,9 +197,22 @@ fn render(scene: &Scene) -> Vec<Line<'static>> {
         .collect()
 }
 
-/// 画面を出してからの時間に合わせた、ロゴの 1 コマ
-pub fn logo_lines(elapsed: Duration) -> Vec<Line<'static>> {
-    render(&scene(elapsed))
+/// 画面を出してからの時間に合わせた、ロゴの 1 コマ。ground は、ロゴを置く場所の背景色
+pub fn logo_lines(elapsed: Duration, ground: Color) -> Vec<Line<'static>> {
+    let ground = match ground {
+        Color::Rgb(r, g, b) => [r, g, b],
+        _ => TERMINAL_RGB,
+    };
+    render(&scene(elapsed), ground)
+}
+
+/// ロゴを動かすための、描き直しの間隔。日の出のあいだは細かく、揺れだけになったら粗くする
+pub fn animation_tick(elapsed: Duration) -> Duration {
+    if elapsed < SUNRISE {
+        Duration::from_millis(50)
+    } else {
+        Duration::from_millis(100)
+    }
 }
 
 #[cfg(test)]
@@ -208,7 +224,7 @@ mod tests {
         let steps = (0..=100).map(|i| Duration::from_millis(i * 50));
         let day = Duration::from_secs(24 * 60 * 60);
         for elapsed in steps.chain([day]) {
-            let lines = logo_lines(elapsed);
+            let lines = logo_lines(elapsed, TERMINAL_GROUND);
             assert_eq!(lines.len(), LOGO_HEIGHT as usize, "{elapsed:?}");
             for line in &lines {
                 assert_eq!(line.width(), LOGO_WIDTH as usize, "{elapsed:?}");

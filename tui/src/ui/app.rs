@@ -254,6 +254,8 @@ pub struct App {
     /// ストアと通信の世代。ログインし直して作り直すたびに進め、古い通信の結果を捨てる
     pub generation: u64,
     last_sync: Instant,
+    /// 起動した時刻。ホームのロゴの日の出の時計
+    pub started_at: Instant,
 }
 
 impl App {
@@ -302,6 +304,7 @@ impl App {
             events,
             generation: 0,
             last_sync: Instant::now(),
+            started_at: Instant::now(),
         }
     }
 
