@@ -100,14 +100,21 @@ impl Config {
     }
 
     /// 置き場のフォルダを作る（unix では 0700。自分だけが入れる）。作る必要があるコマンドだけが呼ぶ
-    /// （`--help` や、まだデータがないときの `nagi export` は、何も作らない）
-    pub fn prepare_dirs(&self) -> Result<(), String> {
-        [&self.config_dir, &self.data_dir]
+    /// （`--help` や、まだデータがないときの `nagi export` は、何も作らない）。
+    /// 作れなかったとき、ローカルは置き場がなければ動けないので Err。クラウドは手元の控えなしで動けるので、
+    /// 理由を Ok(Some(..)) で返し、続けさせる
+    pub fn prepare_dirs(&self) -> Result<Option<String>, String> {
+        let created = [&self.config_dir, &self.data_dir]
             .into_iter()
             .try_for_each(|dir| {
                 create_private_dir(dir)
                     .map_err(|error| format!("{} を作れませんでした：{error}", dir.display()))
-            })
+            });
+        match created {
+            Ok(()) => Ok(None),
+            Err(reason) if self.is_cloud() => Ok(Some(reason)),
+            Err(reason) => Err(reason),
+        }
     }
 
     /// Worker（クラウド）と同期して使うか。false なら、この端末だけで使う（ローカル。ログインなし・Worker なし）。
@@ -571,5 +578,43 @@ mod tests {
         assert_eq!(mode(&config.config_dir), 0o700);
         assert_eq!(mode(&config.data_dir), 0o700);
         assert_eq!(mode(&config.prefs_path()), 0o600);
+    }
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod prepare_tests {
+    use super::*;
+
+    /// 置き場の途中が通常のファイルで、フォルダを作れない設定
+    fn blocked(explicit_server: bool) -> Config {
+        let root = std::env::temp_dir().join(format!(
+            "nagi-config-blocked-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("file");
+        fs::write(&file, "").unwrap();
+        Config {
+            server: "https://nagi.example.com".to_string(),
+            explicit_server,
+            config_dir: file.join("config"),
+            data_dir: file.join("data"),
+        }
+    }
+
+    #[test]
+    fn 置き場を作れなくても_クラウドは手元の控えなしで続ける() {
+        let reason = blocked(true).prepare_dirs().unwrap();
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn 置き場を作れなければ_ローカルは理由つきで止まる() {
+        if Config::has_env_token() {
+            return;
+        }
+        assert!(blocked(false).prepare_dirs().is_err());
     }
 }

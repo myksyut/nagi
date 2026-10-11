@@ -76,10 +76,12 @@ fn fail(message: &str) -> ExitCode {
     ExitCode::FAILURE
 }
 
-/// 置き場を決めてフォルダを作り、記録を始める
+/// 置き場を決めてフォルダを作り、記録を始める。クラウドでフォルダを作れなければ、手元の控えなしで続ける
 fn prepared_config(server: Option<String>) -> Result<Config, ExitCode> {
     let config = Config::new(server).map_err(|message| fail(&message))?;
-    config.prepare_dirs().map_err(|message| fail(&message))?;
-    log::init(&config.log_path());
+    match config.prepare_dirs().map_err(|message| fail(&message))? {
+        None => log::init(&config.log_path()),
+        Some(reason) => eprintln!("{reason}\n手元の控えと記録なしで続けます"),
+    }
     Ok(config)
 }

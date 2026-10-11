@@ -34,10 +34,21 @@ fn open(path: &Path) -> std::io::Result<File> {
     options.open(path)
 }
 
+/// 世代を替えて開くまでを、記録の隣の `.lock` で他のプロセスと順番に行う。
+/// 順番がなければ、二つの起動が同時に「大きい」と見て、後の rename が、先が作った新しい記録で
+/// 残すはずの前の世代を上書きしてしまう（大きさは、ロックを取ってから見る）
+fn open_rotated(path: &Path) -> std::io::Result<File> {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".lock");
+    let lock = open(Path::new(&name))?;
+    lock.lock()?;
+    rotate(path);
+    open(path)
+}
+
 /// 記録の書き先を決める（開けなければ、記録は捨てる）
 pub fn init(path: &Path) {
-    rotate(path);
-    if let Ok(file) = open(path) {
+    if let Ok(file) = open_rotated(path) {
         let _ = FILE.set(Mutex::new(file));
     }
 }
@@ -90,6 +101,28 @@ mod tests {
 
         assert_eq!(fs::metadata(&path).unwrap().len(), MAX_BYTES);
         assert!(!dir.join("nagi.log.1").exists());
+    }
+
+    #[test]
+    fn 同時に起動しても_残すはずの前の世代を失わない() {
+        for _ in 0..20 {
+            let dir = temp_dir();
+            let path = dir.join("nagi.log");
+            fs::write(&path, vec![b'a'; MAX_BYTES as usize + 1]).unwrap();
+            let barrier = std::sync::Barrier::new(8);
+            std::thread::scope(|scope| {
+                for _ in 0..8 {
+                    scope.spawn(|| {
+                        barrier.wait();
+                        drop(open_rotated(&path).unwrap());
+                    });
+                }
+            });
+            assert_eq!(
+                fs::metadata(dir.join("nagi.log.1")).unwrap().len(),
+                MAX_BYTES + 1
+            );
+        }
     }
 
     #[cfg(unix)]

@@ -1272,7 +1272,9 @@ fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
 }
 
 /// 同じフォルダの一時ファイルに（unix では 0600 で）書いてから、`rename` で置き換える
-/// （書き出しの途中で止まっても、前のファイルは壊れない）
+/// （書き出しの途中で止まっても、前のファイルは壊れない）。
+/// 一時ファイルは、この呼び出しが新しく作れた名前だけを使い、消すのも自分が作ったものだけ
+/// （同じ名前が先にあれば、他の書き出しや前回の残りなので、触らずに別の名前にする）
 fn write_replacing(path: &Path, text: &str) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
@@ -1281,11 +1283,6 @@ fn write_replacing(path: &Path, text: &str) -> std::io::Result<()> {
     let name = path.file_name().ok_or_else(|| {
         std::io::Error::new(std::io::ErrorKind::InvalidInput, "ファイル名がありません")
     })?;
-    let mut temp_name = std::ffi::OsString::from(".");
-    temp_name.push(name);
-    temp_name.push(format!(".{}.tmp", std::process::id()));
-    let temp = dir.join(temp_name);
-
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);
     #[cfg(unix)]
@@ -1293,12 +1290,24 @@ fn write_replacing(path: &Path, text: &str) -> std::io::Result<()> {
         use std::os::unix::fs::OpenOptionsExt;
         options.mode(0o600);
     }
-    let written = options
-        .open(&temp)
-        .and_then(|mut file| {
-            writeln!(file, "{text}")?;
-            file.sync_all()
-        })
+    let (temp, mut file) = loop {
+        let mut temp_name = std::ffi::OsString::from(".");
+        temp_name.push(name);
+        temp_name.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::now_v7().simple()
+        ));
+        let temp = dir.join(temp_name);
+        match options.open(&temp) {
+            Ok(file) => break (temp, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    };
+
+    let written = writeln!(file, "{text}")
+        .and_then(|()| file.sync_all())
         .and_then(|()| std::fs::rename(&temp, path));
     if written.is_err() {
         let _ = std::fs::remove_file(&temp);
@@ -1721,6 +1730,24 @@ mod tests {
             let mode = std::fs::metadata(&out).unwrap().permissions().mode();
             assert_eq!(mode & 0o777, 0o600);
         }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn 書き出しは_先にある同じ名前の一時ファイルに触らない() {
+        let dir = std::env::temp_dir().join(format!(
+            "nagi-cli-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.json");
+        let other = dir.join(format!(".out.json.{}.tmp", std::process::id()));
+        std::fs::write(&other, "other").unwrap();
+
+        write_replacing(&out, "{}").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "{}\n");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "other");
         let _ = std::fs::remove_dir_all(&dir);
     }
 
