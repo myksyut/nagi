@@ -333,6 +333,16 @@ Vitest は Workers 用テストプール（`@cloudflare/vitest-pool-workers` 0.2
 
 GitHub Actions（`.github/workflows/ci.yml`）では、`pnpm check` と `pnpm test` に加えて、`tui/` で `cargo fmt --check`・`cargo clippy --all-targets -- -D warnings`・`cargo test` を回す。
 
+TUI の画面は `scripts/tui-shot.py` で PNG に撮れる（`uv` が要る。隔離した HOME で、`NAGI_TOKEN`・`NAGI_SERVER`・`NO_COLOR` を外して動かす）。
+
+```sh
+scripts/tui-shot.py --keys 'sleep 1; key n; type 牛乳を買う; key Enter; sleep 0.3; shot add; key Esc; sleep 0.3; key q' --out-dir /tmp/shots
+scripts/tui-shot.py --cmd 'tui/target/release/nagi list --json' --shot list   # 任意のコマンドも同じ PTY で撮れる
+uv run --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py   # 道具のテスト
+```
+
+手順は `sleep` `type` `key` `shot` `resize` `run` `wait-exit`。`<out-dir>/run.json` に終了コードと毎秒の書き出し回数が出る。
+
 ## デプロイ
 
 **Worker**：main にマージすると、GitHub Actions が本番に出す（`.github/workflows/deploy.yml`）。main の CI（Worker と TUI の両方の job）が通ったあとに動き、マイグレーションの前に D1 の Time Travel のブックマークをログに残し、`pnpm release` を実行して、本番の応答（`/api/session` が 401、形の違う本文の `POST /auth/device/token` が 400）を確かめる。Actions の「deploy」を手で動かしても、main をそのまま出し直せる。
