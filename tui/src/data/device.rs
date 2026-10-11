@@ -7,8 +7,10 @@
 //! 操作の中身の形（ID・日付の書式など）は、操作を作る側（actions.rs）が守る。ここでは、行の今の状態に
 //! 照らした検証（Worker の planWrites と同じもの）と、空のタイトル・並び順キーの形だけを確かめる
 
+use std::cmp::Ordering;
 use std::collections::{HashMap, HashSet};
-use std::path::Path;
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
 use std::time::Duration as StdDuration;
@@ -26,8 +28,16 @@ use crate::model::{
 };
 use crate::rank::{arrival_ranks, is_valid_rank};
 
-/// 保存形式の版。形を変えるときは、前の版から移す処理を書く（手元の控えと違って、捨てて作り直せない）
+/// 保存形式の版。形を変えるときは、版を上げて、前の版から移す処理を MIGRATIONS に足す
+/// （手元の控えと違って、捨てて作り直せない）
 const FORMAT_VERSION: i64 = 1;
+
+/// 保存形式を一つ先の版へ移す処理
+type Migration = fn(&Transaction) -> rusqlite::Result<()>;
+/// MIGRATIONS[i] は、版 i + 1 を版 i + 2 に移す
+const MIGRATIONS: &[Migration] = &[];
+const _: () = assert!(FORMAT_VERSION == 1 + MIGRATIONS.len() as i64);
+
 /// 反映済みのまとまりを覚えておく日数（Worker の APPLIED_MUTATIONS_TTL_DAYS と同じ）
 const APPLIED_TTL_DAYS: i64 = 7;
 
@@ -400,8 +410,109 @@ fn plan(batch: &MutationBatch, facts: &mut Facts) -> Step<Plan> {
     Ok(Plan { order, created })
 }
 
+fn user_version(conn: &Connection) -> rusqlite::Result<i64> {
+    conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+}
+
+/// 版 version から移す前に取る控え（local.db の隣の local.db.v<version>.bak）
+fn backup_path(path: &Path, version: i64) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(format!(".v{version}.bak"));
+    PathBuf::from(name)
+}
+
+/// 移す前の控えを取る。VACUUM はトランザクションの中では動かないので、別の接続で取る。
+/// 書き込みの鍵は呼ぶ側が持っているので、控えは移す直前の中身と同じになる。
+/// 前に移しそびれたときの控えが残っていれば、新しい控えを書き終えてから置き換える（取り直しに失敗しても、前の控えは残る）
+fn back_up(path: &Path, backup: &Path) -> Result<(), String> {
+    let mut partial = backup.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    // VACUUM INTO は書き出し先がすでにあると失敗するので、前に途中で止まった書きかけを消す
+    match std::fs::remove_file(&partial) {
+        Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error.to_string()),
+        _ => {}
+    }
+    let written = Connection::open(path)
+        .and_then(|conn| conn.execute("VACUUM INTO ?1", params![partial.to_string_lossy()]))
+        .map_err(|error| error.to_string())
+        // VACUUM INTO は書き出したファイルを fsync しないので、置き換える前にディスクへ書き切る
+        .and_then(|_| {
+            std::fs::File::options()
+                .write(true)
+                .open(&partial)
+                .and_then(|file| file.sync_all())
+                .and_then(|()| std::fs::rename(&partial, backup))
+                .and_then(|()| sync_parent_dir(backup))
+                .map_err(|error| error.to_string())
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
+}
+
+/// rename をディレクトリごと fsync して、クラッシュで置き換えが消えないようにする。
+/// Windows ではディレクトリを File として開けないので省く（この用途では rename だけで足りる）
+fn sync_parent_dir(file: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let dir = match file.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(dir)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        Ok(())
+    }
+}
+
+/// 最後に開いた nagi の版を meta の written_by に残す（新しい形のファイルを古い nagi が断るとき、上げる先の版を示すため）。
+/// 同じ版なら書かずに false を返す（開くたびにはファイルを書き換えない）
+fn stamp_written_by(conn: &Connection) -> rusqlite::Result<bool> {
+    let written_by: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'written_by'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if written_by.as_deref() == Some(crate::VERSION) {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('written_by', ?1)",
+        params![crate::VERSION],
+    )?;
+    Ok(true)
+}
+
+/// 新しい版の nagi が作ったデータを断る文言。最後に開いた nagi の版（written_by）があれば、どの版に上げればよいかを示す
+fn newer_format_message(conn: &Connection, path: &Path) -> String {
+    let written_by: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'written_by'",
+            [],
+            |row| row.get(0),
+        )
+        .ok();
+    match written_by {
+        Some(version) => format!(
+            "この端末のデータ（{}）は nagi {version} で作られました。nagi を {version} 以降に更新してください",
+            path.display()
+        ),
+        None => format!(
+            "この端末のデータ（{}）は、新しい版の nagi のものです。nagi を更新してください",
+            path.display()
+        ),
+    }
+}
+
 impl DeviceDb {
-    /// この端末のデータのファイルを開く（なければ作る）。開けなければ、理由の文言を返す
+    /// この端末のデータのファイルを開く（なければ作る。古い版なら今の版へ移す）。開けなければ、理由の文言を返す
     /// （手元の控えと違って、保存できないまま動かさない）
     pub fn open(path: &Path) -> Result<DeviceDb, String> {
         let failed = |error: rusqlite::Error| {
@@ -410,57 +521,110 @@ impl DeviceDb {
                 path.display()
             )
         };
-        let conn = Connection::open(path).map_err(failed)?;
-        let version = Self::prepare(&conn).map_err(failed)?;
-        if version != FORMAT_VERSION {
-            // 新しい版の nagi が作ったデータ。古い版で書き換えて壊さない
-            return Err(format!(
-                "この端末のデータ（{}）は、新しい版の nagi のものです。nagi を更新してください",
-                path.display()
-            ));
+        let mut conn = Connection::open(path).map_err(failed)?;
+        conn.busy_timeout(StdDuration::from_secs(5))
+            .map_err(failed)?;
+        let mut version = user_version(&conn).map_err(failed)?;
+        // 新しい版の nagi が作ったデータは、断るまで何も書かない
+        if version <= FORMAT_VERSION {
+            let _: String = conn
+                .query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))
+                .map_err(failed)?;
         }
+        if version == 0 {
+            version = Self::create_v1(&mut conn).map_err(failed)?;
+        }
+        match version.cmp(&FORMAT_VERSION) {
+            Ordering::Greater => return Err(newer_format_message(&conn, path)),
+            Ordering::Less => Self::migrate(&mut conn, path, MIGRATIONS)?,
+            Ordering::Equal => {}
+        }
+        stamp_written_by(&conn).map_err(failed)?;
         Ok(DeviceDb { conn })
     }
 
     #[cfg(test)]
     pub fn open_in_memory() -> DeviceDb {
-        let conn = Connection::open_in_memory().unwrap();
-        Self::prepare(&conn).unwrap();
+        let mut conn = Connection::open_in_memory().unwrap();
+        Self::create_v1(&mut conn).unwrap();
         DeviceDb { conn }
     }
 
-    /// 表がなければ作る。保存形式の版を返す
-    fn prepare(conn: &Connection) -> rusqlite::Result<i64> {
-        conn.busy_timeout(StdDuration::from_secs(5))?;
-        let _: String = conn.query_row("PRAGMA journal_mode = WAL", [], |row| row.get(0))?;
-        let version: i64 = conn.query_row("PRAGMA user_version", [], |row| row.get(0))?;
-        if version == 0 {
-            // open は、タスクが未完了・未削除か（プロジェクトのアーカイブの検証と、日付の切り替えで引く）
-            conn.execute_batch(
-                "BEGIN IMMEDIATE;
-                 CREATE TABLE IF NOT EXISTS tasks (
-                   id TEXT PRIMARY KEY,
-                   seq INTEGER NOT NULL UNIQUE,
-                   project_id TEXT,
-                   open INTEGER NOT NULL,
-                   deleted_at TEXT,
-                   json TEXT NOT NULL
-                 );
-                 CREATE INDEX IF NOT EXISTS tasks_open ON tasks (open, project_id);
-                 CREATE TABLE IF NOT EXISTS projects (
-                   id TEXT PRIMARY KEY,
-                   seq INTEGER NOT NULL UNIQUE,
-                   deleted_at TEXT,
-                   json TEXT NOT NULL
-                 );
-                 CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value NOT NULL);
-                 INSERT OR IGNORE INTO meta (key, value) VALUES ('seq', 0), ('last_rollover_on', '');
-                 CREATE TABLE IF NOT EXISTS applied (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
-                 PRAGMA user_version = 1;
-                 COMMIT;",
-            )?;
+    /// 空のファイルに版 1 の表を作る。版を返す（ほかの nagi が先に作っていれば、その版）
+    fn create_v1(conn: &mut Connection) -> rusqlite::Result<i64> {
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let version = user_version(&tx)?;
+        if version != 0 {
+            return Ok(version);
         }
-        conn.query_row("PRAGMA user_version", [], |row| row.get(0))
+        // open は、タスクが未完了・未削除か（プロジェクトのアーカイブの検証と、日付の切り替えで引く）
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS tasks (
+               id TEXT PRIMARY KEY,
+               seq INTEGER NOT NULL UNIQUE,
+               project_id TEXT,
+               open INTEGER NOT NULL,
+               deleted_at TEXT,
+               json TEXT NOT NULL
+             );
+             CREATE INDEX IF NOT EXISTS tasks_open ON tasks (open, project_id);
+             CREATE TABLE IF NOT EXISTS projects (
+               id TEXT PRIMARY KEY,
+               seq INTEGER NOT NULL UNIQUE,
+               deleted_at TEXT,
+               json TEXT NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value NOT NULL);
+             INSERT OR IGNORE INTO meta (key, value) VALUES ('seq', 0), ('last_rollover_on', '');
+             CREATE TABLE IF NOT EXISTS applied (id TEXT PRIMARY KEY, applied_at TEXT NOT NULL);
+             PRAGMA user_version = 1;",
+        )?;
+        tx.commit()?;
+        Ok(1)
+    }
+
+    /// 版 1 から先へ、migrations を順に当てて版 1 + migrations.len() に移す。移す前に控えを取り、取れなければ移さない。
+    /// 全部を 1 つの書き込みのトランザクションで行い、版はその中で読み直す（画面と CLI が同時に開いても、二重に移さない。
+    /// 待つあいだに、もっと新しい nagi が先へ移していれば断る）。移した nagi の版（written_by）も同じトランザクションで書く。
+    /// 途中で失敗したら何も変えずに、控えのパスを含む文言を返す
+    fn migrate(conn: &mut Connection, path: &Path, migrations: &[Migration]) -> Result<(), String> {
+        let target = 1 + migrations.len() as i64;
+        let failed = |error: rusqlite::Error| {
+            format!(
+                "この端末のデータ（{}）を開けませんでした：{error}",
+                path.display()
+            )
+        };
+        let tx = conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(failed)?;
+        let from = user_version(&tx).map_err(failed)?;
+        match from.cmp(&target) {
+            Ordering::Greater => return Err(newer_format_message(&tx, path)),
+            Ordering::Equal => return Ok(()),
+            Ordering::Less => {}
+        }
+        let backup = backup_path(path, from);
+        back_up(path, &backup).map_err(|error| {
+            format!(
+                "この端末のデータ（{}）を移す前の控え（{}）を取れなかったので、移さずに止めました：{error}",
+                path.display(),
+                backup.display()
+            )
+        })?;
+        migrations[(from - 1) as usize..]
+            .iter()
+            .try_for_each(|step| step(&tx))
+            .and_then(|()| tx.pragma_update(None, "user_version", target))
+            .and_then(|()| stamp_written_by(&tx))
+            .and_then(|_| tx.commit())
+            .map_err(|error| {
+                format!(
+                    "この端末のデータ（{}）を版 {from} から版 {target} に移せなかったので、元のまま残しました：{error}。移す前の控えは {} にあります",
+                    path.display(),
+                    backup.display()
+                )
+            })
     }
 
     /// 操作のまとまりを反映する（Worker の applyMutationBatch と同じ）。全部成功か全部失敗。
@@ -1519,25 +1683,300 @@ mod tests {
         }
     }
 
+    /// テストごとの一時的なフォルダ（local.db と、その隣にできる -wal・-shm・控えを、終わったら消す）
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Scratch {
+            let dir = std::env::temp_dir().join(format!(
+                "nagi-device-test-{}-{}",
+                std::process::id(),
+                uuid::Uuid::now_v7()
+            ));
+            std::fs::create_dir_all(&dir).unwrap();
+            Scratch(dir)
+        }
+
+        fn db(&self) -> PathBuf {
+            self.0.join("local.db")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
+    /// trunk の nagi で作った版 1 の local.db（受信箱・今日・予定・あとで・完了・削除済みのタスクと、
+    /// アーカイブしたものを含む二つのプロジェクト）
+    fn load_v1_fixture(path: &Path) {
+        Connection::open(path)
+            .unwrap()
+            .execute_batch(include_str!("../testdata/device-v1.sql"))
+            .unwrap();
+    }
+
+    /// DeviceDb を通さずに、ファイルにある行を seq の順に読む
+    fn rows_in(path: &Path) -> Vec<SyncRow> {
+        let conn = Connection::open(path).unwrap();
+        let read = |table: &str| -> Vec<String> {
+            conn.prepare(&format!("SELECT json FROM {table}"))
+                .unwrap()
+                .query_map([], |row| row.get(0))
+                .unwrap()
+                .collect::<rusqlite::Result<_>>()
+                .unwrap()
+        };
+        let mut rows: Vec<SyncRow> = read("tasks")
+            .iter()
+            .map(|json| SyncRow::Task(serde_json::from_str(json).unwrap()))
+            .chain(
+                read("projects")
+                    .iter()
+                    .map(|json| SyncRow::Project(serde_json::from_str(json).unwrap())),
+            )
+            .collect();
+        rows.sort_by_key(seq_of);
+        rows
+    }
+
+    fn written_by(path: &Path) -> Option<String> {
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'written_by'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
+    fn not_deleted(rows: Vec<SyncRow>) -> Vec<SyncRow> {
+        rows.into_iter()
+            .filter(|row| match row {
+                SyncRow::Task(task) => task.deleted_at.is_none(),
+                SyncRow::Project(project) => project.deleted_at.is_none(),
+            })
+            .collect()
+    }
+
+    fn first_step(tx: &Transaction) -> rusqlite::Result<()> {
+        tx.execute_batch(
+            "CREATE TABLE notes (step INTEGER NOT NULL); INSERT INTO notes VALUES (1);",
+        )
+    }
+
+    fn second_step(tx: &Transaction) -> rusqlite::Result<()> {
+        tx.execute_batch("INSERT INTO notes SELECT max(step) + 1 FROM notes;")
+    }
+
+    fn broken_step(tx: &Transaction) -> rusqlite::Result<()> {
+        tx.execute_batch("INSERT INTO missing VALUES (1);")
+    }
+
+    #[test]
+    fn 版1の見本は_そのまま開けて_未削除の行がそろう() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let expected = not_deleted(rows_in(&path));
+
+        let mut db = DeviceDb::open(&path).unwrap();
+
+        assert_eq!(user_version(&db.conn).unwrap(), 1);
+        assert_eq!(not_deleted(all(&mut db)), expected);
+        // 6 件のタスクと 2 つのプロジェクト（削除済みのタスクは除く）
+        assert_eq!(expected.len(), 8);
+    }
+
+    #[test]
+    fn 移す処理は_順に動いて版を上げ_移す前の控えは版1のまま開ける() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let before = rows_in(&path);
+        let mut conn = Connection::open(&path).unwrap();
+
+        DeviceDb::migrate(&mut conn, &path, &[first_step, second_step]).unwrap();
+
+        assert_eq!(user_version(&conn).unwrap(), 3);
+        let steps: Vec<i64> = conn
+            .prepare("SELECT step FROM notes ORDER BY rowid")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert_eq!(steps, vec![1, 2]);
+        let mut kept = DeviceDb::open(&backup_path(&path, 1)).unwrap();
+        assert_eq!(user_version(&kept.conn).unwrap(), 1);
+        assert_eq!(not_deleted(all(&mut kept)), not_deleted(before));
+    }
+
+    #[test]
+    fn 移す処理が途中で失敗したら_版も行も変えずに_控えの場所を知らせる() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let before = rows_in(&path);
+        let mut conn = Connection::open(&path).unwrap();
+
+        let error = DeviceDb::migrate(&mut conn, &path, &[first_step, broken_step]).unwrap_err();
+
+        let backup = backup_path(&path, 1);
+        assert!(error.contains(&backup.display().to_string()), "{error}");
+        assert!(backup.exists());
+        assert_eq!(user_version(&conn).unwrap(), 1);
+        let notes: Option<String> = conn
+            .query_row(
+                "SELECT name FROM sqlite_master WHERE name = 'notes'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap();
+        assert_eq!(notes, None);
+        assert_eq!(rows_in(&path), before);
+    }
+
     #[test]
     fn 新しい版の保存形式は_開かずに断る() {
-        let path = std::env::temp_dir().join(format!(
-            "nagi-device-test-{}-{}.db",
-            std::process::id(),
-            uuid::Uuid::now_v7()
-        ));
+        let scratch = Scratch::new();
+        let path = scratch.db();
         drop(DeviceDb::open(&path).unwrap());
         let conn = Connection::open(&path).unwrap();
         conn.pragma_update(None, "user_version", FORMAT_VERSION + 1)
             .unwrap();
+        conn.execute(
+            "UPDATE meta SET value = '0.9.0' WHERE key = 'written_by'",
+            [],
+        )
+        .unwrap();
         drop(conn);
+        let before = std::fs::read(&path).unwrap();
 
         let error = DeviceDb::open(&path).err().unwrap();
 
+        assert!(error.contains("0.9.0"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!backup_path(&path, FORMAT_VERSION + 1).exists());
+
+        // どの版が書いたか分からなくても断る
+        Connection::open(&path)
+            .unwrap()
+            .execute("DELETE FROM meta WHERE key = 'written_by'", [])
+            .unwrap();
+        let error = DeviceDb::open(&path).err().unwrap();
         assert!(error.contains("新しい版の nagi"), "{error}");
-        for suffix in ["", "-wal", "-shm"] {
-            let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
-        }
+    }
+
+    #[test]
+    fn 同じnagiで開き直しても_ファイルを書き換えない() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        drop(DeviceDb::open(&path).unwrap());
+        let before = std::fs::read(&path).unwrap();
+
+        let db = DeviceDb::open(&path).unwrap();
+        assert!(!stamp_written_by(&db.conn).unwrap());
+        drop(db);
+
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert_eq!(written_by(&path).as_deref(), Some(crate::VERSION));
+    }
+
+    #[test]
+    fn 控えの取り直しに失敗しても_前の控えは消えない() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let before = rows_in(&path);
+        let mut conn = Connection::open(&path).unwrap();
+        DeviceDb::migrate(&mut conn, &path, &[first_step, broken_step]).unwrap_err();
+        drop(conn);
+        let backup = backup_path(&path, 1);
+        assert_eq!(rows_in(&backup), before);
+
+        // tasks の表の頁を壊して、取り直す控えを書き出せなくする
+        let conn = Connection::open(&path).unwrap();
+        let page_size: i64 = conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .unwrap();
+        let root: i64 = conn
+            .query_row(
+                "SELECT rootpage FROM sqlite_master WHERE name = 'tasks'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(conn);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[((root - 1) * page_size) as usize] = 0xff;
+        std::fs::write(&path, bytes).unwrap();
+        let mut conn = Connection::open(&path).unwrap();
+
+        let error = DeviceDb::migrate(&mut conn, &path, &[first_step, second_step]).unwrap_err();
+
+        assert!(error.contains(&backup.display().to_string()), "{error}");
+        assert_eq!(user_version(&conn).unwrap(), 1);
+        assert!(backup.exists());
+        assert_eq!(rows_in(&backup), before);
+    }
+
+    #[test]
+    fn 移す鍵を待つあいだに_もっと新しいnagiが移していたら_断って何も書かない() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let mut conn = Connection::open(&path).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 1);
+        // 版 1 を読んだあとで、版 3 まで移す nagi 0.9.0 が先に鍵を取って移し終えた
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "PRAGMA user_version = 3; INSERT INTO meta VALUES ('written_by', '0.9.0');",
+            )
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let error = DeviceDb::migrate(&mut conn, &path, &[first_step]).unwrap_err();
+
+        assert!(error.contains("0.9.0"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!backup_path(&path, 3).exists());
+    }
+
+    #[test]
+    fn 移し終えた直後に止まっても_written_byは移したnagiの版になっている() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute("INSERT INTO meta VALUES ('written_by', '0.0.1')", [])
+            .unwrap();
+
+        // written_by を書けなければ、版も上がらない（同じトランザクションで書く）
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER refuse_stamp BEFORE INSERT ON meta WHEN NEW.key = 'written_by'
+             BEGIN SELECT RAISE(ABORT, 'stamp refused'); END;",
+        )
+        .unwrap();
+        let error = DeviceDb::migrate(&mut conn, &path, &[first_step, second_step]).unwrap_err();
+        assert!(error.contains("stamp refused"), "{error}");
+        assert_eq!(user_version(&conn).unwrap(), 1);
+        conn.execute_batch("DROP TRIGGER refuse_stamp;").unwrap();
+
+        // 移し終えたところで止まる（open の続きは動かない）
+        DeviceDb::migrate(&mut conn, &path, &[first_step, second_step]).unwrap();
+        drop(conn);
+
+        assert_eq!(written_by(&path).as_deref(), Some(crate::VERSION));
+        // 版 1 までしか読めない nagi で開くと、移した nagi の版に上げるよう知らせる
+        let error = DeviceDb::open(&path).err().unwrap();
+        assert!(error.contains(crate::VERSION), "{error}");
+        assert!(!error.contains("0.0.1"), "{error}");
     }
 
     // --- ストアとつないで動かす -----------------------------------------------------------
