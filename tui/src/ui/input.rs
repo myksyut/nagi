@@ -1150,6 +1150,7 @@ mod tests {
         let mut store = Store::new(StoreOptions {
             transport: Box::new(NullTransport),
             local: None,
+            owner: Default::default(),
             clock: Box::new(|| parse_iso("2026-10-06T03:00:00.000Z").unwrap()),
             tz: APP_TIME_ZONE,
         });

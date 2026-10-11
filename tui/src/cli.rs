@@ -12,6 +12,7 @@ use serde_json::{Value, json};
 use crate::auth::{self, DevicePoll};
 use crate::config::Config;
 use crate::data::device::DeviceDb;
+use crate::data::local_db::unsent_count_at;
 use crate::data::net::{ApiClient, NetEvent};
 use crate::data::{
     AddTask, Destination, Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReason,
@@ -22,6 +23,7 @@ use crate::dates::{
 };
 use crate::model::{Bucket, ChecklistItem, POINTS, Priority, Task, TaskChanges};
 use crate::ui::text::fold;
+use crate::upgrade::{upgrade_message, waiting_message};
 
 /// Worker の応答を待つ時間
 const WAIT: Duration = Duration::from_secs(60);
@@ -42,7 +44,9 @@ nagi — ターミナルで使う TODO アプリ
   nagi done <ID>             タスクを完了にする
   nagi projects              プロジェクトの一覧を出す
   nagi login                 ログインして、クラウドと同期する（GitHub のデバイスフロー。いまは招待した人だけ）
-  nagi logout                ログアウトして、この端末のデータに戻る
+  nagi logout                ログアウトして、この端末のデータに戻る（送っていない変更があれば、消さずに止まる）
+  nagi logout --discard-unsent
+                             送っていない変更を消して、ログアウトする
 
 add の指定：
   --memo <文字>              メモ
@@ -163,9 +167,14 @@ pub enum Command {
     Show(ShowArgs),
     Update(UpdateArgs),
     Done(DoneArgs),
-    Projects { json: bool },
+    Projects {
+        json: bool,
+    },
     Login,
-    Logout,
+    Logout {
+        /// 送っていない変更があっても、消してログアウトする
+        discard_unsent: bool,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -192,7 +201,7 @@ const VALUE_FLAGS: [&str; 14] = [
     "if-unchanged-since",
 ];
 /// 値を取らない指定
-const SWITCHES: [&str; 4] = ["json", "help", "version", "keep-existing"];
+const SWITCHES: [&str; 5] = ["json", "help", "version", "keep-existing", "discard-unsent"];
 
 /// 指定の値を1つ取り出す（同じ指定が重なっていたら、最後のものを使う）
 fn take(values: &mut Vec<(&str, String)>, name: &str) -> Option<String> {
@@ -273,6 +282,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let server = take(values, "server");
     let json = switches.contains(&"json");
     let keep_existing = switches.contains(&"keep-existing");
+    let discard_unsent = switches.contains(&"discard-unsent");
     let command = match positionals.split_first() {
         None => Command::Tui,
         Some((&"help", _)) => Command::Help,
@@ -342,7 +352,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         }),
         Some((&"projects", [])) => Command::Projects { json },
         Some((&"login", [])) => Command::Login,
-        Some((&"logout", [])) => Command::Logout,
+        Some((&"logout", [])) => Command::Logout { discard_unsent },
         Some((&("projects" | "login" | "logout"), _)) => {
             return Err("projects・login・logout には、ほかの引数を渡せません".to_string());
         }
@@ -352,11 +362,19 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     if let Some((name, _)) = values.first() {
         return Err(format!("ここでは使えない指定です：--{name}"));
     }
-    if json && matches!(command, Command::Tui | Command::Login | Command::Logout) {
+    if json
+        && matches!(
+            command,
+            Command::Tui | Command::Login | Command::Logout { .. }
+        )
+    {
         return Err("--json は、ここでは使えません".to_string());
     }
     if keep_existing && !matches!(command, Command::Update(_)) {
         return Err("--keep-existing は update で使えます".to_string());
+    }
+    if discard_unsent && !matches!(command, Command::Logout { .. }) {
+        return Err("--discard-unsent は logout で使えます".to_string());
     }
     Ok(Invocation { server, command })
 }
@@ -400,16 +418,20 @@ struct Session {
 
 impl Session {
     fn open(config: &Config) -> Result<Session, String> {
-        let token = config.load_token();
+        let login = auth::current_login(config);
         // Worker を名指ししたのにログインがない（この端末だけで使うときは、ログインは要らない）
-        if config.is_cloud() && token.is_none() && !config.is_dev_server() {
+        if config.is_cloud() && login.token.is_none() && !config.is_dev_server() {
             return Err("ログインしていません。先に `nagi login` を実行してください".to_string());
         }
-        let user_id = auth::current_user_id(config);
         let (sender, events) = channel();
-        let store = open_store(config, token, user_id.as_deref(), move |event| {
-            let _ = sender.send(event);
-        })?;
+        let store = open_store(
+            config,
+            login.token,
+            login.user_id.as_deref(),
+            move |event| {
+                let _ = sender.send(event);
+            },
+        )?;
         Ok(Session {
             store,
             events,
@@ -421,21 +443,13 @@ impl Session {
         })
     }
 
-    /// 止まった理由や保存の失敗があれば、その文言を返す
+    /// 止まった理由や保存の失敗があれば、その文言を返す（nagi の更新が要るときは、ここでは返さない。
+    /// 書き込みは手元で受け付けて pending の表に残し、flush で知らせる）
     fn check(&mut self) -> Result<(), String> {
-        match self.store.stopped_by {
-            Some(StopReason::Unauthorized) => {
-                return Err(
-                    "ログインが切れています。`nagi login` でログインし直してください".to_string(),
-                );
-            }
-            Some(StopReason::VersionMismatch) => {
-                return Err(
-                    "この nagi は古くて、Worker とやり取りできません。新しい版に更新してください"
-                        .to_string(),
-                );
-            }
-            None => {}
+        if self.store.stopped_by == Some(StopReason::Unauthorized) {
+            return Err(
+                "ログインが切れています。`nagi login` でログインし直してください".to_string(),
+            );
         }
         for notice in self.store.take_notices() {
             match notice {
@@ -456,7 +470,7 @@ impl Session {
                 Notice::OfflineBlocked { .. } => {
                     return Err(format!("{} に接続できません", self.server));
                 }
-                Notice::Unauthorized { .. } | Notice::VersionMismatch { .. } => {}
+                Notice::Unauthorized { .. } | Notice::UpgradeRequired => {}
             }
         }
         Ok(())
@@ -477,19 +491,55 @@ impl Session {
         Ok(())
     }
 
-    /// 差分を取って、手元を最新にする
+    /// 差分を取って、手元を最新にする（読むだけのコマンド）。nagi の更新が要るときは、その文言を返す
     fn sync(&mut self) -> Result<(), String> {
+        self.refresh()?;
+        self.stopped_for_upgrade()
+    }
+
+    /// 書き込む前に差分を取る。nagi の更新が要るときも止めずに、手元の控えのまま進める
+    /// （書き込みは送らずに pending の表に残り、flush でそれを知らせる）
+    fn sync_to_write(&mut self) -> Result<(), String> {
+        self.refresh()
+    }
+
+    /// 差分を取る。前に送れなかった変更が控えから戻っていれば、送り終えるまで待つ
+    fn refresh(&mut self) -> Result<(), String> {
         self.store.sync();
         self.pump(|store| !store.is_syncing())?;
+        if self.store.needs_upgrade() {
+            return Ok(());
+        }
+        self.waiting_for_server()?;
         if !self.store.synced {
             return Err(format!("{} に接続できませんでした", self.server));
+        }
+        self.flush()
+    }
+
+    /// 送信中の操作が、すべて保存されるまで待つ。版のずれで送れないときは、その文言を返す
+    fn flush(&mut self) -> Result<(), String> {
+        self.pump(|store| {
+            store.pending_count() == 0 || store.needs_upgrade() || store.waiting_for_server
+        })?;
+        // 送らずに持つ変更を控えに書けていなければ、知らせる前にもう一度書いてみる
+        self.store.retry_keep();
+        self.stopped_for_upgrade()?;
+        self.waiting_for_server()
+    }
+
+    fn stopped_for_upgrade(&self) -> Result<(), String> {
+        if self.store.needs_upgrade() {
+            return Err(upgrade_message(&self.store));
         }
         Ok(())
     }
 
-    /// 送信中の操作が、すべて保存されるまで待つ
-    fn flush(&mut self) -> Result<(), String> {
-        self.pump(|store| store.pending_count() == 0)
+    fn waiting_for_server(&self) -> Result<(), String> {
+        if self.store.waiting_for_server {
+            return Err(waiting_message(&self.store));
+        }
+        Ok(())
     }
 }
 
@@ -498,9 +548,7 @@ fn accepted(result: OpResult) -> Result<(), String> {
     match result {
         Ok(_) | Err(Failure::Noop) => Ok(()),
         Err(Failure::Offline) => Err("Worker に接続できません".to_string()),
-        Err(Failure::Stopped) => {
-            Err("ログインが切れているか、nagi の版が古くて送れません".to_string())
-        }
+        Err(Failure::Stopped) => Err("ログインが切れていて、送れません".to_string()),
         Err(Failure::TooLong(limit)) => Err(limit.message()),
         Err(_) => Err("受け付けられない内容です".to_string()),
     }
@@ -810,7 +858,7 @@ fn task_detail(store: &Store, task: &Task) -> String {
 
 fn add(config: &Config, args: AddArgs) -> Result<(), String> {
     let mut session = Session::open(config)?;
-    session.sync()?;
+    session.sync_to_write()?;
     // 追加する前に、指定をすべて確かめる（途中まで追加して止まらないように）
     let today = session.store.today.clone();
     let to = match &args.to {
@@ -960,7 +1008,7 @@ fn show(config: &Config, args: ShowArgs) -> Result<(), String> {
 
 fn update(config: &Config, args: UpdateArgs) -> Result<(), String> {
     let mut session = Session::open(config)?;
-    session.sync()?;
+    session.sync_to_write()?;
     let store = &mut session.store;
     let task = find_task(store, &args.id)?;
     ensure_unchanged(&task, args.if_unchanged_since.as_deref())?;
@@ -1034,7 +1082,7 @@ fn update(config: &Config, args: UpdateArgs) -> Result<(), String> {
 
 fn done(config: &Config, args: DoneArgs) -> Result<(), String> {
     let mut session = Session::open(config)?;
-    session.sync()?;
+    session.sync_to_write()?;
     let task = find_task(&session.store, &args.id)?;
     ensure_unchanged(&task, args.if_unchanged_since.as_deref())?;
     let already = task.is_completed();
@@ -1133,15 +1181,31 @@ fn login(config: &Config) -> Result<(), String> {
     }
 }
 
-/// ログアウト。Worker のセッションを消し、手元のトークンと控えも消す
-fn logout(config: &Config) -> Result<(), String> {
+/// ログアウト。Worker のセッションを消し、手元のトークンと控えも消す。控えに送っていない変更があれば
+/// （あるかを確かめられなければ）、discard_unsent がない限り、何も消さずに止まる
+fn logout(config: &Config, discard_unsent: bool) -> Result<(), String> {
     match config.saved_session() {
         Some(session) => {
             // 持ち主の分からないログイン（利用者の ID を返さないころのもの）は、消す前に聞いておく（どの控えかを決めるため）
             let user_id = session
                 .user_id
                 .clone()
-                .or_else(|| auth::current_user_id(config));
+                .or_else(|| auth::current_login(config).user_id);
+            if !discard_unsent {
+                let found = match unsent_count_at(&config.db_path(user_id.as_deref())) {
+                    Ok(0) => None,
+                    Ok(count) => Some(format!("送っていない変更が {count} 件あります")),
+                    Err(error) => Some(format!(
+                        "送っていない変更があるかを確かめられません（{error}）"
+                    )),
+                };
+                if let Some(found) = found {
+                    return Err(format!(
+                        "{found}。ログアウトすると消えるため、ログアウトしていません。\
+                         消してよければ `nagi logout --discard-unsent` を実行してください"
+                    ));
+                }
+            }
             auth::logout(&ApiClient::new(&config.server, Some(session.token)));
             config.clear_token();
             config.remove_db(user_id.as_deref());
@@ -1166,7 +1230,7 @@ pub fn run(config: &Config, command: Command) -> ExitCode {
         Command::Done(args) => done(config, args),
         Command::Projects { json } => projects(config, json),
         Command::Login => login(config),
-        Command::Logout => logout(config),
+        Command::Logout { discard_unsent } => logout(config, discard_unsent),
         Command::Tui | Command::Help | Command::Version => Ok(()),
     };
     match result {
@@ -1476,7 +1540,56 @@ mod tests {
         assert!(parsed(&["login", "now"]).is_err());
         assert!(parsed(&["logout", "--json"]).is_err());
         assert_eq!(command(&["login"]), Command::Login);
-        assert_eq!(command(&["logout"]), Command::Logout);
+        assert_eq!(
+            command(&["logout"]),
+            Command::Logout {
+                discard_unsent: false
+            }
+        );
+        assert_eq!(
+            command(&["logout", "--discard-unsent"]),
+            Command::Logout {
+                discard_unsent: true
+            }
+        );
+        assert!(parsed(&["list", "--discard-unsent"]).is_err());
+    }
+
+    #[test]
+    fn 送っていない変更があれば_logout_はログインも控えも消さずに止まる() {
+        use crate::data::local_db::{LocalDb, PendingOwner};
+        use crate::data::replica::{OperationKind, PendingBatch};
+        use crate::model::Mutation;
+
+        let dir = std::env::temp_dir().join(format!(
+            "nagi-cli-logout-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        let config = Config::at("https://nagi.example.com", &dir);
+        config.save_session("token", Some("u1")).unwrap();
+        let path = config.db_path(Some("u1"));
+        let batch = PendingBatch {
+            id: "b1".into(),
+            mutations: vec![Mutation::update_task(
+                "t1",
+                TaskChanges {
+                    memo: Some("残すメモ".into()),
+                    ..Default::default()
+                },
+            )],
+            at: "2026-10-06T03:00:00.000Z".into(),
+            kind: OperationKind::TaskUpdate,
+        };
+        LocalDb::open(&path)
+            .unwrap()
+            .save_pending(&PendingOwner::new(Some("u1"), Some("token")), &[batch])
+            .unwrap();
+
+        assert!(logout(&config, false).is_err());
+        assert!(config.saved_session().is_some());
+        assert_eq!(unsent_count_at(&path).unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

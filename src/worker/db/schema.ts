@@ -152,7 +152,12 @@ export const meta = sqliteTable(
   (t) => [primaryKey({ columns: [t.userId, t.key] })],
 );
 
-/** 反映済みの操作のまとまり。再送による二重の書き込みを防ぐ。7 日たったら消す */
+/**
+ * 反映済みの操作のまとまり。同じ ID がまた来たら、書かずに今の行を返す（再送による二重の書き込みを防ぐ）。
+ * 日数で消さない。nagi は版のずれで送れなかったまとまりを、更新されるまで（何か月でも）持ち、同じ ID で送り直す。
+ * 前の送信が届いていたか（応答だけが失われたか）を nagi は知れないので、ここで ID を忘れると、送り直しが
+ * もう一度当たって、あとからの変更を古い値で上書きする
+ */
 export const appliedMutations = sqliteTable(
   "applied_mutations",
   {

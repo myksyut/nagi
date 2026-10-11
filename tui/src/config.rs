@@ -158,15 +158,6 @@ impl Config {
         self.config_dir.join("prefs.json")
     }
 
-    /// ログインのトークン。環境変数 NAGI_TOKEN があればそれ（手元にログインを置けない、自動の実行のため）、
-    /// なければ保存してあるもの
-    pub fn load_token(&self) -> Option<String> {
-        if let Some(token) = std::env::var("NAGI_TOKEN").ok().filter(|t| !t.is_empty()) {
-            return Some(token);
-        }
-        self.saved_token()
-    }
-
     /// 保存してあるログインのトークン（環境変数は見ない。ログアウトで消す対象）
     pub fn saved_token(&self) -> Option<String> {
         self.saved_session().map(|session| session.token)

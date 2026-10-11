@@ -26,6 +26,7 @@ use crate::data::StopReason;
 use crate::data::lists::sum_points;
 use crate::dates::format_day_heading;
 use crate::model::Task;
+use crate::upgrade::{upgrade_message, waiting_message};
 
 const SIDEBAR_WIDTH: u16 = 24;
 /// 畳んだサイドバー（印だけの細い帯）の幅
@@ -348,12 +349,16 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
         }
     };
     let (state, state_style) = match app.store.stopped_by {
-        Some(StopReason::VersionMismatch) => (
-            "新しいバージョンがあります。nagi を更新してください".to_string(),
+        Some(StopReason::VersionMismatch | StopReason::UnreadablePending) => (
+            upgrade_message(&app.store),
             Style::new().fg(theme::ATTENTION),
         ),
         Some(StopReason::Unauthorized) => (
             "ログインが切れました".to_string(),
+            Style::new().fg(theme::ATTENTION),
+        ),
+        None if app.store.waiting_for_server => (
+            waiting_message(&app.store),
             Style::new().fg(theme::ATTENTION),
         ),
         None if !app.store.is_online => (

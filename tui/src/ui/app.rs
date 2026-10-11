@@ -17,12 +17,13 @@ use crate::data::sort::{TaskSort, sort_tasks};
 use crate::data::{Destination, Notice, SaveFailure, Store};
 use crate::dates::{APP_TIME_ZONE, add_days, device_time_zone, schedule_heading};
 use crate::model::{Mutation, Task};
+use crate::upgrade::upgrade_hint;
 
 /// 一度に描く完了ログの行数。続きは、一番下で ↓ を押すと読み込む
 pub const LOGBOOK_PAGE_SIZE: usize = 200;
 /// トーストを出しておく時間
 const TOAST_DURATION: Duration = Duration::from_secs(6);
-/// 差分を取りに行く間隔（ほかの端末の変更を拾う）。オフラインのあいだは短くして、つながったかを確かめる
+/// 差分を取りに行く間隔（ほかの端末の変更を拾う）。オフラインと Worker の更新を待つあいだは短くして、通るかを確かめる
 const SYNC_INTERVAL: Duration = Duration::from_secs(45);
 const OFFLINE_RETRY_INTERVAL: Duration = Duration::from_secs(8);
 
@@ -260,6 +261,8 @@ pub struct App {
     /// ログインの画面（出ているあいだ Some）
     pub login: Option<Login>,
     pub should_quit: bool,
+    /// 送っていない変更が消えることを、ログアウトの前に一度知らせた（もう一度選ぶとログアウトする）
+    pub logout_warned: bool,
     /// 画面のスレッドへ知らせを送る口（通信とログインのスレッドに渡す）
     pub events: Sender<AppEvent>,
     /// ストアと通信の世代。ログインし直して作り直すたびに進め、古い通信の結果を捨てる
@@ -317,6 +320,7 @@ impl App {
             shortcuts_scroll: 0,
             login: None,
             should_quit: false,
+            logout_warned: false,
             events,
             generation: 0,
             last_sync: Instant::now(),
@@ -830,10 +834,12 @@ impl App {
                         .then_some("追加した文字は、追加欄（n）に戻してあります");
                     self.toast_error(&message, detail);
                 }
-                Notice::Unauthorized { failed_creates }
-                | Notice::VersionMismatch { failed_creates } => {
+                Notice::Unauthorized { failed_creates } => {
                     self.restore_drafts(failed_creates.iter().map(|create| create.title.clone()));
                 }
+                // 送っていない変更は、表示と pending の表に残っている。その数は止まったあとも増えるので、
+                // 下の欄に出し続ける
+                Notice::UpgradeRequired => self.toast_error(&upgrade_hint(), None),
             }
         }
     }

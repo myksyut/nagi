@@ -3,13 +3,19 @@ import { eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
 import { compareRank, rankAfter, ranksBetween } from "../../shared/rank";
 import { getDb } from "../db/client";
-import { appliedMutations, meta, OWNER_USER_ID, projects, tasks } from "../db/schema";
+import { meta, OWNER_USER_ID, projects, tasks } from "../db/schema";
 import {
   apiApp,
+  asTaskRow,
+  at,
   insertRawProject,
   insertRawTask,
+  mutateBody,
+  mutationBatch,
   resetSyncTables,
   setMeta,
+  snapshot,
+  taskInput,
 } from "../test/sync-app";
 import { rolloverIfDue } from "./rollover";
 import { projectColumns, taskColumns } from "./rows";
@@ -328,7 +334,7 @@ describe("limit", () => {
 });
 
 describe("物理削除", () => {
-  it("削除から31日の行は消え、29日の行は残る（タスク・プロジェクトとも）。purged_through_seqは消した行のseqの最大値になる。7日前のapplied_mutationsは消え、6日前のものは残る", async () => {
+  it("削除から31日の行は消え、29日の行は残る（タスク・プロジェクトとも）。purged_through_seqは消した行のseqの最大値になる", async () => {
     const purgeAt = new Date(NOW.getTime() - 31 * 24 * 60 * 60 * 1000).toISOString();
     const keepAt = new Date(NOW.getTime() - 29 * 24 * 60 * 60 * 1000).toISOString();
     const taskPurge = await insertRawTask(db, { deletedAt: purgeAt, seq: 1 });
@@ -337,16 +343,6 @@ describe("物理削除", () => {
     const projectKeep = await insertRawProject(db, { deletedAt: keepAt, seq: 4 });
     await setMeta(db, "seq", "4");
     await setMeta(db, "last_rollover_on", YESTERDAY);
-
-    const appliedPurgeAt = new Date(NOW.getTime() - 8 * 24 * 60 * 60 * 1000).toISOString();
-    const appliedKeepAt = new Date(NOW.getTime() - 6 * 24 * 60 * 60 * 1000).toISOString();
-    const appliedPurgeId = crypto.randomUUID();
-    const appliedKeepId = crypto.randomUUID();
-    await db.insert(appliedMutations).values([
-      { userId: OWNER_USER_ID, id: appliedPurgeId, appliedAt: appliedPurgeAt },
-      { userId: OWNER_USER_ID, id: appliedKeepId, appliedAt: appliedKeepAt },
-    ]);
-
     const result = await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
     expect(result.ran).toBe(true);
 
@@ -365,16 +361,9 @@ describe("物理削除", () => {
       .where(eq(meta.key, "purged_through_seq"))
       .get();
     expect(Number(purgedThroughSeq?.value)).toBe(3);
-
-    expect(
-      await db.select().from(appliedMutations).where(eq(appliedMutations.id, appliedPurgeId)).get(),
-    ).toBeUndefined();
-    expect(
-      await db.select().from(appliedMutations).where(eq(appliedMutations.id, appliedKeepId)).get(),
-    ).toBeDefined();
   });
 
-  it("削除からちょうど 30 日の行は残り、30 日を 1 ミリ秒でも過ぎた行は消える（applied_mutations の 7 日も同じ）", async () => {
+  it("削除からちょうど 30 日の行は残り、30 日を 1 ミリ秒でも過ぎた行は消える", async () => {
     const DAY_MS = 24 * 60 * 60 * 1000;
     const exactly = (days: number) => new Date(NOW.getTime() - days * DAY_MS).toISOString();
     const justOver = (days: number) => new Date(NOW.getTime() - days * DAY_MS - 1).toISOString();
@@ -382,12 +371,6 @@ describe("物理削除", () => {
     const taskPurge = await insertRawTask(db, { deletedAt: justOver(30), seq: 2 });
     await setMeta(db, "seq", "2");
     await setMeta(db, "last_rollover_on", YESTERDAY);
-    const appliedKeepId = crypto.randomUUID();
-    const appliedPurgeId = crypto.randomUUID();
-    await db.insert(appliedMutations).values([
-      { userId: OWNER_USER_ID, id: appliedKeepId, appliedAt: exactly(7) },
-      { userId: OWNER_USER_ID, id: appliedPurgeId, appliedAt: justOver(7) },
-    ]);
 
     await rolloverIfDue(db, OWNER_USER_ID, NOW, "Asia/Tokyo");
 
@@ -399,12 +382,34 @@ describe("物理削除", () => {
       .where(eq(meta.key, "purged_through_seq"))
       .get();
     expect(Number(purgedThroughSeq?.value)).toBe(2);
-    expect(
-      await db.select().from(appliedMutations).where(eq(appliedMutations.id, appliedKeepId)).get(),
-    ).toBeDefined();
-    expect(
-      await db.select().from(appliedMutations).where(eq(appliedMutations.id, appliedPurgeId)).get(),
-    ).toBeUndefined();
+  });
+
+  it("★ 反映済みのまとまりの ID は消さない。何年もたってから切り替えが走っても、同じ ID の送り直しは書かずに今の行を返す", async () => {
+    let now = new Date("2023-04-01T12:00:00+09:00");
+    const { post } = apiApp(() => now);
+    const taskId = crypto.randomUUID();
+    await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.create", task: taskInput({ id: taskId, title: "first" }) }]),
+    );
+    // 応答が失われ、nagi が版のずれで持ったまま何年も更新されなかったまとまり
+    const kept = mutationBatch([{ type: "task.update", id: taskId, changes: { title: "kept" } }]);
+    expect((await post("/api/mutate", kept)).status).toBe(200);
+    await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.update", id: taskId, changes: { title: "later" } }]),
+    );
+
+    now = NOW;
+    await post("/api/sync", { cursor: 0, baseCursor: 0 });
+    const lastRollover = await db.select().from(meta).where(eq(meta.key, "last_rollover_on")).get();
+    expect(lastRollover?.value).toBe(TODAY);
+    const before = await snapshot(db);
+
+    const replay = await post("/api/mutate", kept);
+    expect(replay.status).toBe(200);
+    expect(asTaskRow(at((await mutateBody(replay)).rows, 0)).title).toBe("later");
+    expect(await snapshot(db)).toEqual(before);
   });
 });
 

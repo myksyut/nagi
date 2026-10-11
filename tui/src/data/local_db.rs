@@ -1,21 +1,57 @@
-//! 手元の控え（SQLite）。保存するのは確定データ（タスクとプロジェクト）とカーソルだけで、
-//! 送信中の操作は保存しない。同時に開いたほかの nagi と共有するので、行は seq が新しいときだけ上書きする
-//! （古い側が新しい行を巻き戻さないように）
+//! 手元の控え（SQLite）。保存するのは確定データ（タスクとプロジェクト）とカーソル、そして版のずれで
+//! 送れないまま持っておく操作のまとまり（pending）。同時に開いたほかの nagi と共有するので、行は seq が
+//! 新しいときだけ上書きする（古い側が新しい行を巻き戻さないように）。
+//! pending は持ち主（ログイン）ごとに書き、同じ持ち主のときだけ読み戻す
 
 use std::path::Path;
 use std::time::Duration;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
+use super::replica::PendingBatch;
 use crate::model::SyncRow;
 
-/// 保存形式の版。形を変えたら上げる。版が変わると、開いたときに手元のデータを捨てて作り直し、
-/// カーソル 0 から取り直す
+/// 保存形式の版。形を変えたら上げる。版が変わると、開いたときに手元のデータ（rows と meta）を捨てて作り直し、
+/// カーソル 0 から取り直す。pending は取り直せない利用者の変更なので、ここでは消さない
 const FORMAT_VERSION: i64 = 1;
 
 pub struct Snapshot {
     pub rows: Vec<SyncRow>,
     pub cursor: u64,
+}
+
+/// 送っていないまとまりの持ち主。読み戻すのは、利用者の ID が両方分かっていて同じときか、トークンが同じとき
+/// （利用者の ID が分からないまま書いたまとまりを、別のトークンで送らないように）
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PendingOwner {
+    user_id: Option<String>,
+    token_key: Option<String>,
+}
+
+impl PendingOwner {
+    pub fn new(user_id: Option<&str>, token: Option<&str>) -> PendingOwner {
+        PendingOwner {
+            user_id: user_id.map(str::to_string),
+            token_key: token.map(token_key),
+        }
+    }
+}
+
+/// トークンそのものは控えに書かず、見分けるための値（FNV-1a 64 ビット）だけを書く
+fn token_key(token: &str) -> String {
+    let hash = token.bytes().fold(0xcbf2_9ce4_8422_2325_u64, |hash, byte| {
+        (hash ^ u64::from(byte)).wrapping_mul(0x0100_0000_01b3)
+    });
+    format!("{hash:016x}")
+}
+
+/// 持ち主のまとまりを、書いた順に読んだ結果
+#[derive(Debug, Default, PartialEq)]
+pub struct PendingLoad {
+    /// 最初の読めないまとまりより前のもの
+    pub batches: Vec<PendingBatch>,
+    /// 読めないまとまりがあった（それと後ろは表に残し、読まない）
+    pub unreadable: bool,
 }
 
 pub struct LocalDb {
@@ -69,6 +105,16 @@ impl LocalDb {
             )?;
             conn.pragma_update(None, "user_version", FORMAT_VERSION)?;
         }
+        // 版の確かめとは別に作る（足しても FORMAT_VERSION は上げないので、控えは取り直しにならない）
+        conn.execute_batch(
+            "CREATE TABLE IF NOT EXISTS pending (
+               position INTEGER PRIMARY KEY AUTOINCREMENT,
+               id TEXT NOT NULL UNIQUE,
+               owner_user TEXT,
+               owner_token TEXT,
+               json TEXT NOT NULL
+             );",
+        )?;
         Ok(LocalDb { conn })
     }
 
@@ -160,12 +206,152 @@ impl LocalDb {
         )?;
         Ok(())
     }
+
+    /// 送れないまとまりを、持ち主を添えて列の後ろに書く。書いてあるまとまり（同じ id）には触れない。
+    /// まとまりの中身は id ごとに変わらないので、同時に開いたほかの nagi の写しで、位置や持ち主を書き換えない
+    pub fn save_pending(
+        &self,
+        owner: &PendingOwner,
+        batches: &[PendingBatch],
+    ) -> rusqlite::Result<()> {
+        if batches.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for batch in batches {
+            let json = serde_json::to_string(batch).map_err(to_sql_error)?;
+            tx.execute(
+                "INSERT INTO pending (id, owner_user, owner_token, json) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (id) DO NOTHING",
+                params![batch.id, owner.user_id, owner.token_key, json],
+            )?;
+        }
+        tx.commit()
+    }
+
+    /// owner のまとまりを、書いた順に読む。読めないまとまりで止め、それと後ろは表に残す
+    /// （前のまとまりを飛ばして後ろを送ると、順と前提が崩れる。読める nagi で送る）
+    pub fn load_pending(&self, owner: &PendingOwner) -> rusqlite::Result<PendingLoad> {
+        let mut statement = self.conn.prepare(
+            "SELECT json FROM pending
+             WHERE (owner_user IS NOT NULL AND owner_user = ?1) OR owner_token IS ?2
+             ORDER BY position",
+        )?;
+        let mut load = PendingLoad::default();
+        for json in statement.query_map(params![owner.user_id, owner.token_key], |row| {
+            row.get::<_, String>(0)
+        })? {
+            match serde_json::from_str::<PendingBatch>(&json?) {
+                Ok(batch) => load.batches.push(batch),
+                Err(_) => {
+                    load.unreadable = true;
+                    break;
+                }
+            }
+        }
+        Ok(load)
+    }
+
+    /// 確定した・捨てたまとまりを消す
+    pub fn remove_pending(&self, ids: &[&str]) -> rusqlite::Result<()> {
+        if ids.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for id in ids {
+            tx.execute("DELETE FROM pending WHERE id = ?1", params![id])?;
+        }
+        tx.commit()
+    }
+
+    /// from の控え（Worker ごとの 1 つ）に owner と同じトークンで残したまとまりを、書いた順のまま、この控えの列の
+    /// 後ろへ移す。持ち主を聞けなかった起動で残したもので、持ち主が分かった起動では、この控えから読むため。
+    /// こちらに書いてから from から消す（あいだで止まっても失わない。もう一度移しても、同じ id は 1 つのまま）
+    pub fn take_pending_from(&self, from: &Path, owner: &PendingOwner) -> rusqlite::Result<()> {
+        let Some(token_key) = &owner.token_key else {
+            return Ok(());
+        };
+        if !from.exists() {
+            return Ok(());
+        }
+        let mut source = Connection::open(from)?;
+        source.busy_timeout(Duration::from_secs(5))?;
+        if !has_pending_table(&source)? {
+            return Ok(());
+        }
+        let rows = source
+            .prepare(
+                "SELECT id, owner_user, json FROM pending WHERE owner_token = ?1 ORDER BY position",
+            )?
+            .query_map(params![token_key], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        if rows.is_empty() {
+            return Ok(());
+        }
+        let tx = self.conn.unchecked_transaction()?;
+        for (id, owner_user, json) in &rows {
+            tx.execute(
+                "INSERT INTO pending (id, owner_user, owner_token, json) VALUES (?1, ?2, ?3, ?4)
+                 ON CONFLICT (id) DO NOTHING",
+                params![
+                    id,
+                    owner_user.as_deref().or(owner.user_id.as_deref()),
+                    token_key,
+                    json
+                ],
+            )?;
+        }
+        tx.commit()?;
+        let tx = source.transaction()?;
+        for (id, ..) in &rows {
+            tx.execute("DELETE FROM pending WHERE id = ?1", params![id])?;
+        }
+        tx.commit()
+    }
+
+    /// 書き込みを断るようにする（保存に失敗したときのテスト）
+    #[cfg(test)]
+    pub fn set_read_only(&self, read_only: bool) {
+        self.conn
+            .pragma_update(None, "query_only", read_only)
+            .unwrap();
+    }
+}
+
+/// path の控えの pending の表にある、送っていないまとまりの数（持ち主を問わない。ログアウトで控えごと消えるもの）。
+/// 控えがなければ 0。ログアウトの前に、画面と CLI の両方がこれで確かめる
+pub fn unsent_count_at(path: &Path) -> rusqlite::Result<usize> {
+    if !path.exists() {
+        return Ok(0);
+    }
+    let conn = Connection::open(path)?;
+    conn.busy_timeout(Duration::from_secs(5))?;
+    if !has_pending_table(&conn)? {
+        return Ok(0);
+    }
+    let count: i64 = conn.query_row("SELECT COUNT(*) FROM pending", [], |row| row.get(0))?;
+    Ok(count as usize)
+}
+
+fn has_pending_table(conn: &Connection) -> rusqlite::Result<bool> {
+    conn.query_row(
+        "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'pending')",
+        [],
+        |row| row.get(0),
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::model::Project;
+    use crate::data::replica::OperationKind;
+    use crate::model::{Bucket, Mutation, NewTask, Project, ProjectChanges, TaskChanges};
 
     fn project(id: &str, seq: u64, name: &str, deleted_at: Option<&str>) -> SyncRow {
         SyncRow::Project(Project {
@@ -178,6 +364,156 @@ mod tests {
             deleted_at: deleted_at.map(str::to_string),
             seq,
         })
+    }
+
+    fn batch(id: &str, mutations: Vec<Mutation>) -> PendingBatch {
+        PendingBatch {
+            id: id.into(),
+            mutations,
+            at: "2026-10-06T03:00:00.000Z".into(),
+            kind: OperationKind::TaskUpdate,
+        }
+    }
+
+    fn pending_batches() -> Vec<PendingBatch> {
+        vec![
+            batch(
+                "b1",
+                vec![Mutation::TaskCreate {
+                    task: NewTask {
+                        id: "t1".into(),
+                        title: "追加".into(),
+                        memo: String::new(),
+                        bucket: Bucket::Inbox,
+                        scheduled_on: None,
+                        project_id: None,
+                        rank: "a0".into(),
+                    },
+                }],
+            ),
+            // null にする項目（Some(None)）と、送らない項目（None）が、読み戻しても入れ替わらない
+            batch(
+                "b2",
+                vec![Mutation::update_task(
+                    "t1",
+                    TaskChanges {
+                        memo: Some("メモ".into()),
+                        scheduled_on: Some(None),
+                        ..Default::default()
+                    },
+                )],
+            ),
+            batch(
+                "b3",
+                vec![Mutation::ProjectUpdate {
+                    id: "p1".into(),
+                    changes: ProjectChanges {
+                        color: Some(None),
+                        ..Default::default()
+                    },
+                }],
+            ),
+        ]
+    }
+
+    fn owner(user_id: Option<&str>, token: &str) -> PendingOwner {
+        PendingOwner::new(user_id, Some(token))
+    }
+
+    fn loaded(db: &LocalDb, owner: &PendingOwner) -> Vec<PendingBatch> {
+        db.load_pending(owner).unwrap().batches
+    }
+
+    fn row_count(db: &LocalDb) -> i64 {
+        db.conn
+            .query_row("SELECT COUNT(*) FROM pending", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn 送れないまとまりは書いた順に読め_確定したまとまりだけが消える() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let me = owner(Some("u1"), "t");
+        let batches = pending_batches();
+        db.save_pending(&me, &batches[..2]).unwrap();
+        // 書いてあるまとまりを書き直しても、位置は変わらず、二重にもならない
+        db.save_pending(&me, &batches).unwrap();
+        assert_eq!(loaded(&db, &me), batches);
+
+        db.remove_pending(&["b1"]).unwrap();
+        assert_eq!(loaded(&db, &me), batches[1..].to_vec());
+        assert_eq!(row_count(&db), 2);
+    }
+
+    #[test]
+    fn 送れないまとまりは_同じ利用者か同じトークンのときだけ読み戻す() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let batches = pending_batches();
+        // 利用者の ID が分からないまま（NAGI_TOKEN の確かめが通らなかった）、A のトークンで書いた
+        db.save_pending(&owner(None, "token-a"), &batches[..1])
+            .unwrap();
+        db.save_pending(&owner(Some("u1"), "token-b"), &batches[1..])
+            .unwrap();
+
+        // 別のトークンで、利用者の ID も分からないときは、どちらも読まない
+        assert!(loaded(&db, &owner(None, "token-c")).is_empty());
+        // 利用者の ID が分からなくても、同じトークンなら読む
+        assert_eq!(loaded(&db, &owner(None, "token-a")), batches[..1].to_vec());
+        // ログインし直して（トークンは別）、同じ利用者だと分かれば読む
+        assert_eq!(
+            loaded(&db, &owner(Some("u1"), "token-new")),
+            batches[1..].to_vec()
+        );
+        assert!(loaded(&db, &owner(Some("u2"), "token-new")).is_empty());
+        // ログインなし（手元の開発サーバー）は、ログインなしで書いたものだけ
+        assert!(loaded(&db, &PendingOwner::default()).is_empty());
+        assert_eq!(row_count(&db), 3);
+    }
+
+    #[test]
+    fn 読めないまとまりがあれば_そこで止め_後ろも表に残す() {
+        let db = LocalDb::open_in_memory().unwrap();
+        let me = owner(None, "t");
+        let batches = pending_batches();
+        db.save_pending(&me, &batches).unwrap();
+        db.conn
+            .execute(
+                "UPDATE pending SET json = '{\"id\":\"b2\",\"kind\":\"FromNewerNagi\"}' WHERE id = 'b2'",
+                [],
+            )
+            .unwrap();
+
+        let load = db.load_pending(&me).unwrap();
+        assert_eq!(load.batches, batches[..1].to_vec());
+        assert!(load.unreadable);
+        assert_eq!(row_count(&db), 3);
+    }
+
+    #[test]
+    fn 保存形式の版が変わって控えを作り直しても_送れないまとまりは残る() {
+        let path = std::env::temp_dir().join(format!(
+            "nagi-local-db-test-{}-{}.db",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        assert_eq!(unsent_count_at(&path).unwrap(), 0);
+        let me = PendingOwner::default();
+        let batches = pending_batches();
+        {
+            let db = LocalDb::open(&path).unwrap();
+            db.put_rows(&[project("p1", 5, "消える", None)], Some((0, 5)))
+                .unwrap();
+            db.save_pending(&me, &batches).unwrap();
+            db.conn.pragma_update(None, "user_version", 0).unwrap();
+        }
+        let db = LocalDb::open(&path).unwrap();
+        let snapshot = db.load().unwrap();
+        assert!(snapshot.rows.is_empty());
+        assert_eq!(snapshot.cursor, 0);
+        assert_eq!(loaded(&db, &me), batches);
+        assert_eq!(unsent_count_at(&path).unwrap(), 3);
+        drop(db);
+        let _ = std::fs::remove_file(&path);
     }
 
     #[test]

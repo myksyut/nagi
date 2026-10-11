@@ -2,7 +2,9 @@
 //! - 起動：手元の控え（SQLite）を読んで描ける状態にしてから、差分を取る
 //! - 操作：actions.rs の関数から。すぐ表示に重ね、送信の列で1つずつ順に送る
 //! - 通信は別のスレッド（net.rs）が行い、結果は on_mutate_done・on_sync_done で受け取る
-//! - 知らせ：take_notices() で受け取る（保存の失敗、オフラインで止めた、401、409）
+//! - 知らせ：take_notices() で受け取る（保存の失敗、オフラインで止めた、401、nagi の更新が要る）
+//! - 版のずれ（409）では、送っていないまとまりを捨てずに持ち、手元の控えの pending の表に持ち主を添えて書く。
+//!   次に同じ持ち主で開いたときに列に戻し、最初の同期のあとに送る
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -12,15 +14,15 @@ use chrono_tz::{TZ_VARIANTS, Tz};
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::lists::Lists;
-use super::local_db::LocalDb;
+use super::local_db::{LocalDb, PendingOwner};
 use super::replica::{OperationKind, PendingBatch, Replica};
 use super::undo::{UndoEntry, UndoStack};
 use crate::dates::{iso, logical_date};
 use crate::log;
 use crate::model::{
-    Bucket, ChecklistItem, MAX_CHECKLIST_ITEM_LENGTH, MAX_CHECKLIST_ITEMS, MAX_MEMO_LENGTH,
-    MAX_MUTATIONS_PER_BATCH, MAX_PROJECT_NAME_LENGTH, MAX_PROJECTS_PER_USER, MAX_TASKS_PER_USER,
-    MAX_TITLE_LENGTH, Mutation, MutationBatch, SyncRow, TaskChanges,
+    API_VERSION, Bucket, ChecklistItem, MAX_CHECKLIST_ITEM_LENGTH, MAX_CHECKLIST_ITEMS,
+    MAX_MEMO_LENGTH, MAX_MUTATIONS_PER_BATCH, MAX_PROJECT_NAME_LENGTH, MAX_PROJECTS_PER_USER,
+    MAX_TASKS_PER_USER, MAX_TITLE_LENGTH, Mutation, MutationBatch, SyncRow, TaskChanges,
 };
 use crate::rank::is_valid_rank;
 
@@ -36,8 +38,10 @@ pub enum ApiFailure {
     Server(u16),
     /// 401。ログインし直す
     Unauthorized,
-    /// 409。この TUI の版が古い
-    VersionMismatch,
+    /// 409 の api_version_unsupported。この nagi が古い。min_api_version は Worker が受ける最も古い版
+    UpgradeRequired { min_api_version: u32 },
+    /// 409 の api_version_too_new。この nagi のほうが新しく、Worker の deploy がまだ
+    ServerBehind,
     /// 400 など、再送しても通らない
     /// mutation_index は Worker が示した、断られた操作の位置（0 始まり）
     Rejected {
@@ -76,14 +80,18 @@ pub trait Transport {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum StopReason {
     Unauthorized,
+    /// この nagi が古い。送っていないまとまりは持ったまま、更新を待つ
     VersionMismatch,
+    /// 控えの送っていないまとまりに、この nagi で読めないものがある。順を崩さないよう、その前のまとまりも
+    /// 送らずに持ったまま、読める nagi への更新を待つ
+    UnreadablePending,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Failure {
     /// オフラインなので止めた
     Offline,
-    /// ログインが切れた・版が古いので、もう送れない
+    /// ログインが切れたので、もう送れない
     Stopped,
     /// 変えるものがなかった
     Noop,
@@ -192,8 +200,9 @@ pub enum Notice {
     },
     /// ログインが切れた（401）。同期と送信は止まる
     Unauthorized { failed_creates: Vec<FailedCreate> },
-    /// この TUI の版が古い（409）。同期と送信は止まる
-    VersionMismatch { failed_creates: Vec<FailedCreate> },
+    /// この nagi が古い（409）。同期と送信は止まる。送っていない変更の数と、控えに書けたかは
+    /// 止まったあとも変わるので、ここには載せない（unsent_kept と pending_count で読む）
+    UpgradeRequired,
 }
 
 fn failed_creates(batches: &[PendingBatch]) -> Vec<FailedCreate> {
@@ -222,6 +231,8 @@ const CONFLICT_REASONS: [&str; 3] = [
 pub struct StoreOptions {
     pub transport: Box<dyn Transport>,
     pub local: Option<LocalDb>,
+    /// 送れないまとまりの持ち主（いまのログイン）
+    pub owner: PendingOwner,
     pub clock: Box<dyn Fn() -> DateTime<Utc>>,
     pub tz: Tz,
 }
@@ -235,16 +246,25 @@ pub struct Store {
     pub is_online: bool,
     /// 送信と同期を止めた理由（止まっていなければ None）
     pub stopped_by: Option<StopReason>,
+    /// この nagi のほうが Worker より新しい（409 の api_version_too_new）。止めずに、送っていないまとまりを
+    /// 持ったまま、差分の取得が通るのを待つ（そのあいだ is_online は false）
+    pub waiting_for_server: bool,
     /// 今日の論理日付（YYYY-MM-DD）。午前4時に変わる
     pub today: String,
     pub tz: Tz,
     pub(super) clock: Box<dyn Fn() -> DateTime<Utc>>,
     transport: Box<dyn Transport>,
     local: Option<LocalDb>,
+    owner: PendingOwner,
     /// 手元（メモリ）に反映済みのカーソル
     cursor: u64,
     /// 送っている途中のまとまりの id
     sending: Option<String>,
+    /// pending の表に、列のまとまりを書いてある（確定や破棄のときに、表からも消す）
+    kept_in_table: bool,
+    /// 持っておくべき列を pending の表に書けていない（書けない・控えがない）。閉じると消えるので知らせ続け、
+    /// 差分を取るきっかけごとに書き直す
+    keep_failed: bool,
     syncing: bool,
     sync_again: bool,
     /// hold_sync で、差分の取得を待たせている
@@ -261,6 +281,7 @@ impl Store {
         let StoreOptions {
             transport,
             local,
+            owner,
             clock,
             tz,
         } = options;
@@ -271,13 +292,17 @@ impl Store {
             synced: false,
             is_online: true,
             stopped_by: None,
+            waiting_for_server: false,
             today: logical_date(now, tz),
             tz,
             clock,
             transport,
             local,
+            owner,
             cursor: 0,
             sending: None,
+            kept_in_table: false,
+            keep_failed: false,
             syncing: false,
             sync_again: false,
             sync_held: false,
@@ -308,6 +333,26 @@ impl Store {
                 }
                 // 読めなければ、手元が空のときと同じくカーソル 0 から取る
                 Err(error) => log::error(&format!("手元の控えを読めませんでした: {error}")),
+            }
+            // 前に送れなかった、同じ持ち主のまとまりを列に戻す。送るのは最初の差分の取得が通ったあと。
+            // 読めないまとまりがあれば（読めなければ）、それより前のまとまりも送らずに止める
+            match local.load_pending(&store.owner) {
+                Ok(load) => {
+                    store.kept_in_table = !load.batches.is_empty();
+                    for batch in load.batches {
+                        store.replica.add_pending(batch);
+                    }
+                    if load.unreadable {
+                        log::error("送っていない変更に、この nagi で読めないものがあります");
+                        store.stopped_by = Some(StopReason::UnreadablePending);
+                    }
+                }
+                Err(error) => {
+                    log::error(&format!(
+                        "送っていない変更を手元の控えから読めませんでした: {error}"
+                    ));
+                    store.stopped_by = Some(StopReason::UnreadablePending);
+                }
             }
         }
         store
@@ -361,6 +406,24 @@ impl Store {
         self.replica.pending().len()
     }
 
+    /// 送らずに持っている列を、手元の控えに書けているか（書けていなければ、閉じると消える）
+    pub fn unsent_kept(&self) -> bool {
+        !self.keep_failed
+    }
+
+    #[cfg(test)]
+    pub(super) fn local_db(&self) -> Option<&LocalDb> {
+        self.local.as_ref()
+    }
+
+    /// nagi の更新を待って止まっているか（Worker が古い nagi を断った・控えに読めない変更がある）
+    pub fn needs_upgrade(&self) -> bool {
+        matches!(
+            self.stopped_by,
+            Some(StopReason::VersionMismatch | StopReason::UnreadablePending)
+        )
+    }
+
     /// 差分を取っている途中か
     pub fn is_syncing(&self) -> bool {
         self.syncing
@@ -375,11 +438,25 @@ impl Store {
         self.stopped_by.is_none()
     }
 
+    /// 版のずれで、送らずに持っているあいだか（新しい操作も受け付けて、pending の表に書く）
+    fn is_holding(&self) -> bool {
+        self.needs_upgrade() || self.waiting_for_server
+    }
+
     // --- 差分の取得 ---------------------------------------------------------------------
 
+    /// 送らずに持っている列を控えに書けていなければ、書き直す（書けるまで、きっかけごとに試す）
+    pub fn retry_keep(&mut self) {
+        if self.keep_failed {
+            self.keep_pending();
+        }
+    }
+
     /// 差分を取る（取得中か、hold_sync で待たせているなら、あとでもう1回）。
-    /// オフラインのあいだも、つながったかを確かめるために取りに行く
+    /// オフラインのあいだも、つながったかを確かめるために取りに行く。
+    /// 止まっていても、送らずに持っている列を控えに書けていなければ、このきっかけで書き直す
     pub fn sync(&mut self) {
+        self.retry_keep();
         if !self.is_active() {
             return;
         }
@@ -412,6 +489,13 @@ impl Store {
     pub fn on_sync_done(&mut self, result: Result<SyncFlow, ApiFailure>) {
         self.syncing = false;
         let confirmed_during_flow = self.confirmed_during_flow.take().unwrap_or_default();
+        // 401 は、nagi の更新を待って止まっていても受ける（ログインし直す相手が同じ利用者とは限らないので、持っている
+        // まとまりも捨てる）
+        if matches!(result, Err(ApiFailure::Unauthorized))
+            && self.stopped_by != Some(StopReason::Unauthorized)
+        {
+            return self.on_sync_failed(ApiFailure::Unauthorized);
+        }
         if !self.is_active() {
             return;
         }
@@ -442,6 +526,11 @@ impl Store {
                 if let Some(name) = flow.time_zone.as_deref() {
                     self.set_time_zone(name);
                 }
+                self.waiting_for_server = false;
+                // 送れるようになったので、閉じる前に控えへ書く必要はもうない
+                self.keep_failed = false;
+                // 持っていたまとまり（前に送れなかった分、Worker の更新を待っていた分）を送る
+                self.kick();
             }
         }
         if self.sync_again && self.is_active() {
@@ -452,11 +541,15 @@ impl Store {
 
     fn on_sync_failed(&mut self, error: ApiFailure) {
         match error {
-            ApiFailure::Unauthorized | ApiFailure::VersionMismatch => {
-                let discarded = self.replica.discard_pending();
+            ApiFailure::Unauthorized => {
+                let discarded = self.discard_pending();
                 self.undo.clear();
-                self.stop(&error, failed_creates(&discarded));
+                self.stop_unauthorized(failed_creates(&discarded));
             }
+            ApiFailure::UpgradeRequired { min_api_version } => {
+                self.require_upgrade(min_api_version)
+            }
+            ApiFailure::ServerBehind => self.wait_for_server(),
             ApiFailure::Rejected { .. } => {
                 log::error(&format!("差分を取得できませんでした: {error:?}"));
             }
@@ -466,24 +559,74 @@ impl Store {
         }
     }
 
-    fn stop(&mut self, error: &ApiFailure, failed_creates: Vec<FailedCreate>) {
-        let (reason, notice) = match error {
-            ApiFailure::Unauthorized => (
-                StopReason::Unauthorized,
-                Notice::Unauthorized { failed_creates },
-            ),
-            _ => (
-                StopReason::VersionMismatch,
-                Notice::VersionMismatch { failed_creates },
-            ),
-        };
-        self.stopped_by.get_or_insert(reason);
-        self.notices.push(notice);
+    /// ログインが切れた。nagi の更新を待って止まっていたときも、こちらに置き換える（ログインの画面を出す）
+    fn stop_unauthorized(&mut self, failed_creates: Vec<FailedCreate>) {
+        self.stopped_by = Some(StopReason::Unauthorized);
+        self.notices.push(Notice::Unauthorized { failed_creates });
+    }
+
+    /// この nagi が古い。送信と同期を止め、送っていないまとまりは表示に残したまま pending の表に書く
+    /// （更新した nagi が、次に開いたときに送る）
+    fn require_upgrade(&mut self, min_api_version: u32) {
+        log::error(&format!(
+            "Worker は API の版 {min_api_version} 以上を求めています（この nagi は {API_VERSION}）"
+        ));
+        self.keep_pending();
+        if self.stopped_by.is_none() {
+            self.stopped_by = Some(StopReason::VersionMismatch);
+            self.notices.push(Notice::UpgradeRequired);
+        }
+    }
+
+    /// この nagi のほうが新しい。止めずに、送っていないまとまりを持ったまま、オフラインと同じ間隔で
+    /// 差分を取りに行く。通ったら（Worker が更新されたら）送り直す
+    fn wait_for_server(&mut self) {
+        self.is_online = false;
+        self.waiting_for_server = true;
+        self.keep_pending();
+    }
+
+    /// 送っていないまとまりを、手元の控えの pending の表に書く。書けなければ keep_failed を立てる
+    fn keep_pending(&mut self) {
+        self.keep_from(0);
+    }
+
+    /// 列の from 番目から後ろを pending の表に書く（前の分を書けていなければ、先頭から書き直す）
+    fn keep_from(&mut self, from: usize) {
+        let from = if self.keep_failed { 0 } else { from };
+        let batches = &self.replica.pending()[from..];
+        if batches.is_empty() {
+            self.keep_failed = false;
+            return;
+        }
+        let kept = self.persist(|local| local.save_pending(&self.owner, batches));
+        self.keep_failed = !kept;
+        self.kept_in_table |= kept;
+    }
+
+    /// 送っていないまとまりをすべて捨てる（表示はその操作の前に戻る）。pending の表からも消す
+    fn discard_pending(&mut self) -> Vec<PendingBatch> {
+        let discarded = self.replica.discard_pending();
+        self.keep_failed = false;
+        let ids: Vec<&str> = discarded.iter().map(|batch| batch.id.as_str()).collect();
+        self.unkeep(&ids);
+        discarded
+    }
+
+    /// 確定した・外したまとまりを pending の表から消す。列が空になったら、表に書いたものはもうない
+    fn unkeep(&mut self, ids: &[&str]) {
+        if self.kept_in_table {
+            self.persist(|local| local.remove_pending(ids));
+        }
+        if self.replica.pending().is_empty() {
+            self.kept_in_table = false;
+        }
     }
 
     // --- 操作 ---------------------------------------------------------------------------
 
-    /// 操作のまとまりを受け付ける。オフラインなら止めて知らせる。
+    /// 操作のまとまりを受け付ける。オフラインなら止めて知らせる（Worker の更新を待っているあいだと、
+    /// nagi の更新が要るあいだは受け付けて、送らずに pending の表に書く）。
     /// 1回のユーザー操作は1つのまとまり（1リクエスト）で、Worker は全部成功か全部失敗にする。
     /// そのため、500（Worker の上限）を超える操作は分けずに断る。
     /// 受け付けたら、元に戻すための逆向きの操作を今の表示から作り、表示に重ねて、送信の列に積む
@@ -493,10 +636,10 @@ impl Store {
         mutations: Vec<Mutation>,
         options: PerformOptions,
     ) -> OpResult {
-        if !self.is_active() {
+        if self.stopped_by == Some(StopReason::Unauthorized) {
             return Err(Failure::Stopped);
         }
-        if !self.is_online {
+        if !self.is_online && !self.is_holding() {
             self.notices.push(Notice::OfflineBlocked {
                 autosave: options.autosave,
             });
@@ -539,6 +682,9 @@ impl Store {
             at: self.now_iso(),
             kind,
         });
+        if self.is_holding() {
+            self.keep_from(self.pending_count() - 1);
+        }
         self.kick();
         Ok(Done {
             operation_id: id,
@@ -546,10 +692,10 @@ impl Store {
         })
     }
 
-    /// 列に積んだまとまりを送り始める（送っている途中なら何もしない）。
+    /// 列に積んだまとまりを送り始める（送っている途中、止まっている、Worker の更新を待っているなら何もしない）。
     /// 積んだ順に1つずつ送る（操作の順序が入れ替わらない）
     fn kick(&mut self) {
-        if self.sending.is_some() || !self.is_active() {
+        if self.sending.is_some() || !self.is_active() || self.waiting_for_server {
             return;
         }
         let Some(batch) = self.replica.pending().first() else {
@@ -563,42 +709,51 @@ impl Store {
     }
 
     /// まとまりの送信が終わった。失敗したら、そのまとまりと後ろに並ぶまとまりをすべて捨てる
-    /// （操作どうしの依存を追わないため）。表示はその操作の前に戻る
+    /// （操作どうしの依存を追わないため）。表示はその操作の前に戻る。版のずれ（409）なら捨てずに持っておく
     pub fn on_mutate_done(&mut self, batch_id: &str, result: Result<Vec<SyncRow>, ApiFailure>) {
         if self.sending.as_deref() == Some(batch_id) {
             self.sending = None;
         }
-        if !self.is_active() {
-            return;
-        }
         // 送っているあいだに捨てられていたら（ほかの失敗など）、次へ
-        if self
+        let is_first = self
             .replica
             .pending()
             .first()
-            .is_some_and(|batch| batch.id == batch_id)
-        {
-            match result {
-                Ok(rows) => {
-                    let (batch, _) = self.replica.confirm_batch(batch_id, &rows);
-                    self.persist(|local| local.put_rows(&rows, None));
-                    if let Some(confirmed) = &mut self.confirmed_during_flow {
-                        confirmed.extend(rows);
-                    }
-                    if let Some(batch) = batch {
-                        self.undo.confirmed(&batch);
-                    }
+            .is_some_and(|batch| batch.id == batch_id);
+        match result {
+            // 止まったあとに届いた成功も取り込む（持っているまとまりから外し、更新したあとに送り直さない）
+            Ok(rows) if is_first => {
+                let (batch, _) = self.replica.confirm_batch(batch_id, &rows);
+                self.persist(|local| local.put_rows(&rows, None));
+                self.unkeep(&[batch_id]);
+                if let Some(confirmed) = &mut self.confirmed_during_flow {
+                    confirmed.extend(rows);
                 }
-                Err(error) => {
-                    let discarded = self.replica.discard_pending();
-                    self.on_send_failed(error, discarded);
+                if let Some(batch) = batch {
+                    self.undo.confirmed(&batch);
                 }
             }
+            // 401 は、nagi の更新を待って止まっていても受ける
+            Err(ApiFailure::Unauthorized)
+                if is_first && self.stopped_by != Some(StopReason::Unauthorized) =>
+            {
+                self.on_send_failed(ApiFailure::Unauthorized)
+            }
+            Err(error) if is_first && self.is_active() => self.on_send_failed(error),
+            _ => {}
         }
         self.kick();
     }
 
-    fn on_send_failed(&mut self, error: ApiFailure, discarded: Vec<PendingBatch>) {
+    fn on_send_failed(&mut self, error: ApiFailure) {
+        match error {
+            ApiFailure::UpgradeRequired { min_api_version } => {
+                return self.require_upgrade(min_api_version);
+            }
+            ApiFailure::ServerBehind => return self.wait_for_server(),
+            _ => {}
+        }
+        let discarded = self.discard_pending();
         self.undo.discarded(&discarded, error.is_retryable());
         let failed_creates = failed_creates(&discarded);
         // 捨てたのが「元に戻す」の操作だけなら、戻せなかったことを知らせる（Worker に断られたとき）
@@ -614,9 +769,9 @@ impl Store {
             });
         };
         match &error {
-            ApiFailure::Unauthorized | ApiFailure::VersionMismatch => {
-                self.stop(&error, failed_creates.clone());
-            }
+            ApiFailure::Unauthorized => self.stop_unauthorized(failed_creates.clone()),
+            // 上で持っておいた（捨てていない）
+            ApiFailure::UpgradeRequired { .. } | ApiFailure::ServerBehind => {}
             ApiFailure::Rejected {
                 reason,
                 mutation_index,
@@ -663,11 +818,17 @@ impl Store {
         self.sync();
     }
 
-    fn persist(&self, write: impl FnOnce(&LocalDb) -> rusqlite::Result<()>) {
-        if let Some(local) = &self.local
-            && let Err(error) = write(local)
-        {
-            log::error(&format!("手元の控えに保存できませんでした: {error}"));
+    /// 手元の控えに書く。書けたら true（控えがない・書けなかったら false。記録はログに残す）
+    fn persist(&self, write: impl FnOnce(&LocalDb) -> rusqlite::Result<()>) -> bool {
+        let Some(local) = &self.local else {
+            return false;
+        };
+        match write(local) {
+            Ok(()) => true,
+            Err(error) => {
+                log::error(&format!("手元の控えに保存できませんでした: {error}"));
+                false
+            }
         }
     }
 

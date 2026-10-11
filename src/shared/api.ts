@@ -2,15 +2,22 @@ import { z } from "zod";
 import type { SyncRow } from "./model";
 
 /**
- * API の版。すべての呼び出しで X-Api-Version ヘッダに付ける。サーバーの値と違えば 409。
- * API の形を変えるときは互換を保ち、保てない変更のときだけ上げる（デプロイのたびには上げない）
- * - 2：進行中（tasks の startedAt）とプロジェクトの色（color）を足した。開いたままの古い画面が、
- *   新しい項目を知らずに書き込む（進行中のタスクを今日から出すなど）のを 409 で止めて、読み込み直させる
- * - 3：タスクの優先度（priority）と工数（points）を足した。開いたままの古い画面が、新しい項目を知らずに
- *   表示や書き込みをするのを 409 で止めて、読み込み直させる
+ * API の版。TUI はすべての呼び出しで X-Api-Version ヘッダに付ける。
+ * Worker は MIN_API_VERSION から API_VERSION までを受け、範囲の外なら 409 を返す（426 にしない。
+ * 出回っている nagi は 409 だけを「更新が要る」と読み、それ以外の 4xx では止まらずに変更を捨て続けるため）
+ * - API_VERSION：形を足すときに上げる。範囲の中の古い版の形も受け続ける（古い版が知らない項目は、送られなければ変えない）
+ * - MIN_API_VERSION：新しい版の TUI を出し、Homebrew の tap が更新されてから 90 日たつまで上げない。
+ *   上げると、それより古い nagi は送っていない変更を残したまま止まり、更新を求められる
+ *
+ * これまでの版
+ * - 2：進行中（tasks の startedAt）とプロジェクトの色（color）を足した
+ * - 3：タスクの優先度（priority）と工数（points）を足した
  */
 export const API_VERSION = 3;
+export const MIN_API_VERSION = 3;
 export const API_VERSION_HEADER = "X-Api-Version";
+/** 版が古すぎる nagi に、409 の本文で示す入手先 */
+export const RELEASES_URL = "https://github.com/myksyut/nagi/releases/latest";
 
 /**
  * POST /api/sync の要求
@@ -73,7 +80,15 @@ export type ApiErrorResponse =
       mutationIndex?: number;
       issues?: { path: (string | number)[]; message: string }[];
     }
-  | { error: "api_version_mismatch"; apiVersion: number }
+  /** X-Api-Version がない、読めない、MIN_API_VERSION より小さい（nagi の更新が要る） */
+  | {
+      error: "api_version_unsupported";
+      minApiVersion: number;
+      apiVersion: number;
+      releaseUrl: string;
+    }
+  /** X-Api-Version が API_VERSION より大きい（nagi が先に出て、Worker の deploy がまだ） */
+  | { error: "api_version_too_new"; minApiVersion: number; apiVersion: number }
   | {
       error:
         | "unauthorized"

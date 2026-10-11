@@ -3,15 +3,13 @@ import type { BatchItem } from "drizzle-orm/batch";
 import { logicalDate } from "../../shared/logical-date";
 import { arrivalRanks } from "../../shared/rank";
 import type { Db } from "../db/client";
-import { appliedMutations, meta, projects, tasks } from "../db/schema";
+import { meta, projects, tasks } from "../db/schema";
 import { metaRow } from "./meta";
 import { advanceSeq, seqFor } from "./seq";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 /** 削除（論理削除）からこの日数たった行を物理削除する */
 export const PURGE_AFTER_DAYS = 30;
-/** 反映済みの操作のまとまりを覚えておく日数 */
-export const APPLIED_MUTATIONS_TTL_DAYS = 7;
 /**
  * 1回の切り替えで今日へ移す行の数の上限。D1 へのクエリは 1 回の呼び出しで 1000 までなので、それに収める。
  * 超えたぶんが残ると last_rollover_on は進まず、次の同期で続きを移す（今日来たタスクの後ろに並ぶので、順番は保たれる）
@@ -62,10 +60,9 @@ function byArrival(today: string) {
   };
 }
 
-/** 利用者の行のうち、削除から 30 日たった行の物理削除と、7 日たった applied_mutations の削除 */
+/** 利用者の行のうち、削除から 30 日たった行の物理削除 */
 function purgeStatements(db: Db, userId: string, now: Date) {
   const purgeBefore = new Date(now.getTime() - PURGE_AFTER_DAYS * DAY_MS).toISOString();
-  const appliedBefore = new Date(now.getTime() - APPLIED_MUTATIONS_TTL_DAYS * DAY_MS).toISOString();
   return [
     // 消す前に、消す行の seq の最大値を purged_through_seq に入れる（同じバッチなので、消した行とずれない）
     db
@@ -82,11 +79,6 @@ function purgeStatements(db: Db, userId: string, now: Date) {
     db
       .delete(projects)
       .where(and(eq(projects.userId, userId), lt(projects.deletedAt, purgeBefore))),
-    db
-      .delete(appliedMutations)
-      .where(
-        and(eq(appliedMutations.userId, userId), lt(appliedMutations.appliedAt, appliedBefore)),
-      ),
   ];
 }
 
@@ -95,7 +87,7 @@ function purgeStatements(db: Db, userId: string, now: Date) {
  * （/api/sync の最初に呼ぶ）。ほかの利用者の行には触れない。
  * 1. 予定の日付か締切が今日以前のタスクを、今日の「今日来たタスクの後ろ、それ以外の前」へ移す
  *    （日付の早い順、同じなら作成順。arrivedOn に今日を入れ、scheduledOn は空にする）
- * 2. 同じバッチで、削除から 30 日たった行を物理削除し、7 日たった applied_mutations を消す
+ * 2. 同じバッチで、削除から 30 日たった行を物理削除する
  * 3. 同じバッチの最後で、移す対象がもう残っていなければ last_rollover_on を今日にする
  *    （残っていれば進めず、次の同期でもう一度行う。途中で止まった状態は残さない）
  */

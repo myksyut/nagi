@@ -10,6 +10,7 @@ use crossterm::event::{KeyCode, KeyEvent};
 use super::app::App;
 use super::{AppEvent, build_store};
 use crate::auth::{self, DevicePoll, DeviceStart};
+use crate::data::local_db::unsent_count_at;
 use crate::data::net::ApiClient;
 
 pub enum LoginStep {
@@ -228,8 +229,30 @@ impl App {
     }
 
     /// ログアウト。Worker のセッションを消し、手元のトークンと控えも消す。そのあとは、この端末のデータに戻る
-    /// （Worker を名指しして使っているときは、ログインの画面へ）
+    /// （Worker を名指しして使っているときは、ログインの画面へ）。
+    /// 控えに送っていない変更があれば（あるかを確かめられなければ）、一度目は消えることを知らせるだけにし、
+    /// もう一度選んだときにログアウトする
     pub fn logout(&mut self) {
+        if !self.logout_warned {
+            let message = match unsent_count_at(&self.config.db_path(self.user_id.as_deref())) {
+                Ok(0) => None,
+                Ok(count) => Some(format!(
+                    "送っていない変更が {count} 件あります。ログアウトすると消えます"
+                )),
+                Err(_) => Some(
+                    "送っていない変更があるかを確かめられません。ログアウトすると消えます"
+                        .to_string(),
+                ),
+            };
+            if let Some(message) = message {
+                self.logout_warned = true;
+                self.toast_error(
+                    &message,
+                    Some("もう一度ログアウトを選ぶと、消してログアウトします"),
+                );
+                return;
+            }
+        }
         if self.config.is_dev_server() && self.config.saved_token().is_none() {
             self.toast_info("手元の開発サーバーでは、ログインなしで使っています");
             return;
@@ -242,6 +265,7 @@ impl App {
         // 手元の控えを消す
         self.config.remove_db(self.user_id.as_deref());
         self.user_id = None;
+        self.logout_warned = false;
         let rebuilt = self.rebuild_store(None);
         if self.config.is_cloud() {
             // Worker を名指しして使っている：空のストアのまま、ログインの画面へ（通信はしない）

@@ -10,6 +10,7 @@ mod log;
 mod model;
 mod rank;
 mod ui;
+mod upgrade;
 
 use std::process::ExitCode;
 

@@ -1,9 +1,10 @@
 //! タスクとプロジェクトの形と、Worker とやり取りする形（src/shared の model.ts・mutations.ts・api.ts と同じ約束）。
 //! 日付は YYYY-MM-DD（論理日付）、時刻は ISO 8601 の UTC（ミリ秒まで）。空は None
 
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Deserializer, Serialize};
 
-/// API の版。すべての呼び出しで X-Api-Version に付ける。Worker の値と違えば 409
+/// API の版。すべての呼び出しで X-Api-Version に付ける。Worker の受ける範囲（src/shared/api.ts の
+/// MIN_API_VERSION から API_VERSION まで）の外なら 409
 pub const API_VERSION: u32 = 3;
 pub const API_VERSION_HEADER: &str = "X-Api-Version";
 
@@ -175,10 +176,10 @@ impl SyncRow {
 macro_rules! changes_struct {
     ($(#[$meta:meta])* $name:ident for $target:ident { $($field:ident : $ty:ty),* $(,)? }) => {
         $(#[$meta])*
-        #[derive(Clone, Debug, Default, PartialEq, Serialize)]
+        #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
         #[serde(rename_all = "camelCase")]
         pub struct $name {
-            $( #[serde(skip_serializing_if = "Option::is_none")] pub $field: Option<$ty>, )*
+            $( #[serde(default, deserialize_with = "present", skip_serializing_if = "Option::is_none")] pub $field: Option<$ty>, )*
         }
 
         impl $name {
@@ -203,6 +204,13 @@ macro_rules! changes_struct {
             }
         }
     };
+}
+
+/// 送らない項目（None）と null（`Some(None)`）を、読み戻しても分ける。項目があれば、null でも Some にする
+fn present<'de, D: Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> Result<Option<T>, D::Error> {
+    T::deserialize(deserializer).map(Some)
 }
 
 changes_struct! {
@@ -236,26 +244,26 @@ changes_struct! {
 }
 
 /// 作成するタスク。省いた項目は空（締切・チェックリスト・優先度・工数など）
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NewTask {
     pub id: String,
     pub title: String,
     pub memo: String,
     pub bucket: Bucket,
-    #[serde(skip_serializing_if = "Option::is_none")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub scheduled_on: Option<String>,
     pub project_id: Option<String>,
     pub rank: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct NewProject {
     pub id: String,
     pub name: String,
 }
 
-#[derive(Clone, Debug, PartialEq, Serialize)]
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(tag = "type")]
 pub enum Mutation {
     #[serde(rename = "task.create")]
@@ -266,7 +274,11 @@ pub enum Mutation {
     TaskUpdate {
         id: String,
         changes: TaskChanges,
-        #[serde(rename = "baseChecklist", skip_serializing_if = "Option::is_none")]
+        #[serde(
+            rename = "baseChecklist",
+            default,
+            skip_serializing_if = "Option::is_none"
+        )]
         base_checklist: Option<Vec<ChecklistItem>>,
     },
     #[serde(rename = "project.create")]

@@ -143,43 +143,61 @@ fn whoami(client: &ApiClient) -> Option<String> {
     parse_whoami(status, &text)
 }
 
-/// いまのログインの持ち主（利用者の ID）。手元の控えを、利用者ごとに分けるのに使う（Config::db_path）。
+/// いまのログイン（トークンと、その持ち主の利用者の ID）。両方を、1 回だけ読んだログインから決める
+/// （別々に読むと、あいだに `nagi login` が入れ替えたとき、前のトークンで次の利用者の控えを送ってしまう）。
+/// 利用者の ID は、手元の控えを利用者ごとに分けるのに使う（Config::db_path）。
+/// - トークンは、環境変数 NAGI_TOKEN があればそれ（手元にログインを置けない、自動の実行のため）、なければ保存してあるもの
 /// - 保存してあるログインに ID があれば、それ（通信しない）
 /// - ID のないログイン（利用者の ID を返さないころにログインしたもの）は、Worker に聞く。分かったら、ログインに書き足し、
 ///   それまでの控え（Worker ごとの 1 つ）を、その利用者のものにする（その控えは、このログインで作ったものなので）
 /// - 環境変数 NAGI_TOKEN のログインは、毎回 Worker に聞く（保存しない。それまでの控えも引き継がない）
 /// - 分からなければ None（ログインしていない・つながらない・古い Worker）。控えは、Worker ごとの 1 つを使う
-pub fn current_user_id(config: &Config) -> Option<String> {
+pub fn current_login(config: &Config) -> Login {
     let saved = config.saved_session();
     let env_token = std::env::var("NAGI_TOKEN").ok().filter(|t| !t.is_empty());
-    current_user_id_with(config, saved, env_token, |token| {
+    login_with(config, saved, env_token, |token| {
         whoami(&ApiClient::new(&config.server, Some(token.to_string())))
     })
 }
 
-fn current_user_id_with(
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Login {
+    pub token: Option<String>,
+    pub user_id: Option<String>,
+}
+
+fn login_with(
     config: &Config,
     saved: Option<crate::config::Session>,
     env_token: Option<String>,
     whoami: impl Fn(&str) -> Option<String>,
-) -> Option<String> {
+) -> Login {
     if let Some(token) = env_token {
         // 保存してあるログインと同じトークンなら、聞かずに済む
-        return match saved {
+        let user_id = match saved {
             Some(session) if session.token == token && session.user_id.is_some() => session.user_id,
             _ => whoami(&token),
         };
+        return Login {
+            token: Some(token),
+            user_id,
+        };
     }
-    let session = saved?;
-    if session.user_id.is_some() {
-        return session.user_id;
+    let Some(session) = saved else {
+        return Login::default();
+    };
+    let user_id = session.user_id.or_else(|| {
+        let user_id = whoami(&session.token)?;
+        if let Err(error) = config.save_session(&session.token, Some(&user_id)) {
+            crate::log::error(&format!("ログインを保存できませんでした: {error}"));
+        }
+        config.adopt_shared_db(&user_id);
+        Some(user_id)
+    });
+    Login {
+        token: Some(session.token),
+        user_id,
     }
-    let user_id = whoami(&session.token)?;
-    if let Err(error) = config.save_session(&session.token, Some(&user_id)) {
-        crate::log::error(&format!("ログインを保存できませんでした: {error}"));
-    }
-    config.adopt_shared_db(&user_id);
-    Some(user_id)
 }
 
 #[cfg(test)]
@@ -190,6 +208,9 @@ mod tests {
 
     use super::*;
     use crate::config::Session;
+    use crate::data::local_db::{LocalDb, PendingOwner};
+    use crate::data::replica::{OperationKind, PendingBatch};
+    use crate::model::{Mutation, TaskChanges};
 
     #[test]
     fn 回数制限の429は_待つように伝える() {
@@ -274,10 +295,11 @@ mod tests {
     fn idのあるログインは_workerに聞かない() {
         let config = temp_config("known");
         let asked = Cell::new(0);
-        let user = current_user_id_with(&config, session("t", Some("u1")), None, |_| {
+        let user = login_with(&config, session("t", Some("u1")), None, |_| {
             asked.set(asked.get() + 1);
             Some("other".to_string())
-        });
+        })
+        .user_id;
         assert_eq!(user.as_deref(), Some("u1"));
         assert_eq!(asked.get(), 0);
     }
@@ -289,12 +311,18 @@ mod tests {
         let shared = config.db_path(None);
         fs::write(&shared, b"db").unwrap();
 
-        let user = current_user_id_with(&config, config.saved_session(), None, |token| {
+        let login = login_with(&config, config.saved_session(), None, |token| {
             assert_eq!(token, "t");
             Some("owner".to_string())
         });
 
-        assert_eq!(user.as_deref(), Some("owner"));
+        assert_eq!(
+            login,
+            Login {
+                token: Some("t".to_string()),
+                user_id: Some("owner".to_string()),
+            }
+        );
         assert_eq!(config.saved_session(), session("t", Some("owner")));
         // それまでの控えを、そのまま使う（作り直さない）
         assert_eq!(config.db_path(Some("owner")), shared);
@@ -306,9 +334,10 @@ mod tests {
         config.save_session("t", None).unwrap();
         fs::write(config.db_path(None), b"db").unwrap();
 
-        let user = current_user_id_with(&config, config.saved_session(), None, |_| None);
+        let login = login_with(&config, config.saved_session(), None, |_| None);
 
-        assert_eq!(user, None);
+        assert_eq!(login.token.as_deref(), Some("t"));
+        assert_eq!(login.user_id, None);
         assert_eq!(config.saved_session(), session("t", None));
         // 次に分かったときに引き継げるよう、印は付けない
         assert_ne!(config.db_path(Some("owner")), config.db_path(None));
@@ -321,7 +350,7 @@ mod tests {
         let shared = config.db_path(None);
         fs::write(&shared, b"db").unwrap();
 
-        let user = current_user_id_with(
+        let login = login_with(
             &config,
             config.saved_session(),
             Some("env-token".to_string()),
@@ -331,28 +360,83 @@ mod tests {
             },
         );
 
-        assert_eq!(user.as_deref(), Some("robot"));
+        assert_eq!(
+            login,
+            Login {
+                token: Some("env-token".to_string()),
+                user_id: Some("robot".to_string()),
+            }
+        );
         assert_eq!(config.saved_session(), session("saved", Some("owner")));
         // 別の利用者なので、別の控えを使う
         assert_ne!(config.db_path(Some("robot")), shared);
         assert_ne!(config.db_path(Some("robot")), config.db_path(Some("owner")));
 
         // 保存してあるログインと同じトークンなら、聞かない
-        let same = current_user_id_with(
+        let same = login_with(
             &config,
             config.saved_session(),
             Some("saved".to_string()),
             |_| panic!("聞かないはず"),
         );
-        assert_eq!(same.as_deref(), Some("owner"));
+        assert_eq!(same.user_id.as_deref(), Some("owner"));
     }
 
     #[test]
     fn ログインしていなければ_分からない() {
         let config = temp_config("none");
         assert_eq!(
-            current_user_id_with(&config, None, None, |_| panic!("聞かないはず")),
-            None
+            login_with(&config, None, None, |_| panic!("聞かないはず")),
+            Login::default()
         );
+    }
+
+    #[test]
+    fn ログインを読んだあとに別の利用者でログインし直されても_前のトークンで次の利用者の変更を送らない()
+     {
+        let config = temp_config("relogin");
+        // A と B の控えに、それぞれが送れずに残した変更がある
+        for (user, token, id) in [
+            ("user-a", "token-a", "kept-a"),
+            ("user-b", "token-b", "kept-b"),
+        ] {
+            LocalDb::open(&config.db_path(Some(user)))
+                .unwrap()
+                .save_pending(
+                    &PendingOwner::new(Some(user), Some(token)),
+                    &[PendingBatch {
+                        id: id.to_string(),
+                        mutations: vec![Mutation::update_task(
+                            "t1",
+                            TaskChanges {
+                                memo: Some(format!("{user} のメモ")),
+                                ..Default::default()
+                            },
+                        )],
+                        at: "2026-10-06T03:00:00.000Z".to_string(),
+                        kind: OperationKind::TaskUpdate,
+                    }],
+                )
+                .unwrap();
+        }
+        config.save_session("token-a", Some("user-a")).unwrap();
+
+        let login = login_with(&config, config.saved_session(), None, |_| {
+            panic!("聞かないはず")
+        });
+        // ログインを読んだあと、ストアを開く前に、別の端末で B としてログインし直した
+        config.save_session("token-b", Some("user-b")).unwrap();
+        assert_eq!(login.token.as_deref(), Some("token-a"));
+        let store = crate::data::open_store(&config, login.token, login.user_id.as_deref(), |_| {})
+            .unwrap();
+
+        // A のトークンで送る列には、A の変更だけが入る
+        let queued: Vec<&str> = store
+            .replica
+            .pending()
+            .iter()
+            .map(|batch| batch.id.as_str())
+            .collect();
+        assert_eq!(queued, ["kept-a"]);
     }
 }

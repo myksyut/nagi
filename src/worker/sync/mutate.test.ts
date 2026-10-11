@@ -1,7 +1,7 @@
 import { env } from "cloudflare:test";
 import { eq, inArray } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { API_VERSION, API_VERSION_HEADER } from "../../shared/api";
+import { API_VERSION, API_VERSION_HEADER, MIN_API_VERSION, RELEASES_URL } from "../../shared/api";
 import { POINTS, PRIORITIES } from "../../shared/priority-points";
 import { createSession } from "../auth/session";
 import { getDb } from "../db/client";
@@ -46,6 +46,14 @@ async function snapshot() {
   ]);
   return { seq, tasks: byId(taskRows), projects: byId(projectRows), applied: byId(appliedRows) };
 }
+
+/** 版が古すぎる（または読めない）ときの 409 の本文 */
+const unsupported = {
+  error: "api_version_unsupported",
+  minApiVersion: MIN_API_VERSION,
+  apiVersion: API_VERSION,
+  releaseUrl: RELEASES_URL,
+};
 
 describe("seq と書き込み", () => {
   it("1つのまとまりでN行書くと、操作の順に連続したseqになる。meta.seqは最大のseqと同じ", async () => {
@@ -950,7 +958,7 @@ describe("優先度（priority）と工数（points）の検証", () => {
     expect(await snapshot()).toEqual(before);
   });
 
-  it("★ 優先度と工数を知らない 2 番目の版の画面（X-Api-Version: 2）は、読み書きとも 409 で、何も書かれない", async () => {
+  it("★ 優先度と工数を知らない 2 番目の版の画面（X-Api-Version: 2）は、読み書きとも 409 の api_version_unsupported で、何も書かれない", async () => {
     const { post } = apiApp();
     const id = crypto.randomUUID();
     await post("/api/mutate", mutationBatch([{ type: "task.create", task: taskInput({ id }) }]));
@@ -965,10 +973,7 @@ describe("優先度（priority）と工数（points）の検証", () => {
       { [API_VERSION_HEADER]: "2" },
     );
     expect(mutateRes.status).toBe(409);
-    expect(await mutateRes.json()).toEqual({
-      error: "api_version_mismatch",
-      apiVersion: API_VERSION,
-    });
+    expect(await mutateRes.json()).toEqual(unsupported);
     expect(await snapshot()).toEqual(before);
 
     const syncRes = await post(
@@ -977,6 +982,7 @@ describe("優先度（priority）と工数（points）の検証", () => {
       { [API_VERSION_HEADER]: "2" },
     );
     expect(syncRes.status).toBe(409);
+    expect(await syncRes.json()).toEqual(unsupported);
   });
 });
 
@@ -1009,43 +1015,76 @@ describe("/api/sync と /api/mutate の応答に startedAt・color が届く", (
 });
 
 describe("版とログイン", () => {
-  it("★ X-Api-Versionがない、または違うと、どちらのAPIも409になる。/api/session には要らない", async () => {
-    const { post, app } = apiApp();
+  it("★ X-Api-Version がない・整数でない・MIN_API_VERSION より小さいと、どちらの API も 409 の api_version_unsupported で、行は変わらない", async () => {
+    const { post } = apiApp();
+    await post("/api/mutate", mutationBatch([{ type: "task.create", task: taskInput() }]));
+    const before = await snapshot();
 
-    const resMissing = await post(
-      "/api/sync",
-      { cursor: 0, baseCursor: 0 },
-      { [API_VERSION_HEADER]: undefined },
-    );
-    expect(resMissing.status).toBe(409);
-    expect(await resMissing.json()).toEqual({
-      error: "api_version_mismatch",
+    for (const version of [undefined, "", "abc", "3.0", "-3", String(MIN_API_VERSION - 1)]) {
+      const syncRes = await post(
+        "/api/sync",
+        { cursor: 0, baseCursor: 0 },
+        { [API_VERSION_HEADER]: version },
+      );
+      expect(syncRes.status, `sync ${version}`).toBe(409);
+      expect(await syncRes.json()).toEqual(unsupported);
+      const mutateRes = await post(
+        "/api/mutate",
+        mutationBatch([{ type: "task.create", task: taskInput() }]),
+        { [API_VERSION_HEADER]: version },
+      );
+      expect(mutateRes.status, `mutate ${version}`).toBe(409);
+      expect(await mutateRes.json()).toEqual(unsupported);
+    }
+    expect(await snapshot()).toEqual(before);
+  });
+
+  it("★ X-Api-Version が API_VERSION より大きい（nagi が先に新しくなった）と、どちらの API も 409 の api_version_too_new で、行は変わらない", async () => {
+    const { post } = apiApp();
+    await post("/api/mutate", mutationBatch([{ type: "task.create", task: taskInput() }]));
+    const before = await snapshot();
+    const tooNew = {
+      error: "api_version_too_new",
+      minApiVersion: MIN_API_VERSION,
       apiVersion: API_VERSION,
-    });
+    };
 
-    const resWrong = await post(
+    const syncRes = await post(
       "/api/sync",
       { cursor: 0, baseCursor: 0 },
-      { [API_VERSION_HEADER]: "999" },
+      { [API_VERSION_HEADER]: String(API_VERSION + 1) },
     );
-    expect(resWrong.status).toBe(409);
-
-    // 1 つ前の版（進行中と色を知らない画面）も 409
-    const resOld = await post(
-      "/api/sync",
-      { cursor: 0, baseCursor: 0 },
-      { [API_VERSION_HEADER]: String(API_VERSION - 1) },
+    expect(syncRes.status).toBe(409);
+    expect(await syncRes.json()).toEqual(tooNew);
+    const mutateRes = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "task.create", task: taskInput() }]),
+      { [API_VERSION_HEADER]: String(API_VERSION + 1) },
     );
-    expect(resOld.status).toBe(409);
-    const resMutateOld = await post("/api/mutate", mutationBatch([]), {
-      [API_VERSION_HEADER]: String(API_VERSION - 1),
-    });
-    expect(resMutateOld.status).toBe(409);
+    expect(mutateRes.status).toBe(409);
+    expect(await mutateRes.json()).toEqual(tooNew);
+    expect(await snapshot()).toEqual(before);
+  });
 
-    const resMutateMissing = await post("/api/mutate", mutationBatch([]), {
-      [API_VERSION_HEADER]: undefined,
-    });
-    expect(resMutateMissing.status).toBe(409);
+  it("★ MIN_API_VERSION から API_VERSION までの版は通る。/api/session には X-Api-Version は要らない", async () => {
+    const { post, app } = apiApp();
+    for (let version = MIN_API_VERSION; version <= API_VERSION; version++) {
+      const id = crypto.randomUUID();
+      const mutateRes = await post(
+        "/api/mutate",
+        mutationBatch([{ type: "task.create", task: taskInput({ id }) }]),
+        { [API_VERSION_HEADER]: String(version) },
+      );
+      expect(mutateRes.status).toBe(200);
+      const syncRes = await post(
+        "/api/sync",
+        { cursor: 0, baseCursor: 0 },
+        { [API_VERSION_HEADER]: String(version) },
+      );
+      expect(syncRes.status).toBe(200);
+      const rows = (await syncBody(syncRes)).rows;
+      expect(rows.some((r) => r.kind === "task" && r.row.id === id)).toBe(true);
+    }
 
     const sessionRes = await app.request(
       "http://localhost/api/session",

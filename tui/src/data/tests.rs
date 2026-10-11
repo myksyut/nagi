@@ -12,6 +12,9 @@ use std::time::Duration;
 use chrono::{DateTime, Utc};
 
 use super::actions::{AddTask, Destination, Placement, normalize_task_changes};
+use super::local_db::{LocalDb, PendingOwner, unsent_count_at};
+use super::open_local;
+use super::replica::PendingBatch;
 use super::store::{
     ApiFailure, Failure, Limit, Notice, PerformOptions, Quota, SaveFailure, StopReason, Store,
     StoreOptions, SyncFlow, Transport,
@@ -53,11 +56,21 @@ struct Harness {
 }
 
 fn harness() -> Harness {
+    harness_with(None)
+}
+
+fn harness_with(local: Option<LocalDb>) -> Harness {
+    open(local, PendingOwner::default())
+}
+
+/// owner のログインで開く
+fn open(local: Option<LocalDb>, owner: PendingOwner) -> Harness {
     let sent = Rc::new(RefCell::new(Sent::default()));
     let clock = Rc::new(RefCell::new(parse_iso(NOW).unwrap()));
     let store = Store::new(StoreOptions {
         transport: Box::new(FakeTransport(Rc::clone(&sent))),
-        local: None,
+        local,
+        owner,
         clock: {
             let clock = Rc::clone(&clock);
             Box::new(move || *clock.borrow())
@@ -263,6 +276,380 @@ fn ログインが切れたら止まり_送信中の操作を捨てる() {
         [Notice::Unauthorized { failed_creates }] if failed_creates[0].title == "戻ってくる追加"
     ));
     assert_eq!(h.store.complete_tasks(&ids(&["t1"])), Err(Failure::Stopped));
+}
+
+fn temp_db_path(name: &str) -> std::path::PathBuf {
+    std::env::temp_dir().join(format!(
+        "nagi-store-test-{name}-{}-{}.db",
+        std::process::id(),
+        uuid::Uuid::now_v7()
+    ))
+}
+
+fn remove_db(path: &std::path::Path) {
+    for suffix in ["", "-wal", "-shm"] {
+        let mut name = path.as_os_str().to_owned();
+        name.push(suffix);
+        let _ = std::fs::remove_file(name);
+    }
+}
+
+/// 控えの pending の表にある、送っていないまとまりの数（持ち主を問わない）
+fn kept(path: &std::path::Path) -> usize {
+    unsent_count_at(path).unwrap()
+}
+
+fn add_to_inbox(h: &mut Harness, title: &str) -> String {
+    h.store
+        .add_task(AddTask {
+            title: title.into(),
+            memo: String::new(),
+            project_id: None,
+            to: Destination::Inbox,
+        })
+        .unwrap()
+        .ids[0]
+        .clone()
+}
+
+fn write_memo(h: &mut Harness, id: &str, memo: &str) {
+    h.store
+        .update_task(
+            id,
+            TaskChanges {
+                memo: Some(memo.into()),
+                ..Default::default()
+            },
+            PerformOptions::default(),
+        )
+        .unwrap();
+}
+
+fn pending_ids(h: &Harness) -> Vec<String> {
+    h.store
+        .replica
+        .pending()
+        .iter()
+        .map(|batch| batch.id.clone())
+        .collect()
+}
+
+impl Harness {
+    /// 差分の取得が、何も変わらずに通る
+    fn sync_unchanged(&mut self) {
+        self.store.sync();
+        self.store.on_sync_done(Ok(SyncFlow {
+            base_cursor: 10,
+            rows: vec![],
+            cursor: 10,
+            time_zone: None,
+        }));
+    }
+}
+
+#[test]
+fn nagiの更新が要るときは_送っていない変更を捨てずに止まり_控えのpendingに書く() {
+    let path = temp_db_path("upgrade");
+    let mut h = harness_with(Some(LocalDb::open(&path).unwrap()));
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    let added = add_to_inbox(&mut h, "残る追加");
+    write_memo(&mut h, "t1", "残るメモ");
+    h.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+
+    assert_eq!(h.store.stopped_by, Some(StopReason::VersionMismatch));
+    assert!(matches!(
+        h.store.take_notices().as_slice(),
+        [Notice::UpgradeRequired]
+    ));
+    assert!(h.store.unsent_kept());
+    assert_eq!(h.store.pending_count(), 2);
+    assert_eq!(h.task(&added).title, "残る追加");
+    assert_eq!(h.task("t1").memo, "残るメモ");
+    let db = LocalDb::open(&path).unwrap();
+    let loaded = |db: &LocalDb| -> Vec<PendingBatch> {
+        db.load_pending(&PendingOwner::default()).unwrap().batches
+    };
+    assert_eq!(loaded(&db), h.store.replica.pending());
+
+    // 止まったあとの操作も受け付けて、送らずに書き足す
+    let sent = h.batch_count();
+    add_to_inbox(&mut h, "止まったあとの追加");
+    assert_eq!(h.batch_count(), sent);
+    assert_eq!(h.store.pending_count(), 3);
+    assert_eq!(loaded(&db), h.store.replica.pending());
+    assert_eq!(kept(&path), 3);
+    remove_db(&path);
+}
+
+#[test]
+fn 開き直すと_控えのpendingのまとまりが列に戻り_最初の同期のあとに同じidで送られ_確定した分から表を消す()
+ {
+    let path = temp_db_path("reopen");
+    let mut before = harness_with(Some(LocalDb::open(&path).unwrap()));
+    before.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    let added = add_to_inbox(&mut before, "残る追加");
+    write_memo(&mut before, "t1", "残るメモ");
+    before.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+    let kept_ids = pending_ids(&before);
+    drop(before);
+
+    let mut h = harness_with(Some(LocalDb::open(&path).unwrap()));
+    assert_eq!(h.store.pending_count(), 2);
+    assert_eq!(h.task(&added).title, "残る追加");
+    assert_eq!(h.task("t1").memo, "残るメモ");
+    assert_eq!(h.batch_count(), 0);
+
+    h.sync_unchanged();
+    assert_eq!(h.last_batch().id, kept_ids[0]);
+    h.confirm_last();
+    assert_eq!(kept(&path), 1);
+    assert_eq!(h.last_batch().id, kept_ids[1]);
+    h.confirm_last();
+    assert_eq!(kept(&path), 0);
+    assert_eq!(h.store.pending_count(), 0);
+    assert_eq!(h.task("t1").memo, "残るメモ");
+    remove_db(&path);
+}
+
+#[test]
+fn workerの更新を待つあいだは止めずに持ち_同期が通ったら同じidで送り直す() {
+    let path = temp_db_path("server-behind");
+    let mut h = harness_with(Some(LocalDb::open(&path).unwrap()));
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    let added = add_to_inbox(&mut h, "待つ追加");
+    let first = h.last_batch().id;
+    h.fail_last(ApiFailure::ServerBehind);
+
+    assert_eq!(h.store.stopped_by, None);
+    assert!(h.store.waiting_for_server);
+    assert!(!h.store.is_online);
+    assert!(h.store.take_notices().is_empty());
+    assert_eq!(h.task(&added).title, "待つ追加");
+    // 待つあいだも受け付けるが、送らない（閉じても残るよう控えに書く）
+    add_to_inbox(&mut h, "待つあいだの追加");
+    assert_eq!(h.batch_count(), 1);
+    assert_eq!(kept(&path), 2);
+
+    // まだ古い Worker
+    h.store.sync();
+    h.store.on_sync_done(Err(ApiFailure::ServerBehind));
+    assert_eq!(h.batch_count(), 1);
+    // Worker が更新された
+    h.sync_unchanged();
+    assert!(h.store.is_online && !h.store.waiting_for_server);
+    assert_eq!(h.batch_count(), 2);
+    assert_eq!(h.last_batch().id, first);
+    h.confirm_last();
+    h.confirm_last();
+    assert_eq!(h.store.pending_count(), 0);
+    assert_eq!(kept(&path), 0);
+    remove_db(&path);
+}
+
+#[test]
+fn 持っていたまとまりも_ログインが切れたら捨て_控えのpendingから消す() {
+    let path = temp_db_path("kept-unauthorized");
+    let mut h = harness_with(Some(LocalDb::open(&path).unwrap()));
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    let added = add_to_inbox(&mut h, "捨てる追加");
+    h.fail_last(ApiFailure::ServerBehind);
+    assert_eq!(kept(&path), 1);
+
+    h.store.sync();
+    h.store.on_sync_done(Err(ApiFailure::Unauthorized));
+    assert_eq!(h.store.stopped_by, Some(StopReason::Unauthorized));
+    assert!(matches!(
+        h.store.take_notices().as_slice(),
+        [Notice::Unauthorized { failed_creates }] if failed_creates[0].title == "捨てる追加"
+    ));
+    assert_eq!(h.store.pending_count(), 0);
+    assert!(h.store.replica.task(&added).is_none());
+    assert_eq!(kept(&path), 0);
+    remove_db(&path);
+}
+
+#[test]
+fn nagiの更新を待って止まったあとに届いた401も受け_持っていた変更を捨てる() {
+    // 同期が先に版のずれで返り、送っていた操作があとから 401 で返る
+    let path = temp_db_path("upgrade-then-401");
+    let mut h = harness_with(Some(LocalDb::open(&path).unwrap()));
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    add_to_inbox(&mut h, "捨てる追加");
+    h.store.sync();
+    h.store
+        .on_sync_done(Err(ApiFailure::UpgradeRequired { min_api_version: 4 }));
+    assert_eq!(h.store.stopped_by, Some(StopReason::VersionMismatch));
+    assert_eq!(kept(&path), 1);
+    h.fail_last(ApiFailure::Unauthorized);
+    assert_eq!(h.store.stopped_by, Some(StopReason::Unauthorized));
+    assert!(matches!(
+        h.store.take_notices().as_slice(),
+        [Notice::UpgradeRequired, Notice::Unauthorized { failed_creates }]
+            if failed_creates[0].title == "捨てる追加"
+    ));
+    assert_eq!(h.store.pending_count(), 0);
+    assert_eq!(kept(&path), 0);
+    remove_db(&path);
+
+    // 逆の順：送っていた操作が先に版のずれで返り、同期があとから 401 で返る
+    let path = temp_db_path("upgrade-then-401-sync");
+    let mut h = harness_with(Some(LocalDb::open(&path).unwrap()));
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    add_to_inbox(&mut h, "捨てる追加");
+    h.store.sync();
+    h.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+    assert_eq!(kept(&path), 1);
+    h.store.on_sync_done(Err(ApiFailure::Unauthorized));
+    assert_eq!(h.store.stopped_by, Some(StopReason::Unauthorized));
+    assert_eq!(h.store.pending_count(), 0);
+    assert_eq!(kept(&path), 0);
+    remove_db(&path);
+}
+
+#[test]
+fn 持ち主の分からないトークンで残した変更は_別のトークンでは送らずに控えに残す() {
+    // NAGI_TOKEN で開き、Worker に持ち主を聞けなかった（利用者の ID なし）。控えは Worker ごとの 1 つ
+    let path = temp_db_path("owner");
+    let token_a = PendingOwner::new(None, Some("token-a"));
+    let mut before = open(Some(LocalDb::open(&path).unwrap()), token_a.clone());
+    before.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    let added = add_to_inbox(&mut before, "A の非公開の追加");
+    before.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+    let kept_ids = pending_ids(&before);
+    drop(before);
+
+    // NAGI_TOKEN を B に替えたが、B の持ち主も聞けなかった
+    let mut other = open(
+        Some(LocalDb::open(&path).unwrap()),
+        PendingOwner::new(None, Some("token-b")),
+    );
+    assert_eq!(other.store.pending_count(), 0);
+    assert!(other.store.replica.task(&added).is_none());
+    other.sync_unchanged();
+    assert_eq!(other.batch_count(), 0);
+    assert_eq!(kept(&path), 1);
+    drop(other);
+
+    // A のトークンで開き直せば送る
+    let mut again = open(Some(LocalDb::open(&path).unwrap()), token_a);
+    assert_eq!(again.store.pending_count(), 1);
+    again.sync_unchanged();
+    assert_eq!(again.last_batch().id, kept_ids[0]);
+    remove_db(&path);
+}
+
+#[test]
+fn 持ち主を聞けずにworkerごとの控えへ残した変更は_持ち主が分かった起動で利用者の控えへ移して送る() {
+    let dir = std::env::temp_dir().join(format!(
+        "nagi-store-test-adopt-{}-{}",
+        std::process::id(),
+        uuid::Uuid::now_v7()
+    ));
+    let config = Config::at("https://nagi.example.com", &dir);
+    // NAGI_TOKEN（A）で開き、Worker に持ち主を聞けなかった。控えは Worker ごとの 1 つ
+    let unknown_a = PendingOwner::new(None, Some("token-a"));
+    let mut before = open(open_local(&config, None, &unknown_a), unknown_a);
+    before.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    add_to_inbox(&mut before, "A の 1 つめ");
+    before.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+    add_to_inbox(&mut before, "A の 2 つめ");
+    let kept_ids = pending_ids(&before);
+    assert_eq!(kept_ids.len(), 2);
+    drop(before);
+    // 別のトークン（B）で残したものは、移さない
+    let unknown_b = PendingOwner::new(None, Some("token-b"));
+    let mut other = open(open_local(&config, None, &unknown_b), unknown_b);
+    other.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    add_to_inbox(&mut other, "B の追加");
+    other.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+    drop(other);
+    assert_eq!(kept(&config.db_path(None)), 3);
+
+    // 次の起動では、A の持ち主（u1）が分かった。利用者の控えを開く
+    let owner = PendingOwner::new(Some("u1"), Some("token-a"));
+    assert_ne!(config.db_path(Some("u1")), config.db_path(None));
+    let mut after = open(open_local(&config, Some("u1"), &owner), owner.clone());
+    assert_eq!(pending_ids(&after), kept_ids);
+    assert_eq!(kept(&config.db_path(None)), 1);
+    after.sync_unchanged();
+    assert_eq!(after.last_batch().id, kept_ids[0]);
+    drop(after);
+
+    // 開き直しても、二重にはならない
+    let again = open(open_local(&config, Some("u1"), &owner), owner);
+    assert_eq!(pending_ids(&again), kept_ids);
+    drop(again);
+    let _ = std::fs::remove_dir_all(&dir);
+}
+
+/// path の控えで追加を 1 つ送り、版のずれで断られて控えに残す（止まったあいだの操作は、呼んだ側が足す）
+fn keep_on_upgrade(path: &std::path::Path, title: &str) -> (String, Harness) {
+    let mut before = harness_with(Some(LocalDb::open(path).unwrap()));
+    before.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    let added = add_to_inbox(&mut before, title);
+    before.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+    (added, before)
+}
+
+#[test]
+fn 控えに書けなければ_残したことにせず_書けるまで書き直す() {
+    let path = temp_db_path("unwritable");
+    let mut h = harness_with(Some(LocalDb::open(&path).unwrap()));
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    add_to_inbox(&mut h, "書けない追加");
+    h.store.local_db().unwrap().set_read_only(true);
+    h.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+    assert_eq!(h.store.stopped_by, Some(StopReason::VersionMismatch));
+    assert!(!h.store.unsent_kept());
+    add_to_inbox(&mut h, "止まったあいだの追加");
+    assert!(!h.store.unsent_kept());
+    // 差分を取るきっかけごとに書き直す（まだ書けない）
+    h.store.sync();
+    assert!(!h.store.unsent_kept());
+    assert_eq!(kept(&path), 0);
+
+    h.store.local_db().unwrap().set_read_only(false);
+    h.store.sync();
+    assert!(h.store.unsent_kept());
+    assert_eq!(kept(&path), 2);
+    remove_db(&path);
+}
+
+#[test]
+fn 控えを開けていなければ_送っていない変更は残せていない() {
+    let mut h = harness();
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    add_to_inbox(&mut h, "残せない追加");
+    h.fail_last(ApiFailure::UpgradeRequired { min_api_version: 4 });
+    assert_eq!(h.store.stopped_by, Some(StopReason::VersionMismatch));
+    assert_eq!(h.store.pending_count(), 1);
+    assert!(!h.store.unsent_kept());
+}
+
+#[test]
+fn 控えに読めない変更があれば_その前の変更も送らずに止め_新しい変更は書き足す() {
+    let path = temp_db_path("unreadable");
+    let (added, mut before) = keep_on_upgrade(&path, "読める追加");
+    add_to_inbox(&mut before, "あとで読めなくなる追加");
+    let kept_ids = pending_ids(&before);
+    drop(before);
+    rusqlite::Connection::open(&path)
+        .unwrap()
+        .execute(
+            "UPDATE pending SET json = '{\"id\":\"x\"}' WHERE id = ?1",
+            [&kept_ids[1]],
+        )
+        .unwrap();
+
+    let mut h = harness_with(Some(LocalDb::open(&path).unwrap()));
+    assert_eq!(h.store.stopped_by, Some(StopReason::UnreadablePending));
+    assert_eq!(h.task(&added).title, "読める追加");
+    h.store.sync();
+    assert!(h.sent.borrow().syncs.is_empty());
+    add_to_inbox(&mut h, "止まっているあいだの追加");
+    assert_eq!(h.batch_count(), 0);
+    assert_eq!(kept(&path), 3);
+    remove_db(&path);
 }
 
 #[test]
