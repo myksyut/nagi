@@ -5,10 +5,12 @@
 
 use std::collections::{HashMap, HashSet};
 
+use serde::{Deserialize, Serialize};
+
 use crate::model::{Bucket, Mutation, Project, RowKind, SyncRow, Task};
 
 /// 画面から呼ぶ操作の種類（知らせと、元に戻すの表示に使う）
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum OperationKind {
     TaskAdd,
     TaskUpdate,
@@ -27,8 +29,9 @@ pub enum OperationKind {
     Undo,
 }
 
-/// 送信中の操作のまとまり（1つのリクエスト。1回のユーザー操作が1つのまとまり）
-#[derive(Clone, Debug)]
+/// 送信中の操作のまとまり（1つのリクエスト。1回のユーザー操作が1つのまとまり）。
+/// 送れないまま持っておくときは、手元の控え（pending の表）に JSON で書く
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct PendingBatch {
     /// まとまりの ID（UUIDv7）。再送でも同じ ID を使う。操作の ID も兼ねる
     pub id: String,

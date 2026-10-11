@@ -5,7 +5,9 @@ import {
   API_VERSION,
   API_VERSION_HEADER,
   type ApiErrorResponse,
+  MIN_API_VERSION,
   type MutateResponse,
+  RELEASES_URL,
   type SyncResponse,
   syncRequestSchema,
 } from "../../shared/api";
@@ -18,11 +20,28 @@ import { readChanges } from "./changes";
 import { applyMutationBatch } from "./mutate";
 import { rolloverIfDue } from "./rollover";
 
-/** X-Api-Version が API_VERSION と違えば 409（画面の版が古い。画面は再読み込みする） */
+/** X-Api-Version が MIN_API_VERSION から API_VERSION までの整数でなければ 409（古い nagi は 409 だけを版のずれと読む） */
 export const requireApiVersion = createMiddleware<AppEnv>(async (c, next) => {
-  if (c.req.header(API_VERSION_HEADER) !== String(API_VERSION)) {
+  const header = c.req.header(API_VERSION_HEADER);
+  const version = header !== undefined && /^\d+$/.test(header) ? Number(header) : undefined;
+  if (version === undefined || version < MIN_API_VERSION) {
     return c.json(
-      { error: "api_version_mismatch", apiVersion: API_VERSION } satisfies ApiErrorResponse,
+      {
+        error: "api_version_unsupported",
+        minApiVersion: MIN_API_VERSION,
+        apiVersion: API_VERSION,
+        releaseUrl: RELEASES_URL,
+      } satisfies ApiErrorResponse,
+      409,
+    );
+  }
+  if (version > API_VERSION) {
+    return c.json(
+      {
+        error: "api_version_too_new",
+        minApiVersion: MIN_API_VERSION,
+        apiVersion: API_VERSION,
+      } satisfies ApiErrorResponse,
       409,
     );
   }

@@ -38,9 +38,6 @@ type Migration = fn(&Transaction) -> rusqlite::Result<()>;
 const MIGRATIONS: &[Migration] = &[];
 const _: () = assert!(FORMAT_VERSION == 1 + MIGRATIONS.len() as i64);
 
-/// 反映済みのまとまりを覚えておく日数（Worker の APPLIED_MUTATIONS_TTL_DAYS と同じ）
-const APPLIED_TTL_DAYS: i64 = 7;
-
 pub struct DeviceDb {
     conn: Connection,
 }
@@ -769,7 +766,7 @@ fn arrival_date<'a>(task: &'a Task, today: &str) -> Option<&'a str> {
 /// 日付の切り替え（午前4時。Worker の rolloverIfDue と同じ）。last_rollover_on が今日より前なら行う。
 /// 1. 未完了・未削除で、今日の置き場になく、予定の日付か締切が今日以前のタスクを、今日の
 ///    「今日来たタスクの後ろ、それ以外の前」へ移す（日付の早い順、同じなら作成順。arrivedOn に今日を入れ、scheduledOn は空にする）
-/// 2. 削除から 30 日たった行を物理削除し、7 日たった反映済みのまとまりを消す
+/// 2. 削除から 30 日たった行を物理削除する（反映済みのまとまりは、Worker と同じく日数で消さない）
 /// 3. last_rollover_on を今日にする
 fn rollover_if_due(tx: &Transaction, now: DateTime<Utc>, today: &str) -> Step<()> {
     let last: String = tx.query_row(
@@ -820,7 +817,6 @@ fn rollover_if_due(tx: &Transaction, now: DateTime<Utc>, today: &str) -> Step<()
     write_seq(tx, base + moving.len() as u64)?;
 
     let purge_before = iso(now - Duration::days(DELETED_ROW_TTL_DAYS));
-    let applied_before = iso(now - Duration::days(APPLIED_TTL_DAYS));
     tx.execute(
         "DELETE FROM tasks WHERE deleted_at < ?1",
         params![purge_before],
@@ -828,10 +824,6 @@ fn rollover_if_due(tx: &Transaction, now: DateTime<Utc>, today: &str) -> Step<()
     tx.execute(
         "DELETE FROM projects WHERE deleted_at < ?1",
         params![purge_before],
-    )?;
-    tx.execute(
-        "DELETE FROM applied WHERE applied_at < ?1",
-        params![applied_before],
     )?;
     tx.execute(
         "UPDATE meta SET value = ?1 WHERE key = 'last_rollover_on'",
@@ -1578,14 +1570,13 @@ mod tests {
     }
 
     #[test]
-    fn 日付の切り替えで_古い削除済みの行と反映済みの覚えを消す() {
+    fn 日付の切り替えで_古い削除済みの行を消し_反映済みの覚えは残す() {
         let mut db = DeviceDb::open_in_memory();
         let days_ago = |days: i64| iso(at(NOW) - Duration::days(days));
         let deleted = |at: String| TaskChanges {
             deleted_at: Some(Some(at)),
             ..Default::default()
         };
-        // 反映済みの覚えは、まとまりを反映した時刻で古さが決まる
         db.mutate(
             &batch(
                 1,
@@ -1602,7 +1593,7 @@ mod tests {
                     update(1, deleted(days_ago(31))),
                 ],
             ),
-            at(NOW) - Duration::days(8),
+            at(NOW) - Duration::days(400),
         )
         .unwrap();
         db.mutate(
@@ -1627,13 +1618,13 @@ mod tests {
         );
         let applied: Vec<String> = db
             .conn
-            .prepare("SELECT id FROM applied")
+            .prepare("SELECT id FROM applied ORDER BY id")
             .unwrap()
             .query_map([], |row| row.get(0))
             .unwrap()
             .map(Result::unwrap)
             .collect();
-        assert_eq!(applied, vec![id(900_002)]);
+        assert_eq!(applied, vec![id(900_001), id(900_002)]);
         assert_eq!(db.count().unwrap(), 0);
     }
 
@@ -2022,6 +2013,7 @@ mod tests {
                     events: Rc::clone(&events),
                 }),
                 local: None,
+                owner: Default::default(),
                 clock: Box::new(|| at(NOW)),
                 tz: APP_TIME_ZONE,
             });

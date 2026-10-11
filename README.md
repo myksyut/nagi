@@ -38,7 +38,9 @@ Worker がすべてのリクエストを受ける（画面のファイルは配�
 
 - `/api/*` には `Authorization: Bearer <token>` が要る。なし・無効・期限切れは 401 `{"error":"unauthorized"}`。セッションの期限は 1 年で、使うたびに（1 日 1 回まで）延びる。D1 にはトークンの SHA-256 だけを置く
 - 書き込み（POST）は、本文が JSON（`Content-Type: application/json`）でなければ 415。`Origin` は、付いているときだけ Worker の URL と同じかを確かめる（違えば 403）。ブラウザは POST に必ず `Origin` を付けるので、別のサイトからの書き込みは止まり、`Origin` を付けない TUI は通る
-- `/api/sync` と `/api/mutate` には `X-Api-Version`（`src/shared/api.ts` の `API_VERSION`）を付ける（違えば 409）
+- `/api/sync` と `/api/mutate` には `X-Api-Version` を付ける。Worker が受けるのは `src/shared/api.ts` の `MIN_API_VERSION` から `API_VERSION` までで、範囲の外は 409（426 にはしない。出回っている nagi は 409 だけを「更新が要る」と読むため）
+  - ない・整数でない・`MIN_API_VERSION` より小さい：`{"error":"api_version_unsupported","minApiVersion":…,"apiVersion":…,"releaseUrl":"https://github.com/myksyut/nagi/releases/latest"}`
+  - `API_VERSION` より大きい（nagi が先に出て、Worker の deploy がまだ）：`{"error":"api_version_too_new","minApiVersion":…,"apiVersion":…}`
 - それ以外の URL は 404 `{"error":"not_found"}`
 - どの応答にも `X-Content-Type-Options: nosniff` などのセキュリティのヘッダが付き、`/api/*` と `/auth/*` の応答は `Cache-Control: no-store`
 
@@ -62,6 +64,15 @@ Worker がすべてのリクエストを受ける（画面のファイルは配�
 - 文字数は JavaScript の `length`（UTF-16 の単位）で数える。値は `src/shared/mutations.ts`（Worker）と `tui/src/model.rs`（TUI）にあり、行数の上限は `src/worker/sync/mutate.ts`。削除したタスク（30 日で消える）も件数に入る
 - 回数制限は Cloudflare の rate limiting の binding（`wrangler.jsonc` の `ratelimits`）。IP は `CF-Connecting-IP`、ないとき（`pnpm dev`）は `local`。`/api/*` の制限はログインを確かめたあとにかかる
 - 期限切れのセッションは、毎日 日本時間の 4 時 17 分に cron（`triggers.crons`）で消す。手元では `pnpm dev --test-scheduled` で動かし、`curl "localhost:5317/__scheduled?cron=17+19+*+*+*"` で呼べる
+
+### 版の決まり
+
+- `API_VERSION` は形を足すときに上げる。範囲の中の古い版の形も受け続ける（古い nagi が知らない項目は、送られなければ変えない）。`src/shared/api.ts` と `tui/src/model.rs` の `API_VERSION` はそろえる（`src/shared/api.test.ts` が確かめる）
+- `MIN_API_VERSION` は、新しい版の nagi を出して Homebrew の tap が更新されてから 90 日たつまで上げない。今は `MIN_API_VERSION` も `API_VERSION` も 3
+- 版がずれても、打った変更は消えない。nagi が古いとき（`api_version_unsupported`）は送信と同期を止め、送っていない変更を画面に残したまま手元の控えの `pending` の表に書き、下の欄に更新のコマンドを出す。更新した nagi は、次に開いたとき（CLI なら次のコマンド）に最初の同期のあとで送る。nagi が新しいとき（`api_version_too_new`）は止めずに変更を持ったまま「Worker の更新を待っています」と出し、8 秒ごとの同期が通ったら送り直す
+- 送り直しは二重に当たらない。Worker は反映したまとまりの ID（`applied_mutations`）を日数で消さず、同じ ID がまた来たら、何日たっていても書かずに今の行を返す。nagi は前の送信が届いていたか（応答だけが失われたか）を知れないので、何か月持っていたまとまりも、同じ ID でそのまま送る
+- `pending` の表のまとまりには持ち主（利用者の ID と、トークンを見分ける値。トークンそのものは書かない）を添え、同じ利用者か同じトークンで開いたときだけ送る。`NAGI_TOKEN` で持ち主を Worker に聞けなかったときに、別のアカウントの変更を送らないため
+- `pending` の表に書けなかったとき（書き込みの失敗・控えを開けない）は、残したことにしない。下の欄と CLI に「保存できていません。閉じると消えます」と出し、同期のきっかけごとに書き直す。表にこの nagi で読めないまとまりがあれば、順を崩さないよう、その前のまとまりも送らずに止めて更新を求める
 
 ### 利用者
 
@@ -143,7 +154,7 @@ nagi --server http://localhost:5317    # 手元の Worker（pnpm dev）につな
 ### ログインと同期
 
 - `nagi login` か、画面の Ctrl+K の「ログイン（クラウドと同期する）」でログインする。Enter を押すと URL（<https://github.com/login/device>）とコードが出るので、手元のブラウザで開いてコードを打ち込み、承認する。承認されると自動で一覧に移る。Worker を名指しして起動したときは、ログインしていなければ、最初にログインの画面が出る
-- ログインのトークンと、その持ち主（利用者の ID）は `~/.config/nagi/session-<接続先>.json`（自分だけが読める）に置く。期限は 1 年で、使うたびに延びる。Ctrl+K の「ログアウト」（`nagi logout`）で、Worker のセッション・手元のトークン・手元の控えを消し、この端末のデータに戻る
+- ログインのトークンと、その持ち主（利用者の ID）は `~/.config/nagi/session-<接続先>.json`（自分だけが読める）に置く。期限は 1 年で、使うたびに延びる。Ctrl+K の「ログアウト」（`nagi logout`）で、Worker のセッション・手元のトークン・手元の控えを消し、この端末のデータに戻る。控えに送っていない変更があるときは、画面では一度目は消える件数を知らせるだけで、もう一度選ぶとログアウトする。`nagi logout` は何も消さずに失敗し、`nagi logout --discard-unsent` で消してログアウトする
 - 手元の Worker（`localhost`）は `AUTH_DISABLED` でログインなしで使える
 - データの控えは `~/.local/share/nagi/<接続先>--<利用者の ID>.db`（SQLite。利用者ごと）。利用者を分ける前（0.1.10 まで）に作った控え `<接続先>.db` は、そのまま、そのときの利用者のものとして使い続ける（隣の `<接続先>.db.owner` に持ち主を書く）。手元の開発サーバーなど、利用者が分からないときも `<接続先>.db`。起動するとまず控えを読んで描き、そのあと差分を取る。記録は `~/.local/share/nagi/nagi.log`、画面の覚え書き（リスト｜ボード・並び方）は `~/.config/nagi/prefs.json`（置き場は `XDG_CONFIG_HOME`・`XDG_DATA_HOME` で変えられる）
 - ほかの端末の変更は、45 秒ごと・端末にフォーカスが戻ったとき・Ctrl+R で取り込む
@@ -186,7 +197,8 @@ nagi update <ID> --points 3 --deadline 金曜 --keep-existing --if-unchanged-sin
 nagi done <ID>                                   # 完了にする
 nagi projects --json                             # プロジェクトの一覧
 nagi login                                       # 画面なしでログイン（URL とコードを出して、承認を待つ）
-nagi logout
+nagi logout                                      # 送っていない変更があれば、何も消さずに失敗する
+nagi logout --discard-unsent                     # 送っていない変更も消して、ログアウトする
 nagi --help
 ```
 
@@ -205,7 +217,7 @@ nagi --help
 - ドラッグの代わりにキーを使う：並べ替えは Alt+↑↓、日付の移動は d・⇧D・< >、ボードの列の移動は s（進行中にする／未着手に戻す。完了のカードは進行中で戻る）と x（完了／完了を外す）
 - 元に戻すは u（Ctrl+Z でもよい）、削除は Del、検索とコマンドは Ctrl+K、コピー（⇧⌘C）は y、サイドバーを畳む（⌘\\）は `\`
 - 追加欄の下書きと、保存できなかったタイトル・メモは、起動しているあいだだけ覚えている（終了すると消える）
-- API の版（`X-Api-Version`）が Worker と合わなくなったら、「新しいバージョンがあります。nagi を更新してください」と出て、操作を止める。Releases の新しい版に入れ替える
+- API の版（`X-Api-Version`）が Worker と合わなくなったら、「nagi を更新してください。`brew upgrade nagi`。送っていない変更 3 件は残してあります」のように出て、送信を止める（Homebrew で入れていなければ、Releases の URL が出る）。送っていない変更は消えず、更新した nagi が次に開いたときに送る。`pending` に変更があるときのログアウトは、一度目は消える件数を知らせるだけで、もう一度選ぶとログアウトする
 
 ### `tui/` の中
 
@@ -218,6 +230,7 @@ tui/src/
 ├── model.rs     # タスク・プロジェクト・操作の形（src/shared の model.ts・mutations.ts・api.ts と同じ約束）
 ├── rank.rs      # 並び順キー（fractional index。Worker と同じキーを作る）
 ├── dates.rs     # 論理日付（午前4時に切り替わる）・日付の入力のパーサー・表示の文言
+├── upgrade.rs   # nagi の更新のしかた（Homebrew なら brew upgrade、ほかは Releases の URL）
 ├── data/        # データ層。画面は Store だけを読み書きする
 │   ├── store.rs     # まとめ役：操作の受け付け・送信の列・差分の取得・知らせ
 │   ├── actions.rs   # 操作（追加・完了・移動・並べ替え・締切・元に戻す）。業務の決まりはここ
@@ -225,7 +238,7 @@ tui/src/
 │   ├── undo.rs      # 元に戻す（逆向きの操作を作って積む）
 │   ├── lists.rs     # 各リストの中身と並び
 │   ├── sort.rs      # 並び方（表示だけ。rank は変えない）
-│   ├── local_db.rs  # 手元の控え（SQLite。クラウドと同期するとき）
+│   ├── local_db.rs  # 手元の控え（SQLite。クラウドと同期するとき）。版のずれで送れない変更（pending の表）もここ
 │   ├── device.rs    # この端末だけで使うとき（ローカル）のデータと、その Worker 役（操作の検証・通し番号・日付の切り替え）
 │   └── net.rs       # Worker との通信（専用のスレッド。再送とページの続きもここ）
 └── ui/          # 画面
@@ -243,8 +256,8 @@ tui/src/
 
 決まり：
 
-- データの決まり（どの置き場に入れるか、並び順キーの付け方、進行中なら今日、予定なら日付あり）は `data/actions.rs` に置く。Worker の検証（`src/worker/sync/mutate.ts`）と同じ決まりなので、片方を変えたらもう片方も直す。API の形を変えたら、`src/shared/api.ts` の `API_VERSION` と `tui/src/model.rs` の `API_VERSION` をそろえて上げる
-- 1回のユーザー操作は1つのまとまり（1リクエスト）で、Worker は全部成功か全部失敗にする。送信は積んだ順に1つずつ。失敗したら、そのまとまりと後ろに並ぶまとまりをすべて捨てて、表示を戻す
+- データの決まり（どの置き場に入れるか、並び順キーの付け方、進行中なら今日、予定なら日付あり）は `data/actions.rs` に置く。Worker の検証（`src/worker/sync/mutate.ts`）と同じ決まりなので、片方を変えたらもう片方も直す。API の形を足したら、`src/shared/api.ts` の `API_VERSION` と `tui/src/model.rs` の `API_VERSION` をそろえて上げる（版の決まりは上の「版の決まり」）
+- 1回のユーザー操作は1つのまとまり（1リクエスト）で、Worker は全部成功か全部失敗にする。送信は積んだ順に1つずつ。失敗したら、そのまとまりと後ろに並ぶまとまりをすべて捨てて、表示を戻す。版のずれ（409）だけは捨てずに持っておく
 - キーは `ui/keys.rs` の `bindings()` に足す。上から順に、今使える（`can_run`）最初の割り当てが動く。ここに足した割り当ては、そのまま Ctrl+K とショートカットのページに並ぶ。入力欄や候補の中のキーは `ui/input.rs` が直接扱い、説明だけを `field_keys()` に足す
 - タスクへの操作は `ui/commands.rs` の `run_op` を通す（選択の移動と「元に戻す」のトーストが、同じ決まりで動く）。一度に扱えるのは 500 件まで
 - 並び順キーは、JS の実装（fractional-indexing）と同じキーを作ることを、`tui/src/testdata/rank_golden.json`（JS の実装で作った正解）で確かめている。`rank.rs` を変えたらこのテストが守る

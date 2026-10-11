@@ -56,13 +56,18 @@ pub fn build_store(
 
 pub fn run(config: Config) -> io::Result<()> {
     let (events, inbox) = mpsc::channel::<AppEvent>();
-    let token = config.load_token();
+    let login = crate::auth::current_login(&config);
     // この端末だけで使うときは、ログインは要らない
-    let needs_login = config.is_cloud() && token.is_none() && !config.is_dev_server();
-    let user_id = crate::auth::current_user_id(&config);
-    let store = build_store(&config, token, user_id.as_deref(), events.clone(), 0)
-        .map_err(io::Error::other)?;
-    let mut app = App::new(config, store, user_id, events.clone());
+    let needs_login = config.is_cloud() && login.token.is_none() && !config.is_dev_server();
+    let store = build_store(
+        &config,
+        login.token,
+        login.user_id.as_deref(),
+        events.clone(),
+        0,
+    )
+    .map_err(io::Error::other)?;
+    let mut app = App::new(config, store, login.user_id, events.clone());
     if needs_login {
         app.show_login(None);
     } else {

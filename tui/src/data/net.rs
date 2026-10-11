@@ -5,8 +5,8 @@ use std::sync::mpsc::{Sender, channel};
 use std::thread;
 use std::time::Duration;
 
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::{Deserialize, Serialize};
 
 use super::store::{ApiFailure, SyncFlow, Transport};
 use crate::model::{
@@ -89,8 +89,7 @@ impl ApiClient {
         match status {
             200..=299 => serde_json::from_str(&text).map_err(|_| ApiFailure::Server(status)),
             401 => Err(ApiFailure::Unauthorized),
-            // Worker が 409 を返すのは API の版が違うときだけ
-            409 => Err(ApiFailure::VersionMismatch),
+            409 => Err(version_failure(&text)),
             // 回数制限。Retry-After は 60 秒だが、同じ ID で再送するだけにして待たない
             429 | 500.. => Err(ApiFailure::Server(status)),
             _ => {
@@ -179,6 +178,33 @@ impl ApiClient {
     }
 }
 
+/// 409 の本文（Worker が 409 を返すのは、API の版が受ける範囲の外のときだけ）
+#[derive(Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct VersionErrorBody {
+    #[serde(default)]
+    error: String,
+    api_version: Option<u32>,
+    min_api_version: Option<u32>,
+}
+
+/// 409 を、この nagi の更新が要るか、Worker の更新を待つかに分ける。範囲を返す前の Worker は
+/// api_version_mismatch と自分の版（apiVersion）だけを返すので、この nagi の版と比べて決める
+fn version_failure(text: &str) -> ApiFailure {
+    let body: VersionErrorBody = serde_json::from_str(text).unwrap_or_default();
+    match (body.error.as_str(), body.api_version) {
+        ("api_version_too_new", _) => ApiFailure::ServerBehind,
+        ("api_version_mismatch", Some(server)) if server < API_VERSION => ApiFailure::ServerBehind,
+        ("api_version_mismatch", Some(server)) => ApiFailure::UpgradeRequired {
+            min_api_version: server,
+        },
+        // api_version_unsupported。読めない本文も、この nagi が古いほうに倒す（止めて変更を持っておけば、何も失わない）
+        _ => ApiFailure::UpgradeRequired {
+            min_api_version: body.min_api_version.unwrap_or(API_VERSION + 1),
+        },
+    }
+}
+
 /// 通信の結果
 pub enum NetEvent {
     MutateDone {
@@ -232,5 +258,47 @@ impl Transport for NetTransport {
 
     fn sync(&mut self, cursor: u64) {
         let _ = self.sync_tx.send(cursor);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn 版のずれの409は_本文でこのnagiが古いか新しいかに分ける() {
+        assert_eq!(
+            version_failure(
+                r#"{"error":"api_version_unsupported","minApiVersion":4,"apiVersion":4,"releaseUrl":"https://github.com/myksyut/nagi/releases/latest"}"#
+            ),
+            ApiFailure::UpgradeRequired { min_api_version: 4 }
+        );
+        assert_eq!(
+            version_failure(r#"{"error":"api_version_too_new","minApiVersion":2,"apiVersion":2}"#),
+            ApiFailure::ServerBehind
+        );
+        // 範囲を返す前の Worker
+        assert_eq!(
+            version_failure(&format!(
+                r#"{{"error":"api_version_mismatch","apiVersion":{}}}"#,
+                API_VERSION - 1
+            )),
+            ApiFailure::ServerBehind
+        );
+        assert_eq!(
+            version_failure(&format!(
+                r#"{{"error":"api_version_mismatch","apiVersion":{}}}"#,
+                API_VERSION + 1
+            )),
+            ApiFailure::UpgradeRequired {
+                min_api_version: API_VERSION + 1
+            }
+        );
+        assert_eq!(
+            version_failure("not json"),
+            ApiFailure::UpgradeRequired {
+                min_api_version: API_VERSION + 1
+            }
+        );
     }
 }

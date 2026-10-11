@@ -320,7 +320,6 @@ describe("検証と守り：相手の行は数えない", () => {
 describe("日付の切り替え：同期した利用者の行だけ", () => {
   it("A の同期では、A の期限の来たタスクだけが今日へ移り、A の古い行だけが消える。B のぶんは、B が同期したときに進む", async () => {
     const old = new Date(NOW.getTime() - 31 * DAY_MS).toISOString();
-    const oldApplied = new Date(NOW.getTime() - 8 * DAY_MS).toISOString();
     // B の seq は A より大きくしておく（A の切り替えが B の行を数えたら、A の purged_through_seq に出る）
     const seed = async (userId: string, seq: number) => {
       const due = await insertRawTask(db, {
@@ -335,9 +334,6 @@ describe("日付の切り替え：同期した利用者の行だけ", () => {
         .update(meta)
         .set({ value: String(seq + 3) })
         .where(metaRow(userId, "seq"));
-      await db
-        .insert(appliedMutations)
-        .values({ userId, id: crypto.randomUUID(), appliedAt: oldApplied });
       return { due, deleted, project };
     };
     const ofA = await seed(A, 0);
@@ -355,7 +351,7 @@ describe("日付の切り替え：同期した利用者の行だけ", () => {
 
     const fromA = await (await clientOf(A)).sync();
 
-    // A：移った行だけが届く（消した行は届かない）。古い行と applied_mutations は消えた
+    // A：移った行だけが届く（消した行は届かない）。古い行は消えた
     expect(fromA.rows.map((row) => [row.row.id, asTaskRow(row).bucket])).toEqual([
       [ofA.due.id, "today"],
     ]);
@@ -364,7 +360,6 @@ describe("日付の切り替え：同期した利用者の行だけ", () => {
     const afterA = await snapshot(db, A);
     expect(afterA.tasks.map((row) => row.id)).toEqual([ofA.due.id]);
     expect(afterA.projects).toEqual([]);
-    expect(afterA.applied).toEqual([]);
     const metaOf = async (userId: string) =>
       Object.fromEntries(
         (await db.select().from(meta).where(eq(meta.userId, userId))).map((row) => [
