@@ -205,6 +205,14 @@ pub enum Notice {
     UpgradeRequired,
 }
 
+/// 記録に残す操作の一覧（種類と行の ID だけ。利用者の文字は残さない）
+fn summarize<'a>(mutations: impl Iterator<Item = &'a Mutation>) -> String {
+    mutations
+        .map(Mutation::summary)
+        .collect::<Vec<_>>()
+        .join(", ")
+}
+
 fn failed_creates(batches: &[PendingBatch]) -> Vec<FailedCreate> {
     batches
         .iter()
@@ -655,7 +663,10 @@ impl Store {
             return Err(Failure::TooLong(limit));
         }
         if !mutations.iter().all(is_well_formed) {
-            log::error(&format!("操作の形が正しくありません: {mutations:?}"));
+            log::error(&format!(
+                "操作の形が正しくありません: {}",
+                summarize(mutations.iter())
+            ));
             return Err(Failure::Invalid);
         }
 
@@ -792,7 +803,8 @@ impl Store {
                 } else {
                     // 検証エラーはほぼ不具合なので、記録を残す
                     log::error(&format!(
-                        "保存を受け付けられませんでした: {error:?} {discarded:?}"
+                        "保存を受け付けられませんでした: {error:?} {}",
+                        summarize(discarded.iter().flat_map(|batch| &batch.mutations))
                     ));
                     save_failed(self, SaveFailure::Rejected);
                 }

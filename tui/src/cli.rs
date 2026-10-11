@@ -2,6 +2,7 @@
 //! データの決まり（置き場・並び順キー・締切で今日へ移すなど）は、画面と同じデータ層（Store）に任せる
 
 use std::io::Write;
+use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
@@ -25,6 +26,10 @@ use crate::model::{Bucket, ChecklistItem, POINTS, Priority, Task, TaskChanges};
 use crate::ui::text::fold;
 use crate::upgrade::{upgrade_message, waiting_message};
 
+/// 書き出すファイルの形の名前と版
+const EXPORT_FORMAT: &str = "nagi-export";
+const EXPORT_FORMAT_VERSION: u32 = 1;
+
 /// Worker の応答を待つ時間
 const WAIT: Duration = Duration::from_secs(60);
 /// 完了の一覧に出す日数（今日を含む）の既定
@@ -47,6 +52,8 @@ nagi — ターミナルで使う TODO アプリ
   nagi logout                ログアウトして、この端末のデータに戻る（送っていない変更があれば、消さずに止まる）
   nagi logout --discard-unsent
                              送っていない変更を消して、ログアウトする
+  nagi export [--out <ファイル>]
+                             この端末のデータを JSON で書き出す（控えを取る。ログイン中でも、この端末のデータ）
 
 add の指定：
   --memo <文字>              メモ
@@ -76,6 +83,7 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
 
 共通：
   --json                     結果を JSON で出す（add・list・show・update・done・projects）
+  --out <ファイル>           export の書き出し先（省くと標準出力）
   --server <URL>             接続する Worker（省くと環境変数 NAGI_SERVER。どちらもなければ、ログインしていれば本番、
                              していなければこの端末のデータ）
   -h, --help                 この説明（nagi help、nagi add --help でも同じ）
@@ -158,6 +166,12 @@ pub struct DoneArgs {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct ExportArgs {
+    /// 書き出し先のファイル。なければ標準出力
+    pub out: Option<String>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Tui,
     Help,
@@ -175,6 +189,7 @@ pub enum Command {
         /// 送っていない変更があっても、消してログアウトする
         discard_unsent: bool,
     },
+    Export(ExportArgs),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -184,7 +199,7 @@ pub struct Invocation {
 }
 
 /// 値を取る指定
-const VALUE_FLAGS: [&str; 14] = [
+const VALUE_FLAGS: [&str; 15] = [
     "server",
     "memo",
     "to",
@@ -199,6 +214,7 @@ const VALUE_FLAGS: [&str; 14] = [
     "add-check",
     "check",
     "if-unchanged-since",
+    "out",
 ];
 /// 値を取らない指定
 const SWITCHES: [&str; 5] = ["json", "help", "version", "keep-existing", "discard-unsent"];
@@ -353,8 +369,11 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         Some((&"projects", [])) => Command::Projects { json },
         Some((&"login", [])) => Command::Login,
         Some((&"logout", [])) => Command::Logout { discard_unsent },
-        Some((&("projects" | "login" | "logout"), _)) => {
-            return Err("projects・login・logout には、ほかの引数を渡せません".to_string());
+        Some((&"export", [])) => Command::Export(ExportArgs {
+            out: take(values, "out"),
+        }),
+        Some((&("projects" | "login" | "logout" | "export"), _)) => {
+            return Err("projects・login・logout・export には、ほかの引数を渡せません".to_string());
         }
         Some((other, _)) => return Err(format!("知らないコマンドです：{other}")),
     };
@@ -365,7 +384,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     if json
         && matches!(
             command,
-            Command::Tui | Command::Login | Command::Logout { .. }
+            Command::Tui | Command::Login | Command::Logout { .. } | Command::Export(_)
         )
     {
         return Err("--json は、ここでは使えません".to_string());
@@ -1220,6 +1239,82 @@ fn logout(config: &Config, discard_unsent: bool) -> Result<(), String> {
     Ok(())
 }
 
+/// この端末のデータを書き出す。ログインしているかにかかわらず `local.db` を読む
+fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
+    let path = config.device_db_path();
+    if !path.exists() {
+        return Err("書き出すデータがありません".to_string());
+    }
+    if config.saved_session().is_some() || Config::has_env_token() {
+        eprintln!(
+            "ログイン中ですが、この端末のデータ（{}）を書き出します（クラウドのデータは含みません）",
+            path.display()
+        );
+    }
+    let rows = DeviceDb::open(&path)?.export()?;
+    let document = json!({
+        "format": EXPORT_FORMAT,
+        "formatVersion": EXPORT_FORMAT_VERSION,
+        "exportedAt": crate::dates::iso(chrono::Utc::now()),
+        "app": format!("nagi {}", crate::VERSION),
+        "projects": rows.projects,
+        "tasks": rows.tasks,
+    });
+    let text = serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?;
+    match args.out {
+        Some(out) => write_replacing(Path::new(&out), &text)
+            .map_err(|error| format!("{out} に書き出せませんでした：{error}")),
+        None => {
+            emit(&text);
+            Ok(())
+        }
+    }
+}
+
+/// 同じフォルダの一時ファイルに（unix では 0600 で）書いてから、`rename` で置き換える
+/// （書き出しの途中で止まっても、前のファイルは壊れない）。
+/// 一時ファイルは、この呼び出しが新しく作れた名前だけを使い、消すのも自分が作ったものだけ
+/// （同じ名前が先にあれば、他の書き出しや前回の残りなので、触らずに別の名前にする）
+fn write_replacing(path: &Path, text: &str) -> std::io::Result<()> {
+    let dir = match path.parent() {
+        Some(dir) if !dir.as_os_str().is_empty() => dir,
+        _ => Path::new("."),
+    };
+    let name = path.file_name().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, "ファイル名がありません")
+    })?;
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let (temp, mut file) = loop {
+        let mut temp_name = std::ffi::OsString::from(".");
+        temp_name.push(name);
+        temp_name.push(format!(
+            ".{}.{}.tmp",
+            std::process::id(),
+            uuid::Uuid::now_v7().simple()
+        ));
+        let temp = dir.join(temp_name);
+        match options.open(&temp) {
+            Ok(file) => break (temp, file),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+            Err(error) => return Err(error),
+        }
+    };
+
+    let written = writeln!(file, "{text}")
+        .and_then(|()| file.sync_all())
+        .and_then(|()| std::fs::rename(&temp, path));
+    if written.is_err() {
+        let _ = std::fs::remove_file(&temp);
+    }
+    written
+}
+
 /// 画面なしのコマンドを実行する
 pub fn run(config: &Config, command: Command) -> ExitCode {
     let result = match command {
@@ -1231,6 +1326,7 @@ pub fn run(config: &Config, command: Command) -> ExitCode {
         Command::Projects { json } => projects(config, json),
         Command::Login => login(config),
         Command::Logout { discard_unsent } => logout(config, discard_unsent),
+        Command::Export(args) => export(config, args),
         Command::Tui | Command::Help | Command::Version => Ok(()),
     };
     match result {
@@ -1589,6 +1685,69 @@ mod tests {
         assert!(logout(&config, false).is_err());
         assert!(config.saved_session().is_some());
         assert_eq!(unsent_count_at(&path).unwrap(), 1);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn exportは_書き出し先を省ける() {
+        assert_eq!(
+            command(&["export"]),
+            Command::Export(ExportArgs { out: None })
+        );
+        assert_eq!(
+            command(&["export", "--out", "x.json"]),
+            Command::Export(ExportArgs {
+                out: Some("x.json".into())
+            })
+        );
+        assert!(parsed(&["export", "x.json"]).is_err());
+        assert!(parsed(&["export", "--json"]).is_err());
+        assert!(parsed(&["list", "--out", "x.json"]).is_err());
+    }
+
+    #[test]
+    fn 書き出しは_前のファイルを置き換え_一時ファイルを残さない() {
+        let dir = std::env::temp_dir().join(format!(
+            "nagi-cli-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.json");
+        std::fs::write(&out, "old").unwrap();
+
+        write_replacing(&out, "{}").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "{}\n");
+        let names: Vec<_> = std::fs::read_dir(&dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect();
+        assert_eq!(names, vec![std::ffi::OsString::from("out.json")]);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&out).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+    #[test]
+    fn 書き出しは_先にある同じ名前の一時ファイルに触らない() {
+        let dir = std::env::temp_dir().join(format!(
+            "nagi-cli-test-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        let out = dir.join("out.json");
+        let other = dir.join(format!(".out.json.{}.tmp", std::process::id()));
+        std::fs::write(&other, "other").unwrap();
+
+        write_replacing(&out, "{}").unwrap();
+
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "{}\n");
+        assert_eq!(std::fs::read_to_string(&other).unwrap(), "other");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

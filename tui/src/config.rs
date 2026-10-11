@@ -1,6 +1,7 @@
 //! 設定と置き場。Worker の URL、ログイン（トークンと利用者の ID）、手元の控え、画面の覚え書き（リスト｜ボード・並び方）
 
 use std::collections::{BTreeMap, BTreeSet};
+use std::ffi::OsString;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -18,15 +19,52 @@ pub struct Config {
     data_dir: PathBuf,
 }
 
-fn home() -> PathBuf {
-    std::env::var_os("HOME").map_or_else(|| PathBuf::from("."), PathBuf::from)
+/// 設定とデータの置き場（どちらも `nagi` のフォルダ）
+#[derive(Debug, PartialEq, Eq)]
+pub struct Dirs {
+    pub config: PathBuf,
+    pub data: PathBuf,
 }
 
-fn base_dir(variable: &str, fallback: &str) -> PathBuf {
-    std::env::var_os(variable)
-        .filter(|value| !value.is_empty())
-        .map_or_else(|| home().join(fallback), PathBuf::from)
-        .join("nagi")
+/// 置き場を決める。環境変数は引数で引く（テストと、あとから足す OS ごとの決め方のため）。
+/// XDG_CONFIG_HOME・XDG_DATA_HOME が空でなければそれを使い、なければ HOME から決める。
+/// HOME もなければ、今いるフォルダに書かず、断る
+pub fn resolve_dirs(env: impl Fn(&str) -> Option<OsString>) -> Result<Dirs, String> {
+    let non_empty = |name: &str| env(name).filter(|value| !value.is_empty());
+    let base = |variable: &str, fallback: &str| -> Result<PathBuf, String> {
+        let root = match non_empty(variable) {
+            Some(dir) => PathBuf::from(dir),
+            None => non_empty("HOME")
+                .map(|home| PathBuf::from(home).join(fallback))
+                .ok_or_else(|| {
+                    format!(
+                        "データの置き場を決められません。環境変数 HOME（か {variable}）が設定されていません"
+                    )
+                })?,
+        };
+        Ok(root.join("nagi"))
+    };
+    Ok(Dirs {
+        config: base("XDG_CONFIG_HOME", ".config")?,
+        data: base("XDG_DATA_HOME", ".local/share")?,
+    })
+}
+
+#[cfg(unix)]
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    use std::os::unix::fs::DirBuilderExt;
+    if let Some(parent) = dir.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    match fs::DirBuilder::new().mode(0o700).create(dir) {
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists && dir.is_dir() => Ok(()),
+        result => result,
+    }
+}
+
+#[cfg(not(unix))]
+fn create_private_dir(dir: &Path) -> std::io::Result<()> {
+    fs::create_dir_all(dir)
 }
 
 /// ファイル名に使える形にする（URL のホストとポート）
@@ -47,20 +85,36 @@ fn slug(server: &str) -> String {
 
 impl Config {
     /// server は `--server`、なければ環境変数 NAGI_SERVER、なければ本番
-    pub fn new(server: Option<String>) -> Config {
+    pub fn new(server: Option<String>) -> Result<Config, String> {
         let explicit =
             server.or_else(|| std::env::var("NAGI_SERVER").ok().filter(|s| !s.is_empty()));
         let explicit_server = explicit.is_some();
         let server = explicit.unwrap_or_else(|| DEFAULT_SERVER.to_string());
-        let config = Config {
+        let dirs = resolve_dirs(|name| std::env::var_os(name))?;
+        Ok(Config {
             server: server.trim_end_matches('/').to_string(),
             explicit_server,
-            config_dir: base_dir("XDG_CONFIG_HOME", ".config"),
-            data_dir: base_dir("XDG_DATA_HOME", ".local/share"),
-        };
-        let _ = fs::create_dir_all(&config.config_dir);
-        let _ = fs::create_dir_all(&config.data_dir);
-        config
+            config_dir: dirs.config,
+            data_dir: dirs.data,
+        })
+    }
+
+    /// 置き場のフォルダを作る（unix では 0700。自分だけが入れる）。作る必要があるコマンドだけが呼ぶ
+    /// （`--help` や、まだデータがないときの `nagi export` は、何も作らない）。
+    /// 作れなかったとき、ローカルは置き場がなければ動けないので Err。クラウドは手元の控えなしで動けるので、
+    /// 理由を Ok(Some(..)) で返し、続けさせる
+    pub fn prepare_dirs(&self) -> Result<Option<String>, String> {
+        let created = [&self.config_dir, &self.data_dir]
+            .into_iter()
+            .try_for_each(|dir| {
+                create_private_dir(dir)
+                    .map_err(|error| format!("{} を作れませんでした：{error}", dir.display()))
+            });
+        match created {
+            Ok(()) => Ok(None),
+            Err(reason) if self.is_cloud() => Ok(Some(reason)),
+            Err(reason) => Err(reason),
+        }
     }
 
     /// Worker（クラウド）と同期して使うか。false なら、この端末だけで使う（ローカル。ログインなし・Worker なし）。
@@ -149,6 +203,16 @@ impl Config {
         self.data_dir.join("nagi.log")
     }
 
+    /// `nagi --help` の最後に出す、データ・ログイン・記録の置き場
+    pub fn locations(&self) -> String {
+        format!(
+            "置き場：\n  データ    {}\n  ログイン  {}\n  記録      {}",
+            self.device_db_path().display(),
+            self.session_path().display(),
+            self.log_path().display()
+        )
+    }
+
     fn session_path(&self) -> PathBuf {
         self.config_dir
             .join(format!("session-{}.json", slug(&self.server)))
@@ -213,7 +277,7 @@ impl Config {
 
     pub fn save_prefs(&self, prefs: &Prefs) {
         if let Ok(text) = serde_json::to_string_pretty(prefs) {
-            let _ = fs::write(self.prefs_path(), text);
+            let _ = write_private(&self.prefs_path(), &text);
         }
     }
 }
@@ -449,5 +513,108 @@ mod tests {
         assert_eq!(saved.token, "old-token");
         assert_eq!(saved.user_id.as_deref(), Some("owner"));
         assert_eq!(saved.time_zone, None);
+    }
+
+    fn env_of<'a>(pairs: &'a [(&'a str, &'a str)]) -> impl Fn(&str) -> Option<OsString> + 'a {
+        move |name| {
+            pairs
+                .iter()
+                .find(|(key, _)| *key == name)
+                .map(|(_, value)| OsString::from(value))
+        }
+    }
+
+    #[test]
+    fn 置き場は_xdgがあればそれ_なければhomeから決める() {
+        let from_home = resolve_dirs(env_of(&[("HOME", "/home/a")])).unwrap();
+        assert_eq!(from_home.config, PathBuf::from("/home/a/.config/nagi"));
+        assert_eq!(from_home.data, PathBuf::from("/home/a/.local/share/nagi"));
+
+        let xdg = resolve_dirs(env_of(&[
+            ("HOME", "/home/a"),
+            ("XDG_CONFIG_HOME", "/c"),
+            ("XDG_DATA_HOME", "/d"),
+        ]))
+        .unwrap();
+        assert_eq!(xdg.config, PathBuf::from("/c/nagi"));
+        assert_eq!(xdg.data, PathBuf::from("/d/nagi"));
+
+        // 空の XDG_DATA_HOME は、ないものとして扱う
+        let empty = resolve_dirs(env_of(&[("HOME", "/home/a"), ("XDG_DATA_HOME", "")])).unwrap();
+        assert_eq!(empty.data, PathBuf::from("/home/a/.local/share/nagi"));
+    }
+
+    #[test]
+    fn homeがなければ_今のフォルダに落とさずに断る() {
+        assert!(resolve_dirs(env_of(&[])).is_err());
+        assert!(resolve_dirs(env_of(&[("HOME", "")])).is_err());
+        // 片方だけ XDG があっても、もう片方を決められなければ断る
+        assert!(resolve_dirs(env_of(&[("XDG_DATA_HOME", "/d")])).is_err());
+        // どちらも XDG で決まるなら、HOME は要らない
+        assert!(
+            resolve_dirs(env_of(&[
+                ("XDG_CONFIG_HOME", "/c"),
+                ("XDG_DATA_HOME", "/d")
+            ]))
+            .is_ok()
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 置き場のフォルダとprefsは_自分だけが入れる権限で作る() {
+        use std::os::unix::fs::PermissionsExt;
+        let root = temp_dir("private");
+        let config = Config {
+            server: SERVER.to_string(),
+            explicit_server: false,
+            config_dir: root.join("a/config/nagi"),
+            data_dir: root.join("a/data/nagi"),
+        };
+        config.prepare_dirs().unwrap();
+        config.prepare_dirs().unwrap();
+        config.save_prefs(&Prefs::default());
+        let mode = |path: &Path| fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&config.config_dir), 0o700);
+        assert_eq!(mode(&config.data_dir), 0o700);
+        assert_eq!(mode(&config.prefs_path()), 0o600);
+    }
+}
+
+#[cfg(unix)]
+#[cfg(test)]
+mod prepare_tests {
+    use super::*;
+
+    /// 置き場の途中が通常のファイルで、フォルダを作れない設定
+    fn blocked(explicit_server: bool) -> Config {
+        let root = std::env::temp_dir().join(format!(
+            "nagi-config-blocked-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        fs::create_dir_all(&root).unwrap();
+        let file = root.join("file");
+        fs::write(&file, "").unwrap();
+        Config {
+            server: "https://nagi.example.com".to_string(),
+            explicit_server,
+            config_dir: file.join("config"),
+            data_dir: file.join("data"),
+        }
+    }
+
+    #[test]
+    fn 置き場を作れなくても_クラウドは手元の控えなしで続ける() {
+        let reason = blocked(true).prepare_dirs().unwrap();
+        assert!(reason.is_some());
+    }
+
+    #[test]
+    fn 置き場を作れなければ_ローカルは理由つきで止まる() {
+        if Config::has_env_token() {
+            return;
+        }
+        assert!(blocked(false).prepare_dirs().is_err());
     }
 }

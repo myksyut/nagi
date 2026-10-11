@@ -35,7 +35,11 @@ fn main() -> ExitCode {
     };
     match invocation.command {
         Command::Help => {
-            cli::emit(&format!("{}\n\n本番：{DEFAULT_SERVER}", cli::HELP));
+            let locations = Config::new(None).map_or_else(|message| message, |c| c.locations());
+            cli::emit(&format!(
+                "{}\n\n本番：{DEFAULT_SERVER}\n\n{locations}",
+                cli::HELP
+            ));
             ExitCode::SUCCESS
         }
         Command::Version => {
@@ -43,8 +47,10 @@ fn main() -> ExitCode {
             ExitCode::SUCCESS
         }
         Command::Tui => {
-            let config = Config::new(invocation.server);
-            log::init(&config.log_path());
+            let config = match prepared_config(invocation.server) {
+                Ok(config) => config,
+                Err(code) => return code,
+            };
             match ui::run(config) {
                 Ok(()) => ExitCode::SUCCESS,
                 Err(error) => {
@@ -53,10 +59,29 @@ fn main() -> ExitCode {
                 }
             }
         }
-        command => {
-            let config = Config::new(invocation.server);
-            log::init(&config.log_path());
-            cli::run(&config, command)
-        }
+        // 書き出すデータがなければ何も作らないので、フォルダも記録も用意しない
+        Command::Export(args) => match Config::new(invocation.server) {
+            Ok(config) => cli::run(&config, Command::Export(args)),
+            Err(message) => fail(&message),
+        },
+        command => match prepared_config(invocation.server) {
+            Ok(config) => cli::run(&config, command),
+            Err(code) => code,
+        },
     }
+}
+
+fn fail(message: &str) -> ExitCode {
+    eprintln!("{message}");
+    ExitCode::FAILURE
+}
+
+/// 置き場を決めてフォルダを作り、記録を始める。クラウドでフォルダを作れなければ、手元の控えなしで続ける
+fn prepared_config(server: Option<String>) -> Result<Config, ExitCode> {
+    let config = Config::new(server).map_err(|message| fail(&message))?;
+    match config.prepare_dirs().map_err(|message| fail(&message))? {
+        None => log::init(&config.log_path()),
+        Some(reason) => eprintln!("{reason}\n手元の控えと記録なしで続けます"),
+    }
+    Ok(config)
 }
