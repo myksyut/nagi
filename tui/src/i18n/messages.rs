@@ -33,6 +33,42 @@ messages! {
     ContinueWithoutLocalCopy => "{0}\n手元の控えと記録なしで続けます",
     LangUnsupported => "知らない言語です：{0}（使える値：{1}）",
 
+    // data/net.rs（取り込み）
+    NetImportBadResponse => "クラウドの応答を読めませんでした",
+    NetImportServerError => "クラウドがエラーを返しました（{0}）",
+    NetImportRowTooLarge => "{0} の行が大きすぎて、1 回に送れません（{1} KiB まで）",
+    NetImportPartial => "{0}（{1} 件までは移してあります。もう一度実行すると、残りだけが入ります）",
+    NetImportUnsupported => "このクラウドは、まだ取り込みに対応していません",
+    NetImportBodyTooLarge => "本文が大きすぎて、クラウドが受け付けませんでした",
+    NetImportRateLimited => "回数が多すぎます。1 分待ってから、もう一度実行してください",
+    NetImportQuota => "クラウドの上限（タスク {0} 件、プロジェクト {1} 件）を超えるため、移せません",
+    NetImportSchemaFallback => "クラウドが、この端末のデータを受け付けませんでした",
+    NetImportRejectedStatus => "クラウドが受け付けませんでした（{0}）",
+    NetImportPlaceProject => "プロジェクトの {0} 件目",
+    NetImportPlaceTask => "タスクの {0} 件目",
+    NetImportPlaceData => "データ",
+    NetImportRejectedField => "この端末の{0}を、クラウドが受け付けませんでした（{1}：{2}）",
+    NetImportRejectedRow => "この端末の{0}を、クラウドが受け付けませんでした（{1}）",
+
+    // ui/login.rs・ui/render/overlay.rs（取り込み）
+    LoginImportAllThere => "この端末のデータ {0} 件は、すべてクラウドにあります",
+    LogImportCheckFailed => "取り込みの確かめに失敗しました: {0}",
+    LoginImportChanged => "ログインが替わったため、移しませんでした",
+    LoginImportChangedHint => "Ctrl+K の「この端末のデータをクラウドへ移す」から、もう一度確かめてください",
+    LoginImportDone => "{0} 件をクラウドへ移しました。この端末のデータは消していません",
+    ImportChecking => "この端末のデータを確かめています…",
+    ImportEscClose => "Esc で閉じる",
+    ImportRetryCheck => "Enter で確かめ直す　Esc で閉じる",
+    ImportOfferTitle => "この端末の {0} 件をクラウドへ移しますか",
+    ImportOfferCounts => "新しく {0} 件、もうある {1} 件",
+    ImportOfferNote => "もうある分は入れません。この端末のデータは消しません",
+    ImportOfferLater1 => "あとから Ctrl+K の「この端末のデータをクラウドへ",
+    ImportOfferLater2 => "移す」で、いつでも移せます",
+    ImportOfferKeys => "Enter で移す　Esc で移さない",
+    ImportPreparing => "移す準備をしています…",
+    ImportProgress => "移しています… {0} / {1} 件",
+    ImportRetryRest => "Enter でもう一度（残りだけが入ります）　Esc で閉じる",
+
     // cli.rs
     CliHelp => "\
 nagi — ターミナルで使う TODO アプリ
@@ -55,6 +91,7 @@ nagi — ターミナルで使う TODO アプリ
                              データを JSON で書き出す（ログイン中はクラウドのデータ、していなければこの端末のデータ）
   nagi account delete [--yes]
                              クラウドのアカウントとデータを消す（`delete` と打って確かめる。この端末のデータは残る）
+  nagi import [--dry-run]    この端末のデータをクラウドへ移す（もうあるものは入れない。何度動かしても同じ。--dry-run は件数だけ）
 
 add の指定：
   --memo <文字>              メモ
@@ -86,6 +123,7 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
   --json                     結果を JSON で出す（add・list・show・update・done・projects）
   --out <ファイル>           export の書き出し先（省くと標準出力。--output でも同じ）
   --yes                      account delete で、確かめを聞かずに消す
+  --dry-run                  import で、移さずに件数だけを出す
   --server <URL>             接続する Worker（省くと環境変数 NAGI_SERVER。どちらもなければ、ログインしていれば本番、
                              していなければこの端末のデータ）
   --lang <言語>              画面の言語（いまは ja だけ）
@@ -98,9 +136,15 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
     CliAddNeedsOneTitle => "add には、タイトルを1つ渡します（空白を含むときは引用符で囲む）",
     CliTitleEmpty => "タイトルが空です",
     CliListTakesOne => "list に渡せるリストは1つです",
-    CliNoExtraArgs => "projects・login・logout・export には、ほかの引数を渡せません",
+    CliNoExtraArgs => "projects・login・logout・export・import には、ほかの引数を渡せません",
     CliJsonNotHere => "--json は、ここでは使えません",
     CliKeepExistingOnlyUpdate => "--keep-existing は update で使えます",
+    CliDryRunOnlyImport => "--dry-run は import で使えます",
+    CliNothingToImport => "この端末には、移すデータがありません",
+    CliImportDryRun => "新しく {0} 件、もうある {1} 件（プロジェクト 新しく {2}・もうある {3}、タスク 新しく {4}・もうある {5}）",
+    CliImportProgress => "{0} / {1} 件",
+    CliImportDone => "{0} 件をクラウドへ移しました（もうあった {1} 件は、そのままにしています）。この端末のデータは消していません",
+    CliImportDetached => "指すプロジェクトがなかったタスク {0} 件は、プロジェクトなしで入れました",
     CliDiscardUnsentOnlyLogout => "--discard-unsent は logout で使えます",
     CliNotLoggedIn => "ログインしていません。先に `nagi login` を実行してください",
     ThisDeviceData => "この端末のデータ",
@@ -170,7 +214,7 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
     CliLoginWaiting => "承認を待っています…（ここに出たコード以外は、承認しないでください）",
     CliSaveTokenFailed => "トークンを保存できませんでした：{0}",
     CliLoggedIn => "ログインしました。クラウドと同期します",
-    CliLocalDataKept => "この端末のタスクとプロジェクト（{0} 件）はそのまま残り、`nagi logout` で戻ります",
+    CliLocalDataKept => "この端末のタスクとプロジェクト（{0} 件）は、`nagi import` でクラウドへ移せます。移さなければ、そのまま残り、`nagi logout` で戻ります",
     LoginNotInvited => "この GitHub アカウントは、まだクラウドとの同期に招待されていません",
     UnsentCountFound => "送っていない変更が {0} 件あります",
     UnsentCountUnknown => "送っていない変更があるかを確かめられません（{0}）",
@@ -362,6 +406,7 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
     KeySync => "今すぐ同期",
     KeyLogin => "クラウドと同期する（ログイン。いまは招待制）",
     KeyLogout => "ログアウト",
+    KeyImportLocal => "この端末のデータをクラウドへ移す",
     KeyQuit => "終了",
     FieldAddBox => "追加欄",
     FieldAddContinue => "追加して続ける",

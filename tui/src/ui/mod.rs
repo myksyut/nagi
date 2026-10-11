@@ -6,7 +6,7 @@ mod commands;
 mod input;
 mod keys;
 pub mod list;
-mod login;
+pub mod login;
 mod render;
 pub mod text;
 pub mod theme;
@@ -63,17 +63,19 @@ pub fn run(config: Config) -> io::Result<()> {
     let needs_login = config.is_cloud() && login.token.is_none() && !config.is_dev_server();
     let store = build_store(
         &config,
-        login.token,
+        login.token.clone(),
         login.user_id.as_deref(),
         events.clone(),
         0,
     )
     .map_err(io::Error::other)?;
-    let mut app = App::new(config, store, login.user_id, events.clone());
+    let mut app = App::new(config, store, login, events.clone());
     if needs_login {
         app.show_login(None);
     } else {
         app.sync_now();
+        // この端末で使っていたデータが、クラウドに移っていなければ、一度だけ移すかを聞く
+        app.check_import(false);
     }
 
     // 端末のイベントは、専用のスレッドで読んで列に入れる

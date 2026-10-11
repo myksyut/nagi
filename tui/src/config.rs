@@ -281,6 +281,11 @@ impl Config {
             let _ = write_private(&self.prefs_path(), &text);
         }
     }
+
+    /// `Prefs::import_offered` に入れる、この Worker とこの利用者の印
+    pub fn import_offer_key(&self, user_id: Option<&str>) -> String {
+        format!("{}|{}", self.server, user_id.unwrap_or_default())
+    }
 }
 
 /// 保存してあるログイン
@@ -328,6 +333,9 @@ pub struct Prefs {
     /// 画面の言語（`ja`）。`--lang` の次、環境変数より前に見る
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
+    /// 「この端末のデータをクラウドへ移しますか」を聞いた印（`import_offer_key`）。聞いたら、答えにかかわらず二度と聞かない
+    #[serde(default)]
+    pub import_offered: BTreeSet<String>,
 }
 
 /// 覚え書きの言語。言語は引数を読む前に決めるので、置き場が決まらなくても、読めなくても、ないものとして扱う
@@ -569,6 +577,37 @@ mod tests {
             ]))
             .is_ok()
         );
+    }
+
+    #[test]
+    fn import_offeredのない古いprefsも読め_印は保存して読み戻せる() {
+        let config = Config::at(SERVER, &temp_dir("prefs-old"));
+        fs::write(
+            config.prefs_path(),
+            r#"{"board":["today"],"sort":{"today":"title"},"sidebar_rail":true}"#,
+        )
+        .unwrap();
+        let mut prefs = config.load_prefs();
+        assert!(prefs.sidebar_rail);
+        assert!(prefs.board.contains("today"));
+        assert!(prefs.import_offered.is_empty());
+
+        prefs
+            .import_offered
+            .insert(config.import_offer_key(Some("u1")));
+        config.save_prefs(&prefs);
+        let read_back = config.load_prefs();
+        assert!(
+            read_back
+                .import_offered
+                .contains(&config.import_offer_key(Some("u1")))
+        );
+        assert!(
+            !read_back
+                .import_offered
+                .contains(&config.import_offer_key(Some("u2")))
+        );
+        assert!(read_back.sidebar_rail);
     }
 
     #[cfg(unix)]

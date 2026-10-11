@@ -1,6 +1,7 @@
 //! Worker との通信。/api/sync と /api/mutate は JSON の POST で、X-Api-Version と（ログインしていれば）
 //! Authorization: Bearer を付ける。通信は専用のスレッドで行い、結果は NetEvent として画面のスレッドへ返す
 
+use std::path::Path;
 use std::sync::mpsc::{Sender, channel};
 use std::thread;
 use std::time::Duration;
@@ -8,11 +9,12 @@ use std::time::Duration;
 use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
+use super::device::{DeviceDb, Export};
 use super::store::{ApiFailure, SyncFlow, Transport};
 use crate::i18n::{Msg, fill, t};
 use crate::model::{
-    API_VERSION, API_VERSION_HEADER, ApiErrorBody, MutateResponse, MutationBatch, SyncRequest,
-    SyncResponse, SyncRow,
+    API_VERSION, API_VERSION_HEADER, ApiErrorBody, MAX_PROJECTS_PER_USER, MAX_TASKS_PER_USER,
+    MutateResponse, MutationBatch, SyncRequest, SyncResponse, SyncRow,
 };
 
 /// 1回の呼び出しを待つ時間。過ぎたら打ち切って、通信エラーと同じに扱う
@@ -277,6 +279,309 @@ impl ApiClient {
             result = send();
         }
         result
+    }
+
+    /// 取り込みの 1 回分を送る（`dry_run` なら書かずに数だけ）。同じ本文は何度送っても同じ結果なので、
+    /// 通信エラー・タイムアウト・5xx は 2 回まで再送する。断られたら、利用者に見せる文言を返す
+    pub fn import(&self, chunk: &ImportChunk, dry_run: bool) -> Result<ImportResponse, String> {
+        let path = if dry_run {
+            "/api/import?dryRun=1"
+        } else {
+            "/api/import"
+        };
+        let mut delays = RETRY_DELAYS.into_iter();
+        loop {
+            let retry = match self.post_text(path, &chunk.body) {
+                Ok((200..=299, text)) => {
+                    return serde_json::from_str(&text)
+                        .map_err(|_| t(Msg::NetImportBadResponse).to_string());
+                }
+                Ok((status @ 500.., _)) => ApiFailure::Server(status),
+                Ok((status, text)) => return Err(import_rejection(status, &text, chunk)),
+                Err(failure) => failure,
+            };
+            match delays.next() {
+                Some(delay) => thread::sleep(delay),
+                None => {
+                    return Err(match retry {
+                        ApiFailure::Server(status) => fill(Msg::NetImportServerError, &[&status]),
+                        _ => fill(Msg::CliCannotReach, &[&self.base]),
+                    });
+                }
+            }
+        }
+    }
+
+    /// JSON の文字列をそのまま POST する（行ごとに作った本文を、作り直さずに送る）
+    fn post_text(&self, path: &str, body: &str) -> Result<(u16, String), ApiFailure> {
+        let mut request = self
+            .agent
+            .post(format!("{}{path}", self.base))
+            .header(API_VERSION_HEADER, API_VERSION.to_string())
+            .header("Content-Type", "application/json");
+        if let Some(token) = &self.token {
+            request = request.header("Authorization", format!("Bearer {token}"));
+        }
+        let mut response = request.send(body).map_err(|_| ApiFailure::Network)?;
+        let status = response.status().as_u16();
+        let text = response
+            .body_mut()
+            .read_to_string()
+            .map_err(|_| ApiFailure::Network)?;
+        Ok((status, text))
+    }
+}
+
+/// 取り込み（POST /api/import）の 1 回に入れる行数の上限（Worker の MAX_IMPORT_ROWS。プロジェクトとタスクの合計）
+pub const MAX_IMPORT_ROWS: usize = 500;
+/// 取り込みの 1 回の本文の大きさの上限。Worker が受ける本文の上限（1 MiB）の下に置く
+pub const MAX_IMPORT_BODY_BYTES: usize = 900 * 1024;
+
+/// 取り込みの 1 回分。`nagi export` と同じ形の JSON で、プロジェクトがタスクより先に並ぶ
+#[derive(Debug, PartialEq, Eq)]
+pub struct ImportChunk {
+    pub body: String,
+    pub projects: usize,
+    pub tasks: usize,
+    /// この本文の最初のプロジェクト・タスクが、この端末の全体の何番目か（断られた行の位置を伝えるため）
+    project_offset: usize,
+    task_offset: usize,
+}
+
+impl ImportChunk {
+    pub fn rows(&self) -> usize {
+        self.projects + self.tasks
+    }
+}
+
+/// 書き出した行を、プロジェクトを先に、タスクをあとに、行数と本文の大きさの上限に収まるように分ける。
+/// 1 件だけで上限を超える行があれば、黙って捨てずに Err
+pub fn split_import(
+    export: &Export,
+    exported_at: &str,
+    app: &str,
+) -> Result<Vec<ImportChunk>, String> {
+    let text = |value: &str| serde_json::to_string(value).map_err(|error| error.to_string());
+    let head = format!(
+        r#"{{"format":"nagi-export","formatVersion":1,"exportedAt":{},"app":{},"projects":["#,
+        text(exported_at)?,
+        text(app)?
+    );
+    const MIDDLE: &str = r#"],"tasks":["#;
+    const TAIL: &str = "]}";
+    let base = head.len() + MIDDLE.len() + TAIL.len();
+
+    struct Open {
+        projects: Vec<String>,
+        tasks: Vec<String>,
+        bytes: usize,
+    }
+    let mut chunks = Vec::new();
+    let mut open = Open {
+        projects: Vec::new(),
+        tasks: Vec::new(),
+        bytes: base,
+    };
+    let (mut project_offset, mut task_offset) = (0, 0);
+    let mut flush = |open: &mut Open| {
+        let (projects, tasks) = (open.projects.len(), open.tasks.len());
+        if projects + tasks == 0 {
+            return;
+        }
+        chunks.push(ImportChunk {
+            body: format!(
+                "{head}{}{MIDDLE}{}{TAIL}",
+                open.projects.join(","),
+                open.tasks.join(",")
+            ),
+            projects,
+            tasks,
+            project_offset,
+            task_offset,
+        });
+        project_offset += projects;
+        task_offset += tasks;
+        *open = Open {
+            projects: Vec::new(),
+            tasks: Vec::new(),
+            bytes: base,
+        };
+    };
+    let rows = export
+        .projects
+        .iter()
+        .map(|row| (true, row))
+        .chain(export.tasks.iter().map(|row| (false, row)));
+    for (is_project, row) in rows {
+        let json = serde_json::to_string(row).map_err(|error| error.to_string())?;
+        // 行と行のあいだの「,」を数に入れる
+        let size = json.len() + 1;
+        if base + size > MAX_IMPORT_BODY_BYTES {
+            let id = row["id"].as_str().unwrap_or_default();
+            return Err(fill(
+                Msg::NetImportRowTooLarge,
+                &[&id, &(MAX_IMPORT_BODY_BYTES / 1024)],
+            ));
+        }
+        if open.projects.len() + open.tasks.len() == MAX_IMPORT_ROWS
+            || open.bytes + size > MAX_IMPORT_BODY_BYTES
+        {
+            flush(&mut open);
+        }
+        open.bytes += size;
+        if is_project {
+            open.projects.push(json);
+        } else {
+            open.tasks.push(json);
+        }
+    }
+    flush(&mut open);
+    Ok(chunks)
+}
+
+/// この端末のデータ（`local.db`。削除済みの行は入れない）を、取り込みの本文に分ける。ファイルがなければ空
+pub fn local_import_chunks(path: &Path) -> Result<Vec<ImportChunk>, String> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let export = DeviceDb::open(path)?.export()?;
+    split_import(
+        &export,
+        &crate::dates::iso(chrono::Utc::now()),
+        &format!("nagi {}", crate::VERSION),
+    )
+}
+
+/// 新しく入る行と、クラウドにもうある行の数
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+pub struct ImportCounts {
+    pub new: usize,
+    pub existing: usize,
+}
+
+/// POST /api/import の応答（`detached_tasks`：指す先のプロジェクトがなく、プロジェクトなしで入った（入る）タスク）
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ImportResponse {
+    pub tasks: ImportCounts,
+    pub projects: ImportCounts,
+    #[serde(default)]
+    pub detached_tasks: usize,
+}
+
+impl ImportResponse {
+    /// プロジェクトとタスクを合わせた、新しく入る行の数
+    pub fn new_rows(&self) -> usize {
+        self.tasks.new + self.projects.new
+    }
+
+    /// プロジェクトとタスクを合わせた、もうある行の数
+    pub fn existing_rows(&self) -> usize {
+        self.tasks.existing + self.projects.existing
+    }
+
+    fn add(&mut self, other: &ImportResponse) {
+        self.tasks.new += other.tasks.new;
+        self.tasks.existing += other.tasks.existing;
+        self.projects.new += other.projects.new;
+        self.projects.existing += other.projects.existing;
+        self.detached_tasks += other.detached_tasks;
+    }
+}
+
+/// 本文を順に送る（`dry_run` なら書かずに数だけ）。`progress` には、送り終えた行数と全体の行数を渡す。
+/// 途中で断られたら、そこまでに入った行数を添えて Err にする（もう一度動かせば、残りだけが入る）
+pub fn run_import(
+    client: &ApiClient,
+    chunks: &[ImportChunk],
+    dry_run: bool,
+    mut progress: impl FnMut(usize, usize),
+) -> Result<ImportResponse, String> {
+    let total: usize = chunks.iter().map(ImportChunk::rows).sum();
+    let mut sum = ImportResponse::default();
+    let mut done = 0;
+    for chunk in chunks {
+        let response = client.import(chunk, dry_run).map_err(|message| {
+            if dry_run || done == 0 {
+                message
+            } else {
+                fill(Msg::NetImportPartial, &[&message, &done])
+            }
+        })?;
+        sum.add(&response);
+        done += chunk.rows();
+        progress(done, total);
+    }
+    Ok(sum)
+}
+
+#[derive(Default, Deserialize)]
+struct ImportErrorBody {
+    #[serde(default)]
+    reason: Option<String>,
+    #[serde(default)]
+    issues: Vec<ImportIssue>,
+}
+
+#[derive(Deserialize)]
+struct ImportIssue {
+    path: Vec<serde_json::Value>,
+    message: String,
+}
+
+/// 取り込みの 4xx を、利用者に見せる文言にする
+fn import_rejection(status: u16, text: &str, chunk: &ImportChunk) -> String {
+    match status {
+        401 => t(Msg::CliLoginExpiredRelogin).to_string(),
+        404 => t(Msg::NetImportUnsupported).to_string(),
+        409 => match version_failure(text) {
+            ApiFailure::ServerBehind => t(Msg::WaitingForWorker).to_string(),
+            _ => crate::upgrade::upgrade_hint(),
+        },
+        413 => t(Msg::NetImportBodyTooLarge).to_string(),
+        429 => t(Msg::NetImportRateLimited).to_string(),
+        _ => {
+            let body: ImportErrorBody = serde_json::from_str(text).unwrap_or_default();
+            match body.reason.as_deref() {
+                Some("quota_exceeded") => fill(
+                    Msg::NetImportQuota,
+                    &[&MAX_TASKS_PER_USER, &MAX_PROJECTS_PER_USER],
+                ),
+                Some("schema") => body
+                    .issues
+                    .first()
+                    .map(|issue| rejected_row(issue, chunk))
+                    .unwrap_or_else(|| t(Msg::NetImportSchemaFallback).to_string()),
+                _ => fill(Msg::NetImportRejectedStatus, &[&status]),
+            }
+        }
+    }
+}
+
+/// 形の誤りで断られた行を、この端末の何件目かで伝える
+fn rejected_row(issue: &ImportIssue, chunk: &ImportChunk) -> String {
+    let position = |kind: &str| {
+        let index = issue.path.get(1).and_then(serde_json::Value::as_u64)? as usize;
+        let offset = if kind == "projects" {
+            chunk.project_offset
+        } else {
+            chunk.task_offset
+        };
+        Some(offset + index + 1)
+    };
+    let kind = issue.path.first().and_then(serde_json::Value::as_str);
+    let field = issue.path.get(2).and_then(serde_json::Value::as_str);
+    let place = match (kind, kind.and_then(position)) {
+        (Some("projects"), Some(n)) => fill(Msg::NetImportPlaceProject, &[&n]),
+        (Some("tasks"), Some(n)) => fill(Msg::NetImportPlaceTask, &[&n]),
+        _ => t(Msg::NetImportPlaceData).to_string(),
+    };
+    match field {
+        Some(field) => fill(
+            Msg::NetImportRejectedField,
+            &[&place, &field, &issue.message],
+        ),
+        None => fill(Msg::NetImportRejectedRow, &[&place, &issue.message]),
     }
 }
 

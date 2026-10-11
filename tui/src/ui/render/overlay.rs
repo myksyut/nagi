@@ -659,6 +659,84 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> 
                 theme::faint(),
             )));
         }
+        LoginStep::ImportChecking => {
+            lines.push(Line::from(Span::styled(
+                t(Msg::ImportChecking),
+                theme::muted(),
+            )));
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                t(Msg::ImportEscClose),
+                theme::faint(),
+            )));
+        }
+        LoginStep::ImportCheckFailed(message) => {
+            for text in wrap(message, 60) {
+                lines.push(Line::from(Span::styled(
+                    text,
+                    Style::new().fg(theme::ATTENTION),
+                )));
+            }
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                t(Msg::ImportRetryCheck),
+                theme::faint(),
+            )));
+        }
+        LoginStep::ImportOffer { counts, .. } => {
+            lines.push(Line::from(fill(
+                Msg::ImportOfferTitle,
+                &[&(counts.new_rows() + counts.existing_rows())],
+            )));
+            lines.push(Line::from(Span::styled(
+                fill(
+                    Msg::ImportOfferCounts,
+                    &[&counts.new_rows(), &counts.existing_rows()],
+                ),
+                theme::accent(),
+            )));
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                t(Msg::ImportOfferNote),
+                theme::muted(),
+            )));
+            lines.push(Line::from(Span::styled(
+                t(Msg::ImportOfferLater1),
+                theme::muted(),
+            )));
+            lines.push(Line::from(Span::styled(
+                t(Msg::ImportOfferLater2),
+                theme::muted(),
+            )));
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                t(Msg::ImportOfferKeys),
+                theme::faint(),
+            )));
+        }
+        LoginStep::ImportRunning { done, total } => {
+            lines.push(Line::from(Span::styled(
+                if *total == 0 {
+                    t(Msg::ImportPreparing).to_string()
+                } else {
+                    fill(Msg::ImportProgress, &[done, total])
+                },
+                theme::muted(),
+            )));
+        }
+        LoginStep::ImportFailed { message, .. } => {
+            for text in wrap(message, 60) {
+                lines.push(Line::from(Span::styled(
+                    text,
+                    Style::new().fg(theme::ATTENTION),
+                )));
+            }
+            lines.push(Line::default());
+            lines.push(Line::from(Span::styled(
+                t(Msg::ImportRetryRest),
+                theme::faint(),
+            )));
+        }
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(

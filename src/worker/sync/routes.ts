@@ -5,6 +5,7 @@ import {
   API_VERSION,
   API_VERSION_HEADER,
   type ApiErrorResponse,
+  type ImportResponse,
   MIN_API_VERSION,
   type MutateResponse,
   RELEASES_URL,
@@ -17,6 +18,7 @@ import { setUserTimeZone } from "../auth/users";
 import { getDb } from "../db/client";
 import type { AppEnv } from "../types";
 import { readChanges } from "./changes";
+import { importRequestSchema, importRows } from "./import";
 import { applyMutationBatch } from "./mutate";
 import { rolloverIfDue } from "./rollover";
 
@@ -114,5 +116,23 @@ export function createSyncRoutes({ now }: SyncRoutesOptions) {
         return c.json(error, 400);
       }
       return c.json({ rows: outcome.rows } satisfies MutateResponse);
+    })
+    .post("/import", requireApiVersion, async (c) => {
+      const parsed = await parseJsonBody(c, importRequestSchema);
+      if (!parsed.ok) return c.json(parsed.error, 400);
+      const outcome = await importRows(
+        getDb(c.env.DB),
+        c.get("userId"),
+        parsed.data,
+        now(),
+        c.req.query("dryRun") === "1",
+      );
+      if (!outcome.ok) {
+        return c.json(
+          { error: "invalid_request", reason: outcome.reason } satisfies ApiErrorResponse,
+          400,
+        );
+      }
+      return c.json(outcome.response satisfies ImportResponse);
     });
 }

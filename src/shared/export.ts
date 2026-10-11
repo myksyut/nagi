@@ -1,60 +1,39 @@
 import { z } from "zod";
-import { BUCKETS } from "./model";
-import {
-  checklistItemSchema,
-  dateSchema,
-  idSchema,
-  pointsSchema,
-  prioritySchema,
-  projectColorSchema,
-  rankSchema,
-  timestampSchema,
-} from "./mutations";
+import { isScheduleConsistent, isStartConsistent } from "./model";
+import { idSchema, projectCreateSchema, taskCreateSchema, timestampSchema } from "./mutations";
 
 /**
- * 書き出しのファイル（`nagi export`）の形。端末のデータとクラウドで同じ形にして、
- * 一つの取り込みで読めるようにする。行は /api/sync で返る行（src/shared/model.ts）のまま並べる（並びに意味はない）。
- * 論理削除の行は入れない。端末のデータの seq は、まだ Worker にない行では 0。
- * クラウドのデータは、GET /api/export のページ（ExportPage）を TUI がこの形につなげる
+ * 書き出し（`nagi export`）の JSON の形。端末のデータとクラウドで同じ形にして、取り込み（POST /api/import）も同じ形を受ける。
+ * 行の項目は、操作（mutations.ts）の作成と同じスキーマで確かめ、そこにない項目（完了・開始・アーカイブの時刻、
+ * 作成・更新の時刻、seq）を足す。論理削除の行は入れない（deletedAt は必ず null）。端末のデータの seq は、
+ * まだ Worker にない行では 0。クラウドのデータは、GET /api/export のページ（ExportPage）を TUI がこの形につなげる
  */
 export const EXPORT_FORMAT = "nagi-export";
 export const EXPORT_FORMAT_VERSION = 1;
 
-const seqSchema = z.number().int().nonnegative();
+export const exportTaskSchema = z
+  .strictObject({
+    ...taskCreateSchema.shape.task.shape,
+    completedAt: timestampSchema.nullable(),
+    startedAt: timestampSchema.nullable(),
+    createdAt: timestampSchema,
+    updatedAt: timestampSchema,
+    deletedAt: z.null(),
+    seq: z.int().nonnegative(),
+  })
+  .refine(isScheduleConsistent, "schedule_mismatch")
+  .refine(isStartConsistent, "started_outside_today");
 
-export const exportTaskSchema = z.object({
-  id: idSchema,
-  title: z.string(),
-  memo: z.string(),
-  bucket: z.enum(BUCKETS),
-  scheduledOn: dateSchema.nullable(),
-  deadlineOn: dateSchema.nullable(),
-  projectId: idSchema.nullable(),
-  rank: rankSchema,
-  arrivedOn: dateSchema.nullable(),
-  checklist: z.array(checklistItemSchema),
-  completedAt: timestampSchema.nullable(),
-  startedAt: timestampSchema.nullable(),
-  priority: prioritySchema.nullable(),
-  points: pointsSchema.nullable(),
-  createdAt: timestampSchema,
-  updatedAt: timestampSchema,
-  deletedAt: z.null(),
-  seq: seqSchema,
-});
-
-export const exportProjectSchema = z.object({
-  id: idSchema,
-  name: z.string(),
-  color: projectColorSchema.nullable(),
+export const exportProjectSchema = z.strictObject({
+  ...projectCreateSchema.shape.project.shape,
   archivedAt: timestampSchema.nullable(),
   createdAt: timestampSchema,
   updatedAt: timestampSchema,
   deletedAt: z.null(),
-  seq: seqSchema,
+  seq: z.int().nonnegative(),
 });
 
-export const exportSchema = z.object({
+export const exportSchema = z.strictObject({
   format: z.literal(EXPORT_FORMAT),
   formatVersion: z.literal(EXPORT_FORMAT_VERSION),
   exportedAt: timestampSchema,
