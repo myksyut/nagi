@@ -36,7 +36,7 @@ Worker がすべてのリクエストを受ける（画面のファイルは配�
 | `GET /api/session` | ログインしているかと、だれとしてかを確かめる（`{"authenticated":true,"userId":"…"}`） |
 | `POST /api/sync`・`POST /api/mutate` | 差分の取得と、操作の書き込み。形は `src/shared/api.ts`・`src/shared/mutations.ts` |
 | `DELETE /api/account` | 本文 `{"confirm":"<userId>"}`。利用者とその行をすべて消す（204）。`userId` が違えば 400 |
-| `GET /api/export` | 論理削除の行を除く全部を、`nagi export` と同じ形の JSON で返す（`Content-Disposition: attachment`）。行は id の順に 1000 行ずつ読みながら流す。ある時点の写しではないので、書き出しのあいだに作った行・消した行は、入ることも入らないこともある（同じ行が二度入ることはない） |
+| `GET /api/export?kind=<projects か tasks>&after=<id>` | 書き出しの 1 ページ。論理削除の行を除く kind の行を、id が `after` より後のもの（省くと最初）から id の順に `{"rows":[…],"next":<次の after か null>}` で返す。1 ページは 1000 行まで、文章の列は UTF-8 で 2 MiB まで（最大のタスクも 1 行で収まる）。D1 への問い合わせはページごとに 1 回。最初のページ（`kind=projects` で `after` なし）にだけ `format`・`formatVersion`・`exportedAt`・`app` が付く。形は `src/shared/export.ts` の `ExportPage` |
 
 - `/api/*` には `Authorization: Bearer <token>` が要る。なし・無効・期限切れは 401 `{"error":"unauthorized"}`。セッションの期限は 1 年で、使うたびに（1 日 1 回まで）延びる。D1 にはトークンの SHA-256 だけを置く
 - 書き込み（POST）は、本文が JSON（`Content-Type: application/json`）でなければ 415。`Origin` は、付いているときだけ Worker の URL と同じかを確かめる（違えば 403）。ブラウザは POST に必ず `Origin` を付けるので、別のサイトからの書き込みは止まり、`Origin` を付けない TUI は通る
@@ -148,7 +148,7 @@ nagi login                             # ログインして、本番（https://n
 nagi --server http://localhost:5317    # 手元の Worker（pnpm dev）につなぐ。環境変数 NAGI_SERVER でも渡せる
 ```
 
-- **ローカル**：ログインしていないあいだは、データを `~/.local/share/nagi/local.db`（SQLite）だけに置く。通信はしない（一番下に「ローカル」と出る）。Worker がやっている処理（操作の検証・通し番号・午前 4 時の日付の切り替え）は、同じ決まりで手元で行う（`tui/src/data/device.rs`）。日付は、この端末のタイムゾーン（環境変数 `TZ` があればそれ）で決める。画面と CLI を同時に使ってよい。控えを取るなら、`nagi export > nagi.json`（または `nagi export --out nagi.json`。`--output` でも同じ）で、データを一つの JSON に書き出す。ログインしていないときは、この端末のデータ（`local.db`）を書き出す。ログインしているとき（クラウド）は、クラウドのデータ（`GET /api/export`）を書き出し、この端末のデータは入らない。どちらも同じ形（`src/shared/export.ts` の `exportSchema`）で、削除済みの行は入らず、完了したタスクとアーカイブしたプロジェクトは入る。`--out` は自分だけが読める権限（0600）で書き、同じ名前のファイルがあれば置き換える。ローカルで `local.db` がまだなければ、何も作らずに「書き出すデータがありません」と出て 1 で終わる
+- **ローカル**：ログインしていないあいだは、データを `~/.local/share/nagi/local.db`（SQLite）だけに置く。通信はしない（一番下に「ローカル」と出る）。Worker がやっている処理（操作の検証・通し番号・午前 4 時の日付の切り替え）は、同じ決まりで手元で行う（`tui/src/data/device.rs`）。日付は、この端末のタイムゾーン（環境変数 `TZ` があればそれ）で決める。画面と CLI を同時に使ってよい。控えを取るなら、`nagi export > nagi.json`（または `nagi export --out nagi.json`。`--output` でも同じ）で、データを一つの JSON に書き出す。ログインしていないときは、この端末のデータ（`local.db`）を書き出す。ログインしているとき（クラウド）は、クラウドのデータを書き出し、この端末のデータは入らない。クラウドのデータは `GET /api/export` のページ（プロジェクト、続けてタスク）を順に読みながら書くので、ある時点の写しではない：書き出しのあいだに作った行・消した行は、入ることも入らないこともある（id の順に、同じ行は 1 回だけ入る）。回数の制限（429）にかかったら、待つ秒数を標準エラーに出して待ち、同じページを 3 回まで読み直す。どちらも同じ形（`src/shared/export.ts` の `exportSchema`）で、削除済みの行は入らず、完了したタスクとアーカイブしたプロジェクトは入る。`--out` は自分だけが読める権限（0600）の一時ファイルに書いてから、同じ名前のファイルと置き換える（途中で失敗したら、前のファイルはそのまま）。ローカルで `local.db` がまだなければ、何も作らずに「書き出すデータがありません」と出て 1 で終わる
 - `local.db` の保存形式が変わる版の nagi は、初めて開くときに今の形から新しい形へ移す。移す前に、隣に控え `local.db.v<N>.bak`（`<N>` は移す前の形の版）を取り、控えが取れなければ移さない。移すのに失敗したら `local.db` は元のまま残る。新しい形のファイルを古い nagi で開くと、開かずに、要る nagi の版を知らせる
 - **クラウド**：ログインしてあるとき（保存してあるログインか `NAGI_TOKEN`）と、Worker を名指ししたとき（`--server`・`NAGI_SERVER`）は、その Worker と同期する。本番のクラウドは、いまは招待した人（`ALLOWED_GITHUB_USER_IDS`）だけが使える
 - 画面からログインするには、Ctrl+K の「ログイン（クラウドと同期する）」。ログインしても、この端末のデータ（`local.db`）はそのまま残り、クラウドへは移らない。ログアウトすると、この端末のデータに戻る

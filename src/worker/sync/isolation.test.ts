@@ -454,9 +454,11 @@ describe("アカウントの削除と書き出し：相手の行は別", () => {
     const deleted = await call(tokenB, "DELETE", "/api/account", { confirm: B });
 
     expect(deleted.status).toBe(204);
-    const exported = (await (await call(tokenA, "GET", "/api/export")).json()) as {
-      tasks: { id: string; title: string }[];
+    const exported = (await (await call(tokenA, "GET", "/api/export?kind=tasks")).json()) as {
+      rows: { id: string; title: string }[];
+      next: string | null;
     };
-    expect(exported.tasks.map((task) => [task.id, task.title])).toEqual([[id, "A の行"]]);
+    expect(exported.rows.map((task) => [task.id, task.title])).toEqual([[id, "A の行"]]);
+    expect(exported.next).toBeNull();
   });
 });

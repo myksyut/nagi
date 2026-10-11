@@ -19,8 +19,13 @@ use crate::model::{
 const REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
 /// アカウントの削除を待つ時間
 const DELETE_TIMEOUT: Duration = Duration::from_secs(30);
-/// 書き出しの応答の頭（状態と見出し）を待つ時間。本文は、行の数に比例して長くかかるので区切らない
-const EXPORT_TIMEOUT: Duration = Duration::from_secs(120);
+/// 書き出しの 1 ページを待つ時間（本文の読み終わりまで）
+const EXPORT_PAGE_TIMEOUT: Duration = Duration::from_secs(120);
+/// 書き出しの 1 ページの本文の上限。Worker のページは数えて 2 MiB（src/worker/account/export.ts の PAGE_BYTES）までで、
+/// JSON にすると制御文字のエスケープで最大 6 倍になる
+const EXPORT_PAGE_LIMIT: u64 = 16 * 1024 * 1024;
+/// 429 に Retry-After がないときに待つ時間（Worker の回数制限の窓）
+const RATE_LIMIT_WAIT: Duration = Duration::from_secs(60);
 /// 再送までの待ち時間（1回目、2回目）
 const RETRY_DELAYS: [Duration; 2] = [Duration::from_millis(500), Duration::from_millis(2000)];
 
@@ -30,6 +35,14 @@ pub struct ApiClient {
     /// Worker の URL（末尾の / なし）
     base: String,
     token: Option<String>,
+}
+
+/// `ApiClient::export_page` の結果
+pub enum ExportReply {
+    /// ページの本文（JSON）
+    Page(String),
+    /// 回数制限にかかった。この時間を待ってから、同じページを読み直す
+    RetryAfter(Duration),
 }
 
 impl ApiClient {
@@ -85,26 +98,41 @@ impl ApiClient {
         Ok((status, text))
     }
 
-    /// クラウドのデータの書き出し（GET /api/export）。Worker は本文を作りながら流すので、本文は読み手として返し、
-    /// 呼ぶ側が読みながら書き先へ写す（全部を手元に持たないので、大きさの上限は付けない）
-    pub fn export_account(&self) -> Result<ureq::BodyReader<'static>, String> {
+    /// 書き出しの 1 ページ（GET /api/export?kind=…&after=…）。本文の JSON（src/shared/export.ts の ExportPage）を
+    /// そのまま返す。429（回数制限）なら、待つ時間（Retry-After）を返す。失敗の文言は、利用者に見せるもの
+    pub fn export_page(&self, kind: &str, after: Option<&str>) -> Result<ExportReply, String> {
         let mut request = self
             .agent
             .get(format!("{}/api/export", self.base))
+            .query("kind", kind)
             .config()
-            .timeout_global(None)
-            .timeout_connect(Some(REQUEST_TIMEOUT))
-            .timeout_recv_response(Some(EXPORT_TIMEOUT))
+            .timeout_global(Some(EXPORT_PAGE_TIMEOUT))
             .build();
+        if let Some(after) = after {
+            request = request.query("after", after);
+        }
         if let Some(token) = &self.token {
             request = request.header("Authorization", format!("Bearer {token}"));
         }
-        let response = request
+        let mut response = request
             .call()
             .map_err(|_| t(Msg::WorkerUnreachable).to_string())?;
         match response.status().as_u16() {
-            200 => Ok(response.into_body().into_reader()),
+            200 => response
+                .body_mut()
+                .with_config()
+                .limit(EXPORT_PAGE_LIMIT)
+                .read_to_string()
+                .map(ExportReply::Page)
+                .map_err(|error| fill(Msg::CliExportReadFailed, &[&error])),
             401 => Err(t(Msg::CliLoginExpiredRelogin).to_string()),
+            429 => Ok(ExportReply::RetryAfter(
+                response
+                    .headers()
+                    .get("Retry-After")
+                    .and_then(|value| value.to_str().ok()?.trim().parse().ok())
+                    .map_or(RATE_LIMIT_WAIT, Duration::from_secs),
+            )),
             status => Err(fill(Msg::ExportFailedHttp, &[&status])),
         }
     }

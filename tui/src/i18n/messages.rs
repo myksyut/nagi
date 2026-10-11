@@ -461,7 +461,8 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
     // cli.rs（アカウントの削除と書き出し）
     CliAccountUsage => "account の使い方は `nagi account delete` です",
     CliYesOnlyAccountDelete => "--yes は account delete で使えます",
-    CliExportReadFailed => "書き出しの応答を最後まで読めませんでした：{0}",
+    CliExportReadFailed => "書き出しの応答を読めませんでした：{0}",
+    CliExportRateLimited => "回数の制限にかかったので、{0} 秒待ってから続けます",
     CliAccountDeleteNoOwner => "ログインしていません（利用者を確かめられません）。先に `nagi login` を実行してください",
     CliAccountDeleteWarning => "{0} のアカウントとデータを消します（タスク {1} 件、プロジェクト {2} 件）。元に戻せません",
     CliAccountDeleteExportHint => "先に `nagi export` で書き出せます。この端末のデータ（local.db）は消しません",

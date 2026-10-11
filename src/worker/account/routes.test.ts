@@ -1,7 +1,13 @@
 import { env } from "cloudflare:test";
 import { and, count, eq } from "drizzle-orm";
 import { beforeEach, describe, expect, it } from "vitest";
-import { exportSchema } from "../../shared/export";
+import {
+  type ExportKind,
+  type ExportPage,
+  exportSchema,
+  exportTaskSchema,
+} from "../../shared/export";
+import type { Project, Task } from "../../shared/model";
 import { createSession } from "../auth/session";
 import { readSignupPolicy, resolveUser } from "../auth/users";
 import { getDb } from "../db/client";
@@ -24,7 +30,7 @@ import {
   insertRawUser,
   resetSyncTables,
 } from "../test/sync-app";
-import { exportAccount } from "./export";
+import { PAGE_BYTES, ROW_OVERHEAD, readExportPage } from "./export";
 
 const db = getDb(env.DB);
 const app = createApp();
@@ -190,8 +196,34 @@ describe("DELETE /api/account", () => {
 describe("GET /api/export", () => {
   /** 並びを決めるための ID（文字列の大小が、末尾の数の大小と同じ） */
   const idOf = (n: number) => `00000000-0000-4000-8000-${String(n).padStart(12, "0")}`;
+  const utf8 = (text: string) => new TextEncoder().encode(text).length;
+  /** readExportPage が数える 1 行の大きさ */
+  const sizeOf = (task: Task) =>
+    utf8(task.title) +
+    utf8(task.memo) +
+    utf8(JSON.stringify(task.checklist)) +
+    utf8(task.rank) +
+    ROW_OVERHEAD;
 
-  it("応答は exportSchema で読め、論理削除の行を含まず、自分の行だけを id の順に返す。2 文字の字下げの JSON で、ファイル名の付いた添付になる", async () => {
+  async function page(token: string, query: string) {
+    const res = await request(token, "GET", `/api/export?${query}`);
+    expect(res.status).toBe(200);
+    return (await res.json()) as ExportPage<Project> & ExportPage<Task>;
+  }
+
+  /** kind のページを、next が null になるまで順に読む */
+  async function pages(token: string, kind: ExportKind) {
+    const read = [];
+    let after: string | null = null;
+    do {
+      const next = await page(token, `kind=${kind}${after === null ? "" : `&after=${after}`}`);
+      read.push(next);
+      after = next.next;
+    } while (after !== null);
+    return read;
+  }
+
+  it("最初のページにだけファイルの頭が付き、論理削除の行と他人の行を除いて、id の順に返す。つなげると exportSchema で読める", async () => {
     const project = await insertRawProject(db, { userId: B, id: idOf(2), seq: 3, name: "仕事" });
     await insertRawProject(db, { userId: B, id: idOf(1), name: "空", seq: 6 });
     await insertRawProject(db, { userId: B, seq: 4, deletedAt: "2026-09-01T00:00:00.000Z" });
@@ -213,92 +245,76 @@ describe("GET /api/export", () => {
     await insertRawTask(db, { userId: OWNER_USER_ID, seq: 1, title: "他人" });
     const token = await tokenOf(B);
 
-    const res = await request(token, "GET", "/api/export");
+    const projectPages = await pages(token, "projects");
+    const taskPages = await pages(token, "tasks");
 
-    expect(res.status).toBe(200);
-    expect(res.headers.get("Content-Type")).toMatch(/^application\/json/);
-    expect(res.headers.get("Content-Disposition")).toMatch(
-      /^attachment; filename="nagi-export-\d{4}-\d{2}-\d{2}\.json"$/,
-    );
-    const text = await res.text();
-    expect(text).toBe(JSON.stringify(JSON.parse(text), null, 2));
-    const document = exportSchema.parse(JSON.parse(text));
+    expect(projectPages).toHaveLength(1);
+    expect(taskPages).toHaveLength(1);
+    expect(taskPages[0]).not.toHaveProperty("format");
+    const { rows, next: _, ...header } = at(projectPages, 0);
+    const document = exportSchema.parse({
+      ...header,
+      projects: rows,
+      tasks: at(taskPages, 0).rows,
+    });
+    expect(document.format).toBe("nagi-export");
+    expect(document.app).toBe("nagi-worker");
     expect(document.tasks.map((task) => task.title)).toEqual(["完了済み", "一つ目\n改行 😀"]);
     expect(document.projects.map((row) => row.name)).toEqual(["空", "仕事"]);
     expect(at(document.tasks, 1).projectId).toBe(project.id);
   });
 
-  it("行がなくても、空の配列の JSON を返す", async () => {
-    const res = await request(await tokenOf(B), "GET", "/api/export");
-
-    const text = await res.text();
-    expect(text).toBe(JSON.stringify(JSON.parse(text), null, 2));
-    const document = exportSchema.parse(JSON.parse(text));
-    expect(document.projects).toEqual([]);
-    expect(document.tasks).toEqual([]);
+  it("kind がない・知らない、after が id の形でないときは 400", async () => {
+    const token = await tokenOf(B);
+    for (const query of ["", "kind=users", "kind=tasks&after=x", "kind=tasks&cursor=1"]) {
+      const res = await request(token, "GET", `/api/export?${query}`);
+      expect(res.status, query).toBe(400);
+    }
   });
 
-  it("1000 行を超えても、全部を id の順に返す", async () => {
+  it("行がなければ、空の 1 ページで終わる", async () => {
+    const token = await tokenOf(B);
+
+    expect(await pages(token, "projects")).toEqual([
+      expect.objectContaining({ rows: [], next: null, format: "nagi-export" }),
+    ]);
+    expect(await pages(token, "tasks")).toEqual([{ rows: [], next: null }]);
+  });
+
+  it("1000 行を超えると 1000 行ずつ id の順に返し、最後のページで next が null になる", async () => {
     const rows = await insertRawTasks(db, 2300, 1);
-    const token = await tokenOf(OWNER_USER_ID);
 
-    const res = await request(token, "GET", "/api/export");
+    const read = await pages(await tokenOf(OWNER_USER_ID), "tasks");
 
-    const document = exportSchema.parse(await res.json());
-    expect(document.tasks.map((task) => task.id)).toEqual(rows.map((row) => row.id).sort());
+    expect(read.map((each) => each.rows.length)).toEqual([1000, 1000, 300]);
+    expect(read.flatMap((each) => each.rows.map((task) => task.id))).toEqual(
+      rows.map((row) => row.id).sort(),
+    );
   });
 
-  it("読んでいるあいだに読み終えた行を書き換えても、その行は 1 回だけ入る", async () => {
+  it("ページのあいだに読み終えた行を書き換えても、その行は 1 回だけ入る", async () => {
     const early = await insertRawTask(db, { id: idOf(0), seq: 1, title: "前" });
     const rows = await insertRawTasks(db, 1500, 2);
     const token = await tokenOf(OWNER_USER_ID);
 
-    const res = await request(token, "GET", "/api/export");
-    const reader = res.body?.getReader();
-    if (reader === undefined) throw new Error("本文がありません");
-    const decoder = new TextDecoder();
-    // 最初のページの途中まで読んだところで、先頭の行を書き換える（seq は今までのどれよりも後になる）
-    let text = "";
-    const first = await reader.read();
-    text += decoder.decode(first.value, { stream: true });
-    expect(text).toContain(early.id);
+    const first = await page(token, "kind=tasks");
+    expect(at(first.rows, 0).id).toBe(early.id);
+    // seq は今までのどれよりも後になる
     await db
       .update(tasks)
       .set({ title: "後", seq: 10_000 })
       .where(and(eq(tasks.userId, OWNER_USER_ID), eq(tasks.id, early.id)));
-    for (;;) {
-      const next = await reader.read();
-      if (next.done) break;
-      text += decoder.decode(next.value, { stream: true });
-    }
-    text += decoder.decode();
+    const second = await page(token, `kind=tasks&after=${first.next}`);
 
-    const document = exportSchema.parse(JSON.parse(text));
-    const ids = document.tasks.map((task) => task.id);
-    expect(ids).toHaveLength(1501);
-    expect(new Set(ids).size).toBe(1501);
+    expect(second.next).toBeNull();
+    const ids = [...first.rows, ...second.rows].map((task) => task.id);
     expect(ids).toEqual([early.id, ...rows.map((row) => row.id).sort()]);
   });
 
-  it("最大のタスク（メモ 20000 文字、200 項目 × 500 文字のチェックリスト）も書き出せる", async () => {
-    const checklist = Array.from({ length: 200 }, (_, i) => ({
-      id: crypto.randomUUID(),
-      title: "あ".repeat(500),
-      done: i % 2 === 0,
-    }));
-    const big = await insertRawTask(db, { seq: 1, memo: "い".repeat(20_000), checklist });
-    const token = await tokenOf(OWNER_USER_ID);
-
-    const res = await request(token, "GET", "/api/export");
-
-    const document = exportSchema.parse(await res.json());
-    expect(document.tasks).toEqual([big]);
-  });
-
-  it("大きい行が続くと、1 ページを文章の量で区切り、全部の行を 1 回ずつ id の順に返す", async () => {
+  it("1 ページは、UTF-8 のバイト数の累計が上限に収まるところまで、id の順。D1 への問い合わせはページごとに 1 回", async () => {
     const rows = [];
     for (let i = 0; i < 30; i += 1) {
-      rows.push(await insertRawTask(db, { id: idOf(i), seq: i + 1, memo: "x".repeat(10_000) }));
+      rows.push(await insertRawTask(db, { id: idOf(i), seq: i + 1, memo: "あ".repeat(3_000) }));
     }
     let queries = 0;
     const counting = getDb(
@@ -312,24 +328,61 @@ describe("GET /api/export", () => {
         },
       }),
     );
-    const read = async (pageBytes?: number) => {
-      queries = 0;
-      const stream = await exportAccount(counting, OWNER_USER_ID, new Date(), pageBytes);
-      return exportSchema.parse(await new Response(stream).json());
+    // メモは 1 行 9000 バイト（3000 文字）なので、35000 バイトなら 1 ページは 3 行
+    const budget = 35_000;
+    const read = [];
+    let after: string | undefined;
+    for (;;) {
+      const next = await readExportPage(counting, OWNER_USER_ID, "tasks", after, budget);
+      read.push(next.rows as Task[]);
+      if (next.next === null) break;
+      after = next.next;
+    }
+
+    expect(read.map((each) => each.length)).toEqual(Array(10).fill(3));
+    for (const [i, each] of read.entries()) {
+      const sizes = each.map(sizeOf);
+      expect(sizes.reduce((a, b) => a + b, 0)).toBeLessThanOrEqual(budget);
+      const following = read[i + 1]?.[0];
+      if (following !== undefined) {
+        expect(sizes.reduce((a, b) => a + b, sizeOf(following))).toBeGreaterThan(budget);
+      }
+    }
+    expect(read.flat()).toEqual(rows);
+    expect(queries).toBe(read.length);
+  });
+
+  it("上限より大きい 1 行は、その 1 行だけで 1 ページになる。最大のタスク（メモ 20000 文字、200 項目 × 500 文字）も、既定の上限なら前後の行と同じページに入る", async () => {
+    const small = await insertRawTask(db, { id: idOf(0), seq: 1 });
+    const checklist = Array.from({ length: 200 }, (_, i) => ({
+      id: crypto.randomUUID(),
+      title: "あ".repeat(500),
+      done: i % 2 === 0,
+    }));
+    const big = await insertRawTask(db, {
+      id: idOf(1),
+      seq: 2,
+      memo: "い".repeat(20_000),
+      checklist,
+    });
+    const last = await insertRawTask(db, { id: idOf(2), seq: 3 });
+    expect(sizeOf(big)).toBeGreaterThan(100_000);
+    expect(sizeOf(big)).toBeLessThan(PAGE_BYTES / 5);
+
+    const read = async (budget: number) => {
+      const all = [];
+      let after: string | undefined;
+      for (;;) {
+        const next = await readExportPage(db, OWNER_USER_ID, "tasks", after, budget);
+        all.push(next.rows);
+        if (next.next === null) return all;
+        after = next.next;
+      }
     };
 
-    const whole = await read();
-    const wholeQueries = queries;
-    // 1 行が約 10000 文字なので、35000 文字なら 1 ページは 3 行
-    const split = await read(35_000);
-    const splitQueries = queries;
-
-    const ids = rows.map((row) => row.id);
-    expect(whole.tasks.map((task) => task.id)).toEqual(ids);
-    expect(split.tasks.map((task) => task.id)).toEqual(ids);
-    expect(split.tasks).toEqual(whole.tasks);
-    // タスクは 10 ページ × 2 回、プロジェクトは 1 回（行がないので、大きさだけ）
-    expect(splitQueries).toBe(10 * 2 + 1);
-    expect(splitQueries).toBeGreaterThan(wholeQueries);
+    expect(await read(100_000)).toEqual([[small], [big], [last]]);
+    expect(await read(PAGE_BYTES)).toEqual([[small, big, last]]);
+    const [only] = await pages(await tokenOf(OWNER_USER_ID), "tasks");
+    expect(exportTaskSchema.array().parse(only?.rows)).toEqual([small, big, last]);
   });
 });

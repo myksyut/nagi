@@ -1,9 +1,11 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import type { ApiErrorResponse } from "../../shared/api";
+import { EXPORT_FORMAT, EXPORT_FORMAT_VERSION, exportPageQuerySchema } from "../../shared/export";
 import { getDb } from "../db/client";
 import type { AppEnv } from "../types";
 import { deleteAccount } from "./delete";
-import { exportAccount } from "./export";
+import { readExportPage } from "./export";
 
 const deleteRequestSchema = z.strictObject({ confirm: z.string() });
 
@@ -24,10 +26,20 @@ export const accountRoutes = new Hono<AppEnv>()
     return c.body(null, 204);
   })
   .get("/export", async (c) => {
-    const now = new Date();
-    const body = await exportAccount(getDb(c.env.DB), c.get("userId"), now);
-    return c.body(body, 200, {
-      "Content-Type": "application/json; charset=UTF-8",
-      "Content-Disposition": `attachment; filename="nagi-export-${now.toISOString().slice(0, 10)}.json"`,
-    });
+    const query = exportPageQuerySchema.safeParse(c.req.query());
+    if (!query.success) {
+      return c.json({ error: "invalid_request", reason: "schema" } satisfies ApiErrorResponse, 400);
+    }
+    const { kind, after } = query.data;
+    const page = await readExportPage(getDb(c.env.DB), c.get("userId"), kind, after);
+    if (kind === "projects" && after === undefined) {
+      return c.json({
+        format: EXPORT_FORMAT,
+        formatVersion: EXPORT_FORMAT_VERSION,
+        exportedAt: new Date().toISOString(),
+        app: "nagi-worker",
+        ...page,
+      });
+    }
+    return c.json(page);
   });

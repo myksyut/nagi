@@ -1,20 +1,22 @@
 //! 画面なしの使い方（CLI）。エージェントや定期の実行から、タスクを追加したり一覧を読んだりする。
 //! データの決まり（置き場・並び順キー・締切で今日へ移すなど）は、画面と同じデータ層（Store）に任せる
 
-use std::io::{Read, Write};
+use std::io::{BufWriter, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 use std::time::{Duration, Instant};
 
+use serde::Deserialize;
+use serde_json::value::RawValue;
 use serde_json::{Value, json};
 
 use crate::auth::{self, DevicePoll};
 use crate::config::Config;
 use crate::data::device::DeviceDb;
 use crate::data::local_db::unsent_count_at;
-use crate::data::net::{ApiClient, NetEvent};
+use crate::data::net::{ApiClient, ExportReply, NetEvent};
 use crate::data::{
     AddTask, Destination, Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReason,
     Store, open_store,
@@ -1229,18 +1231,31 @@ fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
         if login.token.is_none() && !config.is_dev_server() {
             return Err(t(Msg::CliNotLoggedIn).to_string());
         }
-        // Worker は、端末のデータの書き出しと同じ整形（2 文字の字下げ）で流すので、そのまま写す
-        let mut body = ApiClient::new(&config.server, login.token).export_account()?;
+        let client = ApiClient::new(&config.server, login.token);
         return match args.out {
-            Some(out) => write_replacing(Path::new(&out), |file| copy_document(&mut body, file))
-                .map_err(|error| fill(Msg::CliExportWriteFailed, &[&out, &error])),
-            None => match copy_document(&mut body, std::io::stdout().lock()) {
-                // 読む側が先に閉じた（`| head` など）。emit と同じく、そこで終える
-                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
-                    std::process::exit(0)
+            Some(out) => write_replacing(Path::new(&out), |file| {
+                let mut file = BufWriter::new(file);
+                write_cloud_export(&client, &mut file)?;
+                Ok(file.flush()?)
+            })
+            .map_err(|error| match error {
+                ExportError::Fetch(message) => message,
+                ExportError::Write(error) => fill(Msg::CliExportWriteFailed, &[&out, &error]),
+            }),
+            None => {
+                let mut stdout = BufWriter::new(std::io::stdout().lock());
+                match write_cloud_export(&client, &mut stdout).and_then(|()| Ok(stdout.flush()?)) {
+                    Ok(()) => Ok(()),
+                    Err(ExportError::Fetch(message)) => Err(message),
+                    // 読む側が先に閉じた（`| head` など）。emit と同じく、そこで終える
+                    Err(ExportError::Write(error))
+                        if error.kind() == std::io::ErrorKind::BrokenPipe =>
+                    {
+                        std::process::exit(0)
+                    }
+                    Err(ExportError::Write(error)) => Err(error.to_string()),
                 }
-                result => result.map_err(|error| fill(Msg::CliExportReadFailed, &[&error])),
-            },
+            }
         };
     }
     let path = config.device_db_path();
@@ -1267,12 +1282,158 @@ fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
     }
 }
 
-/// 応答の本文を、読みながら書き先へ写す（全部を手元に持たない）。端末のデータの書き出しと同じく、最後に改行を足す
-fn copy_document(body: &mut impl Read, out: impl Write) -> std::io::Result<()> {
-    let mut out = std::io::BufWriter::new(out);
-    std::io::copy(body, &mut out)?;
-    writeln!(out)?;
-    out.flush()
+/// クラウドの書き出しの失敗。Fetch は Worker から読めなかったもの（利用者に見せる文言）、Write は書き先のもの
+enum ExportError {
+    Fetch(String),
+    Write(std::io::Error),
+}
+
+impl From<std::io::Error> for ExportError {
+    fn from(error: std::io::Error) -> Self {
+        ExportError::Write(error)
+    }
+}
+
+/// 429 が続いたときに読み直す回数（ページごと）
+const EXPORT_RATE_LIMIT_RETRIES: usize = 3;
+
+/// GET /api/export の最初のページにだけ付く、ファイルの頭の項目（src/shared/export.ts の ExportHeader）
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ExportHeader<'a> {
+    #[serde(borrow)]
+    format: &'a RawValue,
+    #[serde(borrow)]
+    format_version: &'a RawValue,
+    #[serde(borrow)]
+    exported_at: &'a RawValue,
+    #[serde(borrow)]
+    app: &'a RawValue,
+}
+
+/// GET /api/export の 1 ページの行と続き（src/shared/export.ts の ExportPage）。
+/// 行は Worker が書いた JSON のまま持つ（項目の並びも文字のエスケープも変えずに書くため）
+#[derive(Deserialize)]
+struct ExportPage<'a> {
+    #[serde(borrow)]
+    rows: Vec<&'a RawValue>,
+    next: Option<String>,
+}
+
+fn parse_page<'a, T: Deserialize<'a>>(body: &'a str) -> Result<T, ExportError> {
+    serde_json::from_str(body)
+        .map_err(|error| ExportError::Fetch(fill(Msg::CliExportReadFailed, &[&error])))
+}
+
+/// クラウドのデータを、GET /api/export のページ（projects、続けて tasks。それぞれ next が null になるまで）を
+/// 順に読みながら out へ書く（全部を手元に持たない）。形は、全部を一つの JSON にして `JSON.stringify(document, null, 2)`
+/// で書いたものに改行を足したもの（端末のデータの書き出しと同じく 2 文字の字下げ）で、ページの区切り方によらない。
+/// ページごとに読むので、ある時点の写しではない（id の順に、どの行も 1 回だけ入る）。
+/// 429 は Retry-After だけ待って、同じページを EXPORT_RATE_LIMIT_RETRIES 回まで読み直す（待つことは標準エラーに出す）
+fn write_cloud_export(client: &ApiClient, out: &mut impl Write) -> Result<(), ExportError> {
+    let fetch = |kind: &str, after: Option<&str>| {
+        let mut retries = 0;
+        loop {
+            match client.export_page(kind, after) {
+                Ok(ExportReply::Page(body)) => return Ok(body),
+                Ok(ExportReply::RetryAfter(wait)) if retries < EXPORT_RATE_LIMIT_RETRIES => {
+                    retries += 1;
+                    eprintln!("{}", fill(Msg::CliExportRateLimited, &[&wait.as_secs()]));
+                    thread::sleep(wait);
+                }
+                Ok(ExportReply::RetryAfter(_)) => {
+                    return Err(ExportError::Fetch(fill(Msg::ExportFailedHttp, &[&429])));
+                }
+                Err(message) => return Err(ExportError::Fetch(message)),
+            }
+        }
+    };
+    for kind in ["projects", "tasks"] {
+        let mut after: Option<String> = None;
+        let mut empty = true;
+        loop {
+            let body = fetch(kind, after.as_deref())?;
+            if after.is_none() {
+                if kind == "projects" {
+                    let head: ExportHeader = parse_page(&body)?;
+                    write!(
+                        out,
+                        "{{\n  \"format\": {},\n  \"formatVersion\": {},\n  \"exportedAt\": {},\n  \"app\": {}",
+                        head.format, head.format_version, head.exported_at, head.app
+                    )?;
+                }
+                write!(out, ",\n  \"{kind}\": [")?;
+            }
+            let page: ExportPage = parse_page(&body)?;
+            for row in page.rows {
+                out.write_all(if empty { b"\n    " } else { b",\n    " })?;
+                write_indented(out, row.get(), 2)?;
+                empty = false;
+            }
+            match page.next {
+                Some(next) => after = Some(next),
+                None => break,
+            }
+        }
+        out.write_all(if empty { b"]" } else { b"\n  ]" })?;
+    }
+    out.write_all(b"\n}\n")?;
+    Ok(())
+}
+
+/// 改行して、2 文字 × depth の字下げを書く
+fn write_newline(out: &mut impl Write, depth: usize) -> std::io::Result<()> {
+    out.write_all(b"\n")?;
+    (0..depth).try_for_each(|_| out.write_all(b"  "))
+}
+
+/// 空白のない JSON（Worker の JSON.stringify の出力）を、`JSON.stringify(value, null, 2)` と同じ形にして書く。
+/// 文字列の中身はそのまま写す。depth は、この値を置く深さ
+fn write_indented(out: &mut impl Write, json: &str, depth: usize) -> std::io::Result<()> {
+    let bytes = json.as_bytes();
+    let mut depth = depth;
+    let mut start = 0;
+    let mut i = 0;
+    while i < bytes.len() {
+        match bytes[i] {
+            b'"' => {
+                i += 1;
+                while bytes[i] != b'"' {
+                    i += if bytes[i] == b'\\' { 2 } else { 1 };
+                }
+                i += 1;
+            }
+            b'{' | b'[' if matches!(bytes.get(i + 1), Some(b'}' | b']')) => i += 2,
+            b'{' | b'[' => {
+                out.write_all(&bytes[start..=i])?;
+                depth += 1;
+                write_newline(out, depth)?;
+                i += 1;
+                start = i;
+            }
+            b'}' | b']' => {
+                out.write_all(&bytes[start..i])?;
+                depth -= 1;
+                write_newline(out, depth)?;
+                start = i;
+                i += 1;
+            }
+            b',' => {
+                out.write_all(&bytes[start..=i])?;
+                write_newline(out, depth)?;
+                i += 1;
+                start = i;
+            }
+            b':' => {
+                out.write_all(&bytes[start..i])?;
+                out.write_all(b": ")?;
+                i += 1;
+                start = i;
+            }
+            _ => i += 1,
+        }
+    }
+    out.write_all(&bytes[start..])
 }
 
 /// クラウドのアカウントとデータを消す。先に件数と書き出しの案内を出し、`delete` と打たせる（yes なら聞かない）。
@@ -1335,10 +1496,10 @@ pub fn forget_deleted_login(config: &Config, user_id: &str, token: &str) {
 /// （書き出しの途中で止まっても、前のファイルは壊れない）。
 /// 一時ファイルは、この呼び出しが新しく作れた名前だけを使い、消すのも自分が作ったものだけ
 /// （同じ名前が先にあれば、他の書き出しや前回の残りなので、触らずに別の名前にする）
-fn write_replacing(
+fn write_replacing<E: From<std::io::Error>>(
     path: &Path,
-    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
-) -> std::io::Result<()> {
+    write: impl FnOnce(&mut std::fs::File) -> Result<(), E>,
+) -> Result<(), E> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -1365,13 +1526,14 @@ fn write_replacing(
         match options.open(&temp) {
             Ok(file) => break (temp, file),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
-            Err(error) => return Err(error),
+            Err(error) => return Err(error.into()),
         }
     };
 
-    let written = write(&mut file)
-        .and_then(|()| file.sync_all())
-        .and_then(|()| std::fs::rename(&temp, path));
+    let written = write(&mut file).and_then(|()| {
+        file.sync_all()?;
+        Ok(std::fs::rename(&temp, path)?)
+    });
     if written.is_err() {
         let _ = std::fs::remove_file(&temp);
     }
@@ -1856,34 +2018,39 @@ mod tests {
         dir
     }
 
-    /// GET /api/export を 1 回だけ受けて、本文を chunked で返す Worker の代わり。
-    /// finish が false なら、終わりの印を送らずに切る（Worker が途中で止まったとき）
-    fn serve_export(chunks: Vec<String>, finish: bool) -> String {
+    /// GET /api/export を、answers の順に 1 つずつ（1 回の接続に 1 つ）返す Worker の代わり。
+    /// 答えは（状態, 本文）で、429 には `Retry-After: 0` を付ける。受けた要求のパスを、受けた順に送る
+    fn serve_pages(answers: Vec<(u16, String)>) -> (String, Receiver<String>) {
         let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
         let server = format!("http://{}", listener.local_addr().unwrap());
+        let (paths, received) = channel();
         thread::spawn(move || {
-            let (mut stream, _) = listener.accept().unwrap();
-            let mut request = Vec::new();
-            let mut buf = [0; 4096];
-            while !request.ends_with(b"\r\n\r\n") {
-                let read = stream.read(&mut buf).unwrap();
-                assert!(read > 0, "要求の途中で切れました");
-                request.extend_from_slice(&buf[..read]);
-            }
-            assert!(request.starts_with(b"GET /api/export "));
-            write!(
-                stream,
-                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
-            )
-            .unwrap();
-            for chunk in chunks {
-                write!(stream, "{:x}\r\n{chunk}\r\n", chunk.len()).unwrap();
-            }
-            if finish {
-                stream.write_all(b"0\r\n\r\n").unwrap();
+            for (status, body) in answers {
+                let (mut stream, _) = listener.accept().unwrap();
+                let mut request = Vec::new();
+                let mut buf = [0; 4096];
+                while !request.ends_with(b"\r\n\r\n") {
+                    let read = std::io::Read::read(&mut stream, &mut buf).unwrap();
+                    assert!(read > 0, "要求の途中で切れました");
+                    request.extend_from_slice(&buf[..read]);
+                }
+                let request = String::from_utf8_lossy(&request);
+                let path = request.split(' ').nth(1).unwrap_or_default().to_string();
+                let _ = paths.send(path);
+                let retry = if status == 429 {
+                    "retry-after: 0\r\n"
+                } else {
+                    ""
+                };
+                write!(
+                    stream,
+                    "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\n{retry}connection: close\r\n\r\n{body}",
+                    body.len()
+                )
+                .unwrap();
             }
         });
-        server
+        (server, received)
     }
 
     fn file_names(dir: &Path) -> Vec<std::ffi::OsString> {
@@ -1893,51 +2060,75 @@ mod tests {
             .collect()
     }
 
-    #[test]
-    fn クラウドの書き出しは_応答を読みながら_そのままファイルに書く() {
-        // ureq が本文を一度に読むときの既定の上限（10 MiB）より大きい
-        let chunks: Vec<String> = std::iter::once("{\n  \"tasks\": [".to_string())
-            .chain((0..12).map(|i| format!("\n    \"{i}{}\",", "あ".repeat(350_000))))
-            .chain(std::iter::once("\n    \"x\"\n  ]\n}".to_string()))
-            .collect();
-        let expected = format!("{}\n", chunks.concat());
-        let dir = temp_dir("cloud-export");
-        let config = Config::at(&serve_export(chunks, true), &dir);
-        config.save_session("token-a", Some("user-a")).unwrap();
-        let out_dir = dir.join("out");
-        std::fs::create_dir_all(&out_dir).unwrap();
-        let out = out_dir.join("out.json");
-        std::fs::write(&out, "old").unwrap();
-
-        export(
-            &config,
-            ExportArgs {
-                out: Some(out.to_string_lossy().into_owned()),
-            },
-        )
-        .unwrap();
-
-        assert_eq!(std::fs::read_to_string(&out).unwrap(), expected);
-        assert_eq!(
-            file_names(&out_dir),
-            vec![std::ffi::OsString::from("out.json")]
-        );
-        #[cfg(unix)]
+    // Worker が返す行（JSON.stringify の出力のまま）
+    const P1: &str = r#"{"id":"p1","name":"work \"quoted\" \\ {a:[1,2]}","color":null,"seq":3}"#;
+    const T1: &str = r#"{"id":"t1","title":"one\nline é 😀\u0001\t","checklist":[{"id":"c1","title":"a, b: [c]","done":true}],"points":3}"#;
+    const T2: &str = r#"{"id":"t2","title":"x","checklist":[],"projectId":null}"#;
+    /// P1 と T1・T2 の全部を一つの JSON にして、JSON.stringify(document, null, 2) で書いたもの
+    /// （Worker が 1 回の応答で書き出しを返していたときのファイルは、これに改行を足したもの）
+    const DOCUMENT: &str = r#"{
+  "format": "nagi-export",
+  "formatVersion": 1,
+  "exportedAt": "2026-10-12T01:02:03.004Z",
+  "app": "nagi-worker",
+  "projects": [
+    {
+      "id": "p1",
+      "name": "work \"quoted\" \\ {a:[1,2]}",
+      "color": null,
+      "seq": 3
+    }
+  ],
+  "tasks": [
+    {
+      "id": "t1",
+      "title": "one\nline é 😀\u0001\t",
+      "checklist": [
         {
-            use std::os::unix::fs::PermissionsExt;
-            let mode = std::fs::metadata(&out).unwrap().permissions().mode();
-            assert_eq!(mode & 0o777, 0o600);
+          "id": "c1",
+          "title": "a, b: [c]",
+          "done": true
         }
-        let _ = std::fs::remove_dir_all(&dir);
+      ],
+      "points": 3
+    },
+    {
+      "id": "t2",
+      "title": "x",
+      "checklist": [],
+      "projectId": null
+    }
+  ]
+}"#;
+
+    /// GET /api/export の 1 ページ（first なら、ファイルの頭の項目を付ける）
+    fn page(first: bool, rows: &[&str], next: Option<&str>) -> (u16, String) {
+        let head = if first {
+            r#""format":"nagi-export","formatVersion":1,"exportedAt":"2026-10-12T01:02:03.004Z","app":"nagi-worker","#
+        } else {
+            ""
+        };
+        let next = next.map_or("null".to_string(), |next| format!("\"{next}\""));
+        (
+            200,
+            format!(r#"{{{head}"rows":[{}],"next":{next}}}"#, rows.join(",")),
+        )
     }
 
-    #[test]
-    fn クラウドの書き出しが途中で切れたら_失敗し_前のファイルも一時ファイルもそのまま() {
-        let dir = temp_dir("cloud-export-cut");
-        let config = Config::at(
-            &serve_export(vec!["{\n  \"tasks\": [".to_string()], false),
-            &dir,
-        );
+    /// answers を返す Worker から、前のファイル（"old"）のある out.json へ書き出す。
+    /// 結果、out.json の中身、受けた要求のパス、書き出したあとのフォルダのファイル名を返す
+    fn export_from(
+        name: &str,
+        answers: Vec<(u16, String)>,
+    ) -> (
+        Result<(), String>,
+        String,
+        Vec<String>,
+        Vec<std::ffi::OsString>,
+    ) {
+        let dir = temp_dir(name);
+        let (server, paths) = serve_pages(answers);
+        let config = Config::at(&server, &dir);
         config.save_session("token-a", Some("user-a")).unwrap();
         let out_dir = dir.join("out");
         std::fs::create_dir_all(&out_dir).unwrap();
@@ -1951,13 +2142,117 @@ mod tests {
             },
         );
 
-        assert!(result.is_err(), "{result:?}");
-        assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
-        assert_eq!(
-            file_names(&out_dir),
-            vec![std::ffi::OsString::from("out.json")]
-        );
+        let written = std::fs::read_to_string(&out).unwrap();
+        #[cfg(unix)]
+        if result.is_ok() {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&out).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let names = file_names(&out_dir);
         let _ = std::fs::remove_dir_all(&dir);
+        (result, written, paths.try_iter().collect(), names)
+    }
+
+    #[test]
+    fn クラウドの書き出しは_ページをつなげて_1回の応答で返していたときと同じファイルにする() {
+        let (result, paged, paths, names) = export_from(
+            "cloud-export-paged",
+            vec![
+                page(true, &[P1], Some("p1")),
+                page(false, &[], None),
+                page(false, &[T1], Some("t1")),
+                page(false, &[T2], None),
+            ],
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(paged, format!("{DOCUMENT}\n"));
+        assert_eq!(
+            paths,
+            [
+                "/api/export?kind=projects",
+                "/api/export?kind=projects&after=p1",
+                "/api/export?kind=tasks",
+                "/api/export?kind=tasks&after=t1",
+            ]
+        );
+        assert_eq!(names, [std::ffi::OsString::from("out.json")]);
+
+        let (result, whole, _, _) = export_from(
+            "cloud-export-whole",
+            vec![page(true, &[P1], None), page(false, &[T1, T2], None)],
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(whole, paged);
+
+        let (result, empty, _, _) = export_from(
+            "cloud-export-empty",
+            vec![page(true, &[], None), page(false, &[], None)],
+        );
+        assert_eq!(result, Ok(()));
+        assert_eq!(
+            empty,
+            "{\n  \"format\": \"nagi-export\",\n  \"formatVersion\": 1,\n  \"exportedAt\": \"2026-10-12T01:02:03.004Z\",\n  \"app\": \"nagi-worker\",\n  \"projects\": [],\n  \"tasks\": []\n}\n"
+        );
+    }
+
+    #[test]
+    fn クラウドの書き出しは_429なら_待ってから同じページを読み直す() {
+        let (result, written, paths, _) = export_from(
+            "cloud-export-retry",
+            vec![
+                (429, String::new()),
+                page(true, &[P1], None),
+                (429, String::new()),
+                (429, String::new()),
+                page(false, &[T1, T2], None),
+            ],
+        );
+
+        assert_eq!(result, Ok(()));
+        assert_eq!(written, format!("{DOCUMENT}\n"));
+        assert_eq!(
+            paths,
+            [
+                "/api/export?kind=projects",
+                "/api/export?kind=projects",
+                "/api/export?kind=tasks",
+                "/api/export?kind=tasks",
+                "/api/export?kind=tasks",
+            ]
+        );
+    }
+
+    #[test]
+    fn クラウドの書き出しが途中で失敗したら_前のファイルも一時ファイルもそのまま() {
+        let failures = [
+            (500, String::new()),
+            (401, String::new()),
+            (200, r#"{"rows":[{"id":"#.to_string()),
+        ];
+        for failure in failures {
+            let (result, written, _, names) = export_from(
+                "cloud-export-fail",
+                vec![
+                    page(true, &[P1], None),
+                    page(false, &[T1], Some("t1")),
+                    failure.clone(),
+                ],
+            );
+            assert!(result.is_err(), "{failure:?}");
+            assert_eq!(written, "old");
+            assert_eq!(names, [std::ffi::OsString::from("out.json")]);
+        }
+
+        // 429 が続いたら、読み直すのは EXPORT_RATE_LIMIT_RETRIES 回まで
+        let (result, written, paths, names) = export_from(
+            "cloud-export-limited",
+            vec![(429, String::new()); EXPORT_RATE_LIMIT_RETRIES + 1],
+        );
+        assert_eq!(result, Err(fill(Msg::ExportFailedHttp, &[&429])));
+        assert_eq!(paths.len(), EXPORT_RATE_LIMIT_RETRIES + 1);
+        assert_eq!(written, "old");
+        assert_eq!(names, [std::ffi::OsString::from("out.json")]);
     }
 
     #[test]

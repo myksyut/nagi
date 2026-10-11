@@ -1,189 +1,109 @@
-import { and, asc, eq, gt, isNull, lte, sql } from "drizzle-orm";
-import { EXPORT_FORMAT, EXPORT_FORMAT_VERSION } from "../../shared/export";
+import { and, asc, eq, gt, isNull, lte, or, type SQL, sql } from "drizzle-orm";
+import type { ExportKind, ExportPage } from "../../shared/export";
+import type { Project, Task } from "../../shared/model";
 import type { Db } from "../db/client";
 import { projects, tasks } from "../db/schema";
 import { projectColumns, taskColumns } from "../sync/rows";
 
-/** 1 ページに読む行数の上限 */
-const PAGE_SIZE = 1000;
-/** 1 ページの文章の量の目安（文字数）。1 行だけで超えるときは、その 1 行で 1 ページにする */
-const PAGE_BYTES = 4 * 1024 * 1024;
-/** これだけたまったら、応答へ流す（文字数） */
-const CHUNK_LENGTH = 64 * 1024;
-
-type Sized = { id: string; size: number };
+/** 1 ページの行数の上限 */
+export const PAGE_ROWS = 1000;
 
 /**
- * id の順に、1 ページずつ読む。seq は行を書き換えるたびに進むので、seq で区切ると、読んでいるあいだに
- * 書き換えた行が後のページにもう一度出る。id は変わらないので、どの行も 1 回だけ出る。
- * 1 ページは、まず次の最大 1000 行の id と大きさ（文章の列の長さ）だけを読み、大きさの合計が pageBytes に
- * 収まるところ（最低 1 行）までを決めてから、その id の範囲の全部の列を読む。
- * 読み出しはページごとに 2 回なので、D1 への問い合わせは、利用者の行 N に対して、およそ 2 × ページ数
- * （1000 行ごと、大きい行が続けばそれより細かく）になる
+ * 1 ページの大きさの上限。行の大きさは、長さの決まらない文字列の列（tasks は title・memo・checklist（保存してある
+ * JSON の文字列）・rank、projects は name）の UTF-8 のバイト数（octet_length）に、ほかの列と JSON の鍵・オブジェクトの
+ * ぶんとして ROW_OVERHEAD を足したもの。
+ * - 1 行の最大：長さは UTF-16 の単位で数え、1 単位は UTF-8 で 3 バイトまで（保存した checklist の JSON では、制御文字の
+ *   \u00XX で 6 バイトまで）。title 500 × 3 + memo 20,000 × 3 + checklist 200 × 500 × 6 + 項目の id と鍵 200 × 60
+ *   + rank 1024 + ROW_OVERHEAD で 680 KB 未満（制御文字のない文章なら 380 KB 未満）。どの 1 行も上限に収まるので、
+ *   1 ページが上限を超えることはない
+ * - Worker のメモリ（128 MB）：数えたバイトを B とする。文字列は UTF-16（ASCII でも、2 バイトの文字列に混ざると 2 バイト）で
+ *   1 バイトあたり 2 バイトまで。JSON の文字列は制御文字の \u00XX で 6 倍、UTF-16 なら 12 バイトまで。
+ *   D1 の結果を読むとき（届いた JSON ≤ 6B、その文字列 ≤ 12B、行 ≤ 2B）と、応答を作るとき（行と checklist の
+ *   配列 ≤ 4B、JSON の文字列 ≤ 12B、UTF-8 の本文 ≤ 6B）のどちらも 24B 以下で、B = 2 MiB なら 48 MiB 以下。
+ *   制御文字のない文章なら、その数分の 1
+ * - ページの数：上限の行ばかり 20,000 行なら、1 ページ 3 行（制御文字のない文章なら 5 行）で 6,700（4,000）ページ。
+ *   小さい行は 1000 行ずつなので、行の数で区切られるページは、プロジェクトとタスクで合わせて 21 ほど
  */
-async function* rowsById<Row extends { id: string }>(
-  pageBytes: number,
-  readSizes: (afterId: string | undefined) => Promise<Sized[]>,
-  readRows: (afterId: string | undefined, lastId: string) => Promise<Row[]>,
-): AsyncGenerator<Row> {
-  let afterId: string | undefined;
-  for (;;) {
-    const sizes = await readSizes(afterId);
-    let count = 0;
-    let bytes = 0;
-    for (const { size } of sizes) {
-      if (count > 0 && bytes + size > pageBytes) break;
-      bytes += size;
-      count += 1;
-    }
-    const last = sizes[count - 1];
-    if (last === undefined) return;
-    yield* await readRows(afterId, last.id);
-    if (count === sizes.length && sizes.length < PAGE_SIZE) return;
-    afterId = last.id;
-  }
-}
+export const PAGE_BYTES = 2 * 1024 * 1024;
+export const ROW_OVERHEAD = 1024;
 
-/** 書き出しの JSON（exportSchema の形。2 文字の字下げ）を、ページを読みながら少しずつ作る */
-async function* documentText(
-  db: Db,
-  userId: string,
-  now: Date,
-  pageBytes: number,
-): AsyncGenerator<string> {
-  const head = JSON.stringify(
-    {
-      format: EXPORT_FORMAT,
-      formatVersion: EXPORT_FORMAT_VERSION,
-      exportedAt: now.toISOString(),
-      app: "nagi-worker",
-    },
-    null,
-    2,
+type Keyed = typeof tasks | typeof projects;
+
+/**
+ * after より後の id の最大 PAGE_ROWS 行の大きさと、id の順の大きさの累計（total）・順位（n）・行数（available）。
+ * 大きさだけを読む（本文は、選んだ行だけを外の問い合わせで読む）
+ */
+function pageWindow(db: Db, table: Keyed, size: SQL, userId: string, after: string | undefined) {
+  const sized = db
+    .select({ id: table.id, size: sql<number>`${size} + ${ROW_OVERHEAD}`.as("size") })
+    .from(table)
+    .where(
+      and(
+        eq(table.userId, userId),
+        isNull(table.deletedAt),
+        after === undefined ? undefined : gt(table.id, after),
+      ),
+    )
+    .orderBy(asc(table.id))
+    .limit(PAGE_ROWS)
+    .as("sized");
+  return db.$with("page").as(
+    db
+      .select({
+        id: sized.id,
+        total: sql<number>`sum(${sized.size}) over (order by ${sized.id})`.as("total"),
+        n: sql<number>`row_number() over (order by ${sized.id})`.as("n"),
+        available: sql<number>`count(*) over ()`.as("available"),
+      })
+      .from(sized),
   );
-  // 閉じの "\n}" を外して、続けて配列を書く
-  let text = head.slice(0, -2);
-  // deletedAt は isNull で絞ってあるので、どの行も null
-  const lists = [
-    [
-      "projects",
-      rowsById(
-        pageBytes,
-        (afterId) =>
-          db
-            .select({ id: projects.id, size: sql<number>`length(${projects.name})` })
-            .from(projects)
-            .where(
-              and(
-                eq(projects.userId, userId),
-                isNull(projects.deletedAt),
-                afterId === undefined ? undefined : gt(projects.id, afterId),
-              ),
-            )
-            .orderBy(asc(projects.id))
-            .limit(PAGE_SIZE),
-        (afterId, lastId) =>
-          db
-            .select(projectColumns)
-            .from(projects)
-            .where(
-              and(
-                eq(projects.userId, userId),
-                isNull(projects.deletedAt),
-                afterId === undefined ? undefined : gt(projects.id, afterId),
-                lte(projects.id, lastId),
-              ),
-            )
-            .orderBy(asc(projects.id)),
-      ),
-    ],
-    [
-      "tasks",
-      rowsById(
-        pageBytes,
-        (afterId) =>
-          db
-            .select({
-              id: tasks.id,
-              size: sql<number>`length(${tasks.title}) + length(${tasks.memo}) + length(${tasks.checklist})`,
-            })
-            .from(tasks)
-            .where(
-              and(
-                eq(tasks.userId, userId),
-                isNull(tasks.deletedAt),
-                afterId === undefined ? undefined : gt(tasks.id, afterId),
-              ),
-            )
-            .orderBy(asc(tasks.id))
-            .limit(PAGE_SIZE),
-        (afterId, lastId) =>
-          db
-            .select(taskColumns)
-            .from(tasks)
-            .where(
-              and(
-                eq(tasks.userId, userId),
-                isNull(tasks.deletedAt),
-                afterId === undefined ? undefined : gt(tasks.id, afterId),
-                lte(tasks.id, lastId),
-              ),
-            )
-            .orderBy(asc(tasks.id)),
-      ),
-    ],
-  ] as const;
-  for (const [key, rows] of lists) {
-    text += `,\n  ${JSON.stringify(key)}: [`;
-    let first = true;
-    for await (const row of rows) {
-      text += `${first ? "\n" : ",\n"}    ${JSON.stringify(row, null, 2).replaceAll("\n", "\n    ")}`;
-      first = false;
-      if (text.length >= CHUNK_LENGTH) {
-        yield text;
-        text = "";
-      }
-    }
-    text += first ? "]" : "\n  ]";
-  }
-  yield `${text}\n}`;
+}
+
+/** 次のページの after。大きさで区切ったか、PAGE_ROWS 行を読み切ったときは最後の行の id、そうでなければ終わり */
+function nextAfter(rows: { row: { id: string }; available: number }[]): string | null {
+  const last = rows.at(-1);
+  if (last === undefined) return null;
+  return rows.length < last.available || last.available === PAGE_ROWS ? last.row.id : null;
 }
 
 /**
- * 利用者の行を、論理削除のものを除いて、id の順に、文章が pageBytes（最大 1000 行）に収まるページごとに読み、
- * 書き出しの JSON として流す
- * （全部の行も、JSON の全体も持たない）。
- * ページごとに別の読み出しなので、ある時点の写しではない。読んでいるあいだに作った行・消した行は、入ることも
- * 入らないこともあり、プロジェクトを読み終えてから作ったプロジェクトを指すタスクも入りうる
- * （取り込みは、ないプロジェクトを指すタスクを、プロジェクトから外して入れる）。
- * 最初のページは応答を返す前に読む（読めなければ、途中で切れた 200 ではなく、エラーの応答になる）
+ * 書き出しの 1 ページ。利用者の行を、論理削除のものを除いて、id が after より後のものから id の順に、
+ * 大きさの累計が budget に収まるところまで（最低 1 行、最大 PAGE_ROWS 行）読む。
+ * 大きさを測るのと行を読むのは一つの SQL の文なので、同じ時点の行で区切る（D1 への問い合わせはページごとに 1 回）。
+ * id は変わらないので、ページのあいだに書き換えた行も 1 回だけ出る。ただしページごとに別の時点なので、全体は
+ * ある時点の写しではない（読んでいるあいだに作った行・消した行は、入ることも入らないこともある）
  */
-export async function exportAccount(
+export async function readExportPage(
   db: Db,
   userId: string,
-  now: Date,
-  pageBytes: number = PAGE_BYTES,
-): Promise<ReadableStream<Uint8Array>> {
-  const chunks = documentText(db, userId, now, pageBytes);
-  const encoder = new TextEncoder();
-  const first = await chunks.next();
-  let pending: string | undefined = first.done ? undefined : first.value;
-  return new ReadableStream<Uint8Array>({
-    async pull(controller) {
-      if (pending !== undefined) {
-        controller.enqueue(encoder.encode(pending));
-        pending = undefined;
-        return;
-      }
-      const next = await chunks.next();
-      if (next.done) {
-        controller.close();
-      } else {
-        controller.enqueue(encoder.encode(next.value));
-      }
-    },
-    async cancel() {
-      await chunks.return(undefined);
-    },
-  });
+  kind: ExportKind,
+  after: string | undefined,
+  budget: number = PAGE_BYTES,
+): Promise<ExportPage<Project> | ExportPage<Task>> {
+  if (kind === "projects") {
+    const page = pageWindow(db, projects, sql`octet_length(${projects.name})`, userId, after);
+    const rows = await db
+      .with(page)
+      .select({ row: projectColumns, available: page.available })
+      .from(projects)
+      .innerJoin(page, and(eq(projects.userId, userId), eq(projects.id, page.id)))
+      .where(or(eq(page.n, 1), lte(page.total, budget)))
+      .orderBy(asc(projects.id));
+    return { rows: rows.map(({ row }) => row), next: nextAfter(rows) };
+  }
+  const page = pageWindow(
+    db,
+    tasks,
+    sql`octet_length(${tasks.title}) + octet_length(${tasks.memo}) + octet_length(${tasks.checklist}) + octet_length(${tasks.rank})`,
+    userId,
+    after,
+  );
+  const rows = await db
+    .with(page)
+    .select({ row: taskColumns, available: page.available })
+    .from(tasks)
+    .innerJoin(page, and(eq(tasks.userId, userId), eq(tasks.id, page.id)))
+    .where(or(eq(page.n, 1), lte(page.total, budget)))
+    .orderBy(asc(tasks.id));
+  return { rows: rows.map(({ row }) => row), next: nextAfter(rows) };
 }
