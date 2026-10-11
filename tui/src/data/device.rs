@@ -423,16 +423,52 @@ fn backup_path(path: &Path, version: i64) -> PathBuf {
 
 /// 移す前の控えを取る。VACUUM はトランザクションの中では動かないので、別の接続で取る。
 /// 書き込みの鍵は呼ぶ側が持っているので、控えは移す直前の中身と同じになる。
-/// 前に移しそびれたときの控えが残っていれば、今の中身（同じ版で、より新しい）で置き換える
+/// 前に移しそびれたときの控えが残っていれば、新しい控えを書き終えてから置き換える（取り直しに失敗しても、前の控えは残る）
 fn back_up(path: &Path, backup: &Path) -> Result<(), String> {
-    match std::fs::remove_file(backup) {
+    let mut partial = backup.as_os_str().to_owned();
+    partial.push(".partial");
+    let partial = PathBuf::from(partial);
+    // VACUUM INTO は書き出し先がすでにあると失敗するので、前に途中で止まった書きかけを消す
+    match std::fs::remove_file(&partial) {
         Err(error) if error.kind() != io::ErrorKind::NotFound => return Err(error.to_string()),
         _ => {}
     }
-    let conn = Connection::open(path).map_err(|error| error.to_string())?;
-    conn.execute("VACUUM INTO ?1", params![backup.to_string_lossy()])
-        .map_err(|error| error.to_string())?;
-    Ok(())
+    let written = Connection::open(path)
+        .and_then(|conn| conn.execute("VACUUM INTO ?1", params![partial.to_string_lossy()]))
+        .map_err(|error| error.to_string())
+        // VACUUM INTO は書き出したファイルを fsync しないので、置き換える前にディスクへ書き切る
+        .and_then(|_| {
+            std::fs::File::options()
+                .write(true)
+                .open(&partial)
+                .and_then(|file| file.sync_all())
+                .and_then(|()| std::fs::rename(&partial, backup))
+                .map_err(|error| error.to_string())
+        });
+    if written.is_err() {
+        let _ = std::fs::remove_file(&partial);
+    }
+    written
+}
+
+/// 最後に開いた nagi の版を meta の written_by に残す（新しい形のファイルを古い nagi が断るとき、上げる先の版を示すため）。
+/// 同じ版なら書かずに false を返す（開くたびにはファイルを書き換えない）
+fn stamp_written_by(conn: &Connection) -> rusqlite::Result<bool> {
+    let written_by: Option<String> = conn
+        .query_row(
+            "SELECT value FROM meta WHERE key = 'written_by'",
+            [],
+            |row| row.get(0),
+        )
+        .optional()?;
+    if written_by.as_deref() == Some(crate::VERSION) {
+        return Ok(false);
+    }
+    conn.execute(
+        "INSERT OR REPLACE INTO meta (key, value) VALUES ('written_by', ?1)",
+        params![crate::VERSION],
+    )?;
+    Ok(true)
 }
 
 /// 新しい版の nagi が作ったデータを断る文言。最後に開いた nagi の版（written_by）があれば、どの版に上げればよいかを示す
@@ -484,9 +520,8 @@ impl DeviceDb {
             Ordering::Less => Self::migrate(&mut conn, path, MIGRATIONS)?,
             Ordering::Equal => {}
         }
-        let db = DeviceDb { conn };
-        db.stamp_written_by().map_err(failed)?;
-        Ok(db)
+        stamp_written_by(&conn).map_err(failed)?;
+        Ok(DeviceDb { conn })
     }
 
     #[cfg(test)]
@@ -530,7 +565,8 @@ impl DeviceDb {
     }
 
     /// 版 1 から先へ、migrations を順に当てて版 1 + migrations.len() に移す。移す前に控えを取り、取れなければ移さない。
-    /// 全部を 1 つの書き込みのトランザクションで行い、版はその中で読み直す（画面と CLI が同時に開いても、二重に移さない）。
+    /// 全部を 1 つの書き込みのトランザクションで行い、版はその中で読み直す（画面と CLI が同時に開いても、二重に移さない。
+    /// 待つあいだに、もっと新しい nagi が先へ移していれば断る）。移した nagi の版（written_by）も同じトランザクションで書く。
     /// 途中で失敗したら何も変えずに、控えのパスを含む文言を返す
     fn migrate(conn: &mut Connection, path: &Path, migrations: &[Migration]) -> Result<(), String> {
         let target = 1 + migrations.len() as i64;
@@ -544,8 +580,10 @@ impl DeviceDb {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(failed)?;
         let from = user_version(&tx).map_err(failed)?;
-        if from >= target {
-            return Ok(());
+        match from.cmp(&target) {
+            Ordering::Greater => return Err(newer_format_message(&tx, path)),
+            Ordering::Equal => return Ok(()),
+            Ordering::Less => {}
         }
         let backup = backup_path(path, from);
         back_up(path, &backup).map_err(|error| {
@@ -559,7 +597,8 @@ impl DeviceDb {
             .iter()
             .try_for_each(|step| step(&tx))
             .and_then(|()| tx.pragma_update(None, "user_version", target))
-            .and_then(|()| tx.commit())
+            .and_then(|()| stamp_written_by(&tx))
+            .and_then(|_| tx.commit())
             .map_err(|error| {
                 format!(
                     "この端末のデータ（{}）を版 {from} から版 {target} に移せなかったので、元のまま残しました：{error}。移す前の控えは {} にあります",
@@ -567,27 +606,6 @@ impl DeviceDb {
                     backup.display()
                 )
             })
-    }
-
-    /// 最後に開いた nagi の版を meta の written_by に残す（新しい形のファイルを古い nagi が断るとき、上げる先の版を示すため）。
-    /// 同じ版なら書かずに false を返す（開くたびにはファイルを書き換えない）
-    fn stamp_written_by(&self) -> rusqlite::Result<bool> {
-        let written_by: Option<String> = self
-            .conn
-            .query_row(
-                "SELECT value FROM meta WHERE key = 'written_by'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()?;
-        if written_by.as_deref() == Some(crate::VERSION) {
-            return Ok(false);
-        }
-        self.conn.execute(
-            "INSERT OR REPLACE INTO meta (key, value) VALUES ('written_by', ?1)",
-            params![crate::VERSION],
-        )?;
-        Ok(true)
     }
 
     /// 操作のまとまりを反映する（Worker の applyMutationBatch と同じ）。全部成功か全部失敗。
@@ -1704,6 +1722,18 @@ mod tests {
         rows
     }
 
+    fn written_by(path: &Path) -> Option<String> {
+        Connection::open(path)
+            .unwrap()
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'written_by'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .unwrap()
+    }
+
     fn not_deleted(rows: Vec<SyncRow>) -> Vec<SyncRow> {
         rows.into_iter()
             .filter(|row| match row {
@@ -1831,19 +1861,103 @@ mod tests {
         let before = std::fs::read(&path).unwrap();
 
         let db = DeviceDb::open(&path).unwrap();
-        assert!(!db.stamp_written_by().unwrap());
+        assert!(!stamp_written_by(&db.conn).unwrap());
         drop(db);
 
         assert_eq!(std::fs::read(&path).unwrap(), before);
-        let written_by: String = Connection::open(&path)
-            .unwrap()
+        assert_eq!(written_by(&path).as_deref(), Some(crate::VERSION));
+    }
+
+    #[test]
+    fn 控えの取り直しに失敗しても_前の控えは消えない() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let before = rows_in(&path);
+        let mut conn = Connection::open(&path).unwrap();
+        DeviceDb::migrate(&mut conn, &path, &[first_step, broken_step]).unwrap_err();
+        drop(conn);
+        let backup = backup_path(&path, 1);
+        assert_eq!(rows_in(&backup), before);
+
+        // tasks の表の頁を壊して、取り直す控えを書き出せなくする
+        let conn = Connection::open(&path).unwrap();
+        let page_size: i64 = conn
+            .query_row("PRAGMA page_size", [], |row| row.get(0))
+            .unwrap();
+        let root: i64 = conn
             .query_row(
-                "SELECT value FROM meta WHERE key = 'written_by'",
+                "SELECT rootpage FROM sqlite_master WHERE name = 'tasks'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
-        assert_eq!(written_by, crate::VERSION);
+        drop(conn);
+        let mut bytes = std::fs::read(&path).unwrap();
+        bytes[((root - 1) * page_size) as usize] = 0xff;
+        std::fs::write(&path, bytes).unwrap();
+        let mut conn = Connection::open(&path).unwrap();
+
+        let error = DeviceDb::migrate(&mut conn, &path, &[first_step, second_step]).unwrap_err();
+
+        assert!(error.contains(&backup.display().to_string()), "{error}");
+        assert_eq!(user_version(&conn).unwrap(), 1);
+        assert!(backup.exists());
+        assert_eq!(rows_in(&backup), before);
+    }
+
+    #[test]
+    fn 移す鍵を待つあいだに_もっと新しいnagiが移していたら_断って何も書かない() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let mut conn = Connection::open(&path).unwrap();
+        assert_eq!(user_version(&conn).unwrap(), 1);
+        // 版 1 を読んだあとで、版 3 まで移す nagi 0.9.0 が先に鍵を取って移し終えた
+        Connection::open(&path)
+            .unwrap()
+            .execute_batch(
+                "PRAGMA user_version = 3; INSERT INTO meta VALUES ('written_by', '0.9.0');",
+            )
+            .unwrap();
+        let before = std::fs::read(&path).unwrap();
+
+        let error = DeviceDb::migrate(&mut conn, &path, &[first_step]).unwrap_err();
+
+        assert!(error.contains("0.9.0"), "{error}");
+        assert_eq!(std::fs::read(&path).unwrap(), before);
+        assert!(!backup_path(&path, 3).exists());
+    }
+
+    #[test]
+    fn 移し終えた直後に止まっても_written_byは移したnagiの版になっている() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        let mut conn = Connection::open(&path).unwrap();
+        conn.execute("INSERT INTO meta VALUES ('written_by', '0.0.1')", [])
+            .unwrap();
+
+        // written_by を書けなければ、版も上がらない（同じトランザクションで書く）
+        conn.execute_batch(
+            "CREATE TEMP TRIGGER refuse_stamp BEFORE INSERT ON meta WHEN NEW.key = 'written_by'
+             BEGIN SELECT RAISE(ABORT, 'stamp refused'); END;",
+        )
+        .unwrap();
+        let error = DeviceDb::migrate(&mut conn, &path, &[first_step, second_step]).unwrap_err();
+        assert!(error.contains("stamp refused"), "{error}");
+        assert_eq!(user_version(&conn).unwrap(), 1);
+        conn.execute_batch("DROP TRIGGER refuse_stamp;").unwrap();
+
+        // 移し終えたところで止まる（open の続きは動かない）
+        DeviceDb::migrate(&mut conn, &path, &[first_step, second_step]).unwrap();
+        drop(conn);
+
+        assert_eq!(written_by(&path).as_deref(), Some(crate::VERSION));
+        // 版 1 までしか読めない nagi で開くと、移した nagi の版に上げるよう知らせる
+        let error = DeviceDb::open(&path).err().unwrap();
+        assert!(error.contains(crate::VERSION), "{error}");
+        assert!(!error.contains("0.0.1"), "{error}");
     }
 
     // --- ストアとつないで動かす -----------------------------------------------------------
