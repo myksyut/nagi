@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 本番の Worker
-pub const DEFAULT_SERVER: &str = "https://nagi.wizard1026miya.workers.dev";
+/// 本番の Worker（独自ドメイン）
+pub const DEFAULT_SERVER: &str = "https://api.usenagi.dev";
+
+/// 独自ドメインに移る前の本番の Worker。いまも動いていて、更新していない nagi がここを見る
+const LEGACY_DEFAULT_SERVER: &str = "https://nagi.wizard1026miya.workers.dev";
 
 const PREFS_FILE: &str = "prefs.json";
 
@@ -114,6 +117,115 @@ impl Config {
             Err(reason) if self.is_cloud() => Ok(Some(reason)),
             Err(reason) => Err(reason),
         }
+    }
+
+    /// 独自ドメインに移る前の置き場（`slug(LEGACY_DEFAULT_SERVER)`）のセッションと控えと、
+    /// 覚え書きの「聞いた印」（`import_offered`）の接続先を、新しい名前に移す。
+    /// 移すのは、接続先を名指ししていないときで、同じ種類の新しいファイルがないときだけ。
+    /// 写さず `fs::rename` で動かすのは、ログアウトで新しい方を消したあとに、古い方から黙ってログインし直さないため
+    /// （開いたままの古い nagi はトークンをメモリに持つので、名前が変わっても動き続ける）
+    pub fn migrate_legacy_files(&self) {
+        if self.explicit_server {
+            return;
+        }
+        let old = slug(LEGACY_DEFAULT_SERVER);
+        let new = slug(DEFAULT_SERVER);
+        let rename = |from: &Path, to: &Path| -> bool {
+            if !from.exists() || to.exists() {
+                return false;
+            }
+            match fs::rename(from, to) {
+                Ok(()) => true,
+                Err(error) => {
+                    crate::log::error(&fill(
+                        Msg::ConfigMoveToFailed,
+                        &[&from.display(), &to.display(), &error],
+                    ));
+                    false
+                }
+            }
+        };
+        rename(
+            &self.config_dir.join(format!("session-{old}.json")),
+            &self.session_path(),
+        );
+        if self.migrate_db(
+            &self.data_dir.join(format!("{old}.db")),
+            &self.shared_db_path(),
+        ) {
+            rename(
+                &self.data_dir.join(format!("{old}.db.owner")),
+                &self.shared_db_owner_path(),
+            );
+        }
+        self.migrate_import_offered();
+        let Ok(entries) = fs::read_dir(&self.data_dir) else {
+            return;
+        };
+        let per_user_prefix = format!("{old}--");
+        for entry in entries.flatten() {
+            let name = entry.file_name().to_string_lossy().into_owned();
+            if let Some(user) = name
+                .strip_prefix(&per_user_prefix)
+                .and_then(|rest| rest.strip_suffix(".db"))
+            {
+                self.migrate_db(
+                    &entry.path(),
+                    &self.data_dir.join(format!("{new}--{user}.db")),
+                );
+            }
+        }
+    }
+
+    /// 聞いた印は接続先ごとなので、古い接続先の印を新しい接続先の印に書き換える
+    /// （移したあとの控えで、「この端末のデータをクラウドへ移しますか」を聞き直さない）
+    fn migrate_import_offered(&self) {
+        let old = format!("{LEGACY_DEFAULT_SERVER}|");
+        let mut prefs = self.load_prefs();
+        if !prefs.import_offered.iter().any(|key| key.starts_with(&old)) {
+            return;
+        }
+        prefs.import_offered = prefs
+            .import_offered
+            .into_iter()
+            .map(|key| match key.strip_prefix(&old) {
+                Some(user) => format!("{DEFAULT_SERVER}|{user}"),
+                None => key,
+            })
+            .collect();
+        self.save_prefs(&prefs);
+    }
+
+    /// 控えの `.db` を、`-wal` と `-shm` も一緒に移す。移す前に WAL を本体に畳む。
+    /// 移せないときは、移さずに記録に残す（控えはカーソル 0 から取り直せるので、データは失われない）
+    fn migrate_db(&self, from: &Path, to: &Path) -> bool {
+        if !from.exists() || to.exists() {
+            return false;
+        }
+        let checkpoint = rusqlite::Connection::open_with_flags(
+            from,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_WRITE,
+        )
+        .and_then(|db| db.execute_batch("PRAGMA wal_checkpoint(TRUNCATE)"));
+        if let Err(error) = checkpoint {
+            crate::log::error(&fill(
+                Msg::ConfigCheckpointFailed,
+                &[&from.display(), &error],
+            ));
+            return false;
+        }
+        if let Err(error) = fs::rename(from, to) {
+            crate::log::error(&fill(Msg::ConfigMoveFailed, &[&from.display(), &error]));
+            return false;
+        }
+        // 本体に畳んだあとの -wal は空。残っていれば、本体と一緒に動かす
+        for suffix in ["-wal", "-shm"] {
+            let (mut source, mut target) = (from.as_os_str().to_owned(), to.as_os_str().to_owned());
+            source.push(suffix);
+            target.push(suffix);
+            let _ = fs::rename(source, target);
+        }
+        true
     }
 
     /// Worker（クラウド）と同期して使うか。false なら、この端末だけで使う（ローカル。ログインなし・Worker なし）。
@@ -610,6 +722,80 @@ mod tests {
         assert!(read_back.sidebar_rail);
     }
 
+    fn legacy_name(suffix: &str) -> String {
+        format!("{}{suffix}", slug(LEGACY_DEFAULT_SERVER))
+    }
+
+    fn new_name(suffix: &str) -> String {
+        format!("{}{suffix}", slug(DEFAULT_SERVER))
+    }
+
+    /// WAL モードの控え。返す接続を持っているあいだ、変更は -wal に残る
+    fn wal_db(path: &Path, note: &str) -> rusqlite::Connection {
+        let db = rusqlite::Connection::open(path).unwrap();
+        db.execute_batch("PRAGMA journal_mode=WAL; CREATE TABLE notes (text TEXT)")
+            .unwrap();
+        db.execute("INSERT INTO notes VALUES (?1)", [note]).unwrap();
+        db
+    }
+
+    fn note(path: &Path) -> String {
+        rusqlite::Connection::open(path)
+            .unwrap()
+            .query_row("SELECT text FROM notes", [], |row| row.get(0))
+            .unwrap()
+    }
+
+    fn legacy_home(name: &str) -> Config {
+        let config = Config::at(DEFAULT_SERVER, &temp_dir(name));
+        write_private(
+            &config
+                .config_dir
+                .join(format!("session-{}.json", slug(LEGACY_DEFAULT_SERVER))),
+            r#"{"token":"old-token","user_id":"user-1"}"#,
+        )
+        .unwrap();
+        config
+    }
+
+    #[test]
+    fn 古い接続先のセッションと控えは_新しい接続先の名前に移る() {
+        let config = legacy_home("migrate");
+        let _open = wal_db(
+            &config.data_dir.join(legacy_name("--user-1.db")),
+            "per-user",
+        );
+
+        config.migrate_legacy_files();
+
+        assert_eq!(
+            config.saved_session(),
+            Some(Session {
+                token: "old-token".to_string(),
+                user_id: Some("user-1".to_string()),
+                time_zone: None,
+            })
+        );
+        let moved = config.db_path(Some("user-1"));
+        assert_eq!(file_name(&moved), new_name("--user-1.db"));
+        // -wal に残っていた変更も、移した控えに入っている
+        assert_eq!(note(&moved), "per-user");
+        let left: Vec<_> = [&config.config_dir, &config.data_dir]
+            .iter()
+            .flat_map(|dir| fs::read_dir(dir).unwrap().flatten())
+            .map(|entry| entry.file_name().to_string_lossy().into_owned())
+            .filter(|name| name.contains("workers.dev"))
+            .collect();
+        assert!(left.is_empty(), "{left:?}");
+
+        // ログアウトのあとに起動しても、古い方から黙ってログインし直さない
+        config.clear_token();
+        config.remove_db(Some("user-1"));
+        config.migrate_legacy_files();
+        assert_eq!(config.saved_session(), None);
+        assert!(!config.db_path(Some("user-1")).exists());
+    }
+
     #[cfg(unix)]
     #[test]
     fn 置き場のフォルダとprefsは_自分だけが入れる権限で作る() {
@@ -628,6 +814,112 @@ mod tests {
         assert_eq!(mode(&config.config_dir), 0o700);
         assert_eq!(mode(&config.data_dir), 0o700);
         assert_eq!(mode(&config.prefs_path()), 0o600);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 移したセッションは_自分だけが読める() {
+        use std::os::unix::fs::PermissionsExt;
+        let config = legacy_home("mode");
+        config.migrate_legacy_files();
+        let mode = fs::metadata(config.session_path())
+            .unwrap()
+            .permissions()
+            .mode();
+        assert_eq!(mode & 0o777, 0o600);
+    }
+
+    #[test]
+    fn 利用者を分ける前の控えは_持ち主の印と一緒に移る() {
+        let config = legacy_home("owner");
+        let _open = wal_db(&config.data_dir.join(legacy_name(".db")), "shared");
+        fs::write(config.data_dir.join(legacy_name(".db.owner")), "owner").unwrap();
+
+        config.migrate_legacy_files();
+
+        let moved = config.db_path(Some("owner"));
+        assert_eq!(file_name(&moved), new_name(".db"));
+        assert_eq!(moved, config.db_path(None));
+        assert_eq!(note(&moved), "shared");
+        assert_ne!(config.db_path(Some("other")), moved);
+    }
+
+    #[test]
+    fn 古い接続先の聞いた印は_新しい接続先の印に書き換わる() {
+        let config = legacy_home("offered");
+        let mut prefs = Prefs::default();
+        prefs
+            .import_offered
+            .insert(format!("{LEGACY_DEFAULT_SERVER}|user-1"));
+        prefs
+            .import_offered
+            .insert("https://other.example|u".into());
+        prefs.sidebar_rail = true;
+        config.save_prefs(&prefs);
+
+        config.migrate_legacy_files();
+
+        let moved = config.load_prefs();
+        assert!(
+            moved
+                .import_offered
+                .contains(&config.import_offer_key(Some("user-1")))
+        );
+        assert!(moved.import_offered.contains("https://other.example|u"));
+        assert_eq!(moved.import_offered.len(), 2);
+        assert!(moved.sidebar_rail);
+    }
+
+    #[test]
+    fn 新しい接続先のファイルがすでにあれば_どちらも書き換えない() {
+        let config = legacy_home("both");
+        let old_session = config
+            .config_dir
+            .join(format!("session-{}.json", slug(LEGACY_DEFAULT_SERVER)));
+        config.save_session("new-token", Some("user-2")).unwrap();
+        let old_db = config.data_dir.join(legacy_name("--user-1.db"));
+        drop(wal_db(&old_db, "old"));
+        drop(wal_db(&config.db_path(Some("user-1")), "new"));
+        let old_bytes = fs::read(&old_db).unwrap();
+
+        config.migrate_legacy_files();
+
+        assert_eq!(config.saved_token().as_deref(), Some("new-token"));
+        assert_eq!(
+            fs::read_to_string(old_session).unwrap(),
+            r#"{"token":"old-token","user_id":"user-1"}"#
+        );
+        assert_eq!(note(&config.db_path(Some("user-1"))), "new");
+        assert_eq!(fs::read(&old_db).unwrap(), old_bytes);
+    }
+
+    #[test]
+    fn 接続先を名指ししたときは_何も移さない() {
+        let mut config = legacy_home("explicit");
+        drop(wal_db(
+            &config.data_dir.join(legacy_name("--user-1.db")),
+            "old",
+        ));
+        config.explicit_server = true;
+
+        config.migrate_legacy_files();
+
+        assert_eq!(config.saved_session(), None);
+        assert!(!config.db_path(Some("user-1")).exists());
+        assert!(config.data_dir.join(legacy_name("--user-1.db")).exists());
+    }
+
+    #[test]
+    fn 畳めない控えは_移さずに残す() {
+        let config = legacy_home("broken");
+        let old_db = config.data_dir.join(legacy_name("--user-1.db"));
+        fs::write(&old_db, b"not a database").unwrap();
+
+        config.migrate_legacy_files();
+
+        assert!(old_db.exists());
+        assert!(!config.db_path(Some("user-1")).exists());
+        assert!(config.saved_session().is_some());
     }
 }
 

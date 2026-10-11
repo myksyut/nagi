@@ -8,6 +8,10 @@
   // 版ごとのプレビュー URL（<版の ID の先頭>-nagi.<サブドメイン>.workers.dev）は出さない。
   // 出したままだと、Web 版だったころの古い版が、その URL から開けてしまう
   "preview_urls": false,
+  // 独自ドメイン。ダッシュボードで足した Custom Domain を、デプロイで保つ
+  "routes": [{ "pattern": "api.usenagi.dev", "custom_domain": true }],
+  // 独自ドメインに移る前の nagi は https://nagi.wizard1026miya.workers.dev を見続けるので、この URL も止めない
+  "workers_dev": true,
   "d1_databases": [
     {
       "binding": "DB",

@@ -227,6 +227,9 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
     // config.rs
     ConfigHomeMissing => "データの置き場を決められません。環境変数 HOME（か {0}）が設定されていません",
     ConfigCreateDirFailed => "{0} を作れませんでした：{1}",
+    ConfigMoveToFailed => "{0} を {1} に移せませんでした: {2}",
+    ConfigMoveFailed => "{0} を移せませんでした: {1}",
+    ConfigCheckpointFailed => "{0} を移す前に畳めませんでした: {1}",
     ConfigLocations => "置き場：\n  データ    {0}\n  ログイン  {1}\n  記録      {2}",
 
     // auth.rs
