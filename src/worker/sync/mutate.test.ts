@@ -13,6 +13,7 @@ import {
   asTaskRow,
   at,
   errorBody,
+  insertRawUser,
   mutateBody,
   mutationBatch,
   projectInput,
@@ -20,6 +21,7 @@ import {
   syncBody,
   taskInput,
 } from "../test/sync-app";
+import { MAX_PROJECTS_PER_USER, MAX_TASKS_PER_USER } from "./mutate";
 
 const db = getDb(env.DB);
 
@@ -1187,5 +1189,114 @@ describe("1つの文のバインド変数（100 まで）：行ごとの ID に�
     const resent = (await mutateBody(await post("/api/mutate", update))).rows.map(asTaskRow);
     expect(resent.map((row) => row.id)).toEqual(rows.map((row) => row.id));
     expect(await metaSeq()).toBe(201);
+  });
+});
+
+describe("利用者ごとの行の上限", () => {
+  const SECOND_USER_GITHUB_ID = 2002;
+
+  /** 検証を通さずに、利用者の行を count 件にする（論理削除の行を deleted 件含む）。meta.seq も合わせる */
+  async function fillTasks(userId: string, count: number, deleted = 0) {
+    await env.DB.batch([
+      env.DB.prepare(
+        `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+         INSERT INTO tasks (user_id, id, title, bucket, rank, created_at, updated_at, deleted_at, seq)
+         SELECT ?2, 'filled-' || i, 'filled', 'inbox', 'a0', '2026-01-01T00:00:00.000Z',
+                '2026-01-01T00:00:00.000Z',
+                CASE WHEN i <= ?3 THEN '2026-01-01T00:00:00.000Z' END, i FROM n`,
+      ).bind(count, userId, deleted),
+      env.DB.prepare("UPDATE meta SET value = ?1 WHERE user_id = ?2 AND key = 'seq'").bind(
+        String(count),
+        userId,
+      ),
+    ]);
+  }
+
+  const taskCount = async (userId: string) =>
+    (
+      await env.DB.prepare("SELECT COUNT(*) AS n FROM tasks WHERE user_id = ?")
+        .bind(userId)
+        .first<{ n: number }>()
+    )?.n;
+
+  const createTasks = (count: number) =>
+    mutationBatch(
+      Array.from({ length: count }, () => ({ type: "task.create", task: taskInput() })),
+    );
+
+  it("上限まで 1 件の利用者が 2 件足すと、最初の作成の位置で quota_exceeded になり、何も書かれない", async () => {
+    await fillTasks(OWNER_USER_ID, MAX_TASKS_PER_USER - 1);
+    const { post } = apiApp();
+
+    const res = await post("/api/mutate", createTasks(2));
+
+    expect(res.status).toBe(400);
+    expect(await errorBody(res)).toEqual({
+      error: "invalid_request",
+      reason: "quota_exceeded",
+      mutationIndex: 0,
+    });
+    expect(await taskCount(OWNER_USER_ID)).toBe(MAX_TASKS_PER_USER - 1);
+    expect(await metaSeq()).toBe(MAX_TASKS_PER_USER - 1);
+  });
+
+  it("上限ちょうどまでは足せて、そのあとの 1 件は断られる。論理削除の行も数える", async () => {
+    await fillTasks(OWNER_USER_ID, MAX_TASKS_PER_USER - 1, 50);
+    const { post } = apiApp();
+
+    expect((await post("/api/mutate", createTasks(1))).status).toBe(200);
+    const res = await post("/api/mutate", createTasks(1));
+
+    expect(res.status).toBe(400);
+    expect((await errorBody(res)).reason).toBe("quota_exceeded");
+    expect(await taskCount(OWNER_USER_ID)).toBe(MAX_TASKS_PER_USER);
+  });
+
+  it("ほかの利用者の件数は数えない", async () => {
+    const other = await insertRawUser(db, SECOND_USER_GITHUB_ID);
+    await fillTasks(other, MAX_TASKS_PER_USER);
+    await fillTasks(OWNER_USER_ID, 1);
+    const { post } = apiApp();
+
+    const res = await post("/api/mutate", createTasks(1));
+
+    expect(res.status).toBe(200);
+    expect(await taskCount(OWNER_USER_ID)).toBe(2);
+  });
+
+  it("プロジェクトにも上限がある", async () => {
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < ?1)
+       INSERT INTO projects (user_id, id, name, created_at, updated_at, seq)
+       SELECT ?2, 'p-' || i, 'p', '2026-01-01T00:00:00.000Z', '2026-01-01T00:00:00.000Z', i FROM n`,
+    )
+      .bind(MAX_PROJECTS_PER_USER, OWNER_USER_ID)
+      .run();
+    await env.DB.prepare("UPDATE meta SET value = ? WHERE user_id = ? AND key = 'seq'")
+      .bind(String(MAX_PROJECTS_PER_USER), OWNER_USER_ID)
+      .run();
+    const { post } = apiApp();
+
+    const res = await post(
+      "/api/mutate",
+      mutationBatch([{ type: "project.create", project: projectInput() }]),
+    );
+
+    expect(res.status).toBe(400);
+    expect((await errorBody(res)).reason).toBe("quota_exceeded");
+  });
+
+  it("★ 数えたあとに同時の書き込みが先に入っても、上限を超えず、あとから来た方が quota_exceeded になる", async () => {
+    await fillTasks(OWNER_USER_ID, MAX_TASKS_PER_USER - 1);
+    const { post } = apiApp();
+
+    const responses = await Promise.all([
+      post("/api/mutate", createTasks(1)),
+      post("/api/mutate", createTasks(1)),
+    ]);
+
+    expect(responses.map((res) => res.status).sort()).toEqual([200, 400]);
+    expect(await taskCount(OWNER_USER_ID)).toBe(MAX_TASKS_PER_USER);
+    expect(await metaSeq()).toBe(MAX_TASKS_PER_USER);
   });
 });

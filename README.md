@@ -40,6 +40,28 @@ Worker がすべてのリクエストを受ける（画面のファイルは配�
 - 書き込み（POST）は、本文が JSON（`Content-Type: application/json`）でなければ 415。`Origin` は、付いているときだけ Worker の URL と同じかを確かめる（違えば 403）。ブラウザは POST に必ず `Origin` を付けるので、別のサイトからの書き込みは止まり、`Origin` を付けない TUI は通る
 - `/api/sync` と `/api/mutate` には `X-Api-Version`（`src/shared/api.ts` の `API_VERSION`）を付ける（違えば 409）
 - それ以外の URL は 404 `{"error":"not_found"}`
+- どの応答にも `X-Content-Type-Options: nosniff` などのセキュリティのヘッダが付き、`/api/*` と `/auth/*` の応答は `Cache-Control: no-store`
+
+### 上限と回数制限
+
+1 人の利用者が Worker に及ぼせることを抑える。超えると、画面にはその上限が出る（TUI は文字数と項目数を送る前に確かめるので、ローカルのデータも同じ上限で、あとでクラウドへ移せる）。
+
+| 上限 | 値 | 超えたとき |
+| --- | --- | --- |
+| タイトル | 500 文字 | 400 `schema` |
+| メモ | 20000 文字 | 400 `schema` |
+| チェックリストの項目数と、項目の長さ | 200 項目、500 文字 | 400 `schema` |
+| プロジェクト名 | 100 文字 | 400 `schema` |
+| 利用者ごとのタスク | 20000 件 | 400 `quota_exceeded` |
+| 利用者ごとのプロジェクト | 500 件 | 400 `quota_exceeded` |
+| 本文の大きさ | `/api/*` は 1 MiB、`/auth/*` は 4 KiB | 413 `payload_too_large` |
+| `POST /auth/device/start` | IP ごとに 60 秒で 5 回 | 429 `rate_limited`、`Retry-After: 60` |
+| `POST /auth/device/token`・`POST /auth/logout` | IP ごとに 60 秒で 30 回（5 秒ごとのポーリングは 12 回） | 同上 |
+| `/api/*` | 利用者ごとに 60 秒で 600 回 | 同上 |
+
+- 文字数は JavaScript の `length`（UTF-16 の単位）で数える。値は `src/shared/mutations.ts`（Worker）と `tui/src/model.rs`（TUI）にあり、行数の上限は `src/worker/sync/mutate.ts`。削除したタスク（30 日で消える）も件数に入る
+- 回数制限は Cloudflare の rate limiting の binding（`wrangler.jsonc` の `ratelimits`）。IP は `CF-Connecting-IP`、ないとき（`pnpm dev`）は `local`。`/api/*` の制限はログインを確かめたあとにかかる
+- 期限切れのセッションは、毎日 日本時間の 4 時 17 分に cron（`triggers.crons`）で消す。手元では `pnpm dev --test-scheduled` で動かし、`curl "localhost:5317/__scheduled?cron=17+19+*+*+*"` で呼べる
 
 ### 利用者
 
@@ -348,7 +370,7 @@ uv run --python '>=3.13' --with pytest --with pyte --with pillow pytest scripts/
 
 **Worker**：main にマージすると、GitHub Actions が本番に出す（`.github/workflows/deploy.yml`）。main の CI（Worker と TUI の両方の job）が通ったあとに動き、マイグレーションの前に D1 の Time Travel のブックマークをログに残し、`pnpm release` を実行して、本番の応答（`/api/session` が 401、形の違う本文の `POST /auth/device/token` が 400）を確かめる。Actions の「deploy」を手で動かしても、main をそのまま出し直せる。
 
-使うもの：secret の `CLOUDFLARE_API_TOKEN` と、変数の `CLOUDFLARE_ACCOUNT_ID`。トークンの権限は、このアカウントの Workers のスクリプトと D1 の編集（ほかにアカウントの設定とユーザーの情報の読み取り）で、nagi だけに絞ったものではない。トークンは環境 `production` の secret で、環境は main ブランチからしか使えない（トークンの権限とは別の守り）。出すのは main の最新のコミットだけ（古い CI をやり直しても、古い版で上書きしない）。
+使うもの：secret の `CLOUDFLARE_API_TOKEN` と、変数の `CLOUDFLARE_ACCOUNT_ID`。トークンの権限は、Workers Scripts の Edit と D1 の Edit だけ（独自ドメインを Worker に付けたあとは Workers Routes の Edit も）で、リソースは `nagi` の Worker と `nagi` の D1 に絞る。トークンは環境 `production` の secret で、環境は main ブランチからしか使えない（トークンの権限とは別の守り）。出すのは main の最新のコミットだけ（古い CI をやり直しても、古い版で上書きしない）。
 
 手で出すときは、M7 から次の1つで出せる（CD と同時には動かさない）。
 

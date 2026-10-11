@@ -1,4 +1,4 @@
-import { env } from "cloudflare:test";
+import { env as testEnv } from "cloudflare:test";
 import { exports } from "cloudflare:workers";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDb } from "../db/client";
@@ -17,6 +17,15 @@ import {
 import { SESSION_TTL_MS } from "./session";
 
 const BASE = "https://nagi.example.com";
+
+/** 回数制限は rate-limit.test.ts と index.test.ts で確かめる。ここでは同じ IP から何度呼んでも通す */
+const unlimited: RateLimit = { limit: async () => ({ success: true }) };
+const env: Cloudflare.Env = {
+  ...testEnv,
+  AUTH_START_LIMITER: unlimited,
+  AUTH_POLL_LIMITER: unlimited,
+  API_LIMITER: unlimited,
+};
 const OWNER_GITHUB_USER_ID = 1001; // vitest.config.ts の OWNER_GITHUB_USER_ID（SIGNUP は allowlist で、ほかに許可した人はいない）
 const GITHUB_ACCESS_TOKEN = "gho_test_token";
 
@@ -103,7 +112,7 @@ function postInit(body: unknown, headers: Record<string, string> = {}): RequestI
 }
 
 function post(path: string, body: unknown, headers: Record<string, string> = {}) {
-  return exports.default.fetch(`${BASE}${path}`, postInit(body, headers));
+  return app.request(`${BASE}${path}`, postInit(body, headers), env);
 }
 
 async function sessionRows() {

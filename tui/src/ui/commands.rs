@@ -37,6 +37,7 @@ impl App {
             Failure::TooMany => self.toast_error(&too_many_message(), None),
             // 並び順キーが長くなりすぎた（同じ隙間へ入れ続けた）など
             Failure::Invalid => self.toast_error("保存できませんでした", None),
+            Failure::TooLong(limit) => self.toast_error(&limit.message(), None),
             _ => {}
         }
         self.handle_notices();

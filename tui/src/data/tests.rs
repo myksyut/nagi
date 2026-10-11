@@ -13,8 +13,8 @@ use chrono::{DateTime, Utc};
 
 use super::actions::{AddTask, Destination, Placement, normalize_task_changes};
 use super::store::{
-    ApiFailure, Failure, Notice, PerformOptions, SaveFailure, StopReason, Store, StoreOptions,
-    SyncFlow, Transport,
+    ApiFailure, Failure, Limit, Notice, PerformOptions, Quota, SaveFailure, StopReason, Store,
+    StoreOptions, SyncFlow, Transport,
 };
 use crate::config::Config;
 use crate::dates::{APP_TIME_ZONE, device_time_zone, parse_iso};
@@ -774,4 +774,99 @@ fn タイムゾーンを書いているあいだは_日付が変わっても差�
         Some(told)
     );
     fs::remove_dir_all(dir).unwrap();
+}
+
+fn add(title: &str) -> AddTask {
+    AddTask {
+        title: title.into(),
+        memo: String::new(),
+        project_id: None,
+        to: Destination::Inbox,
+    }
+}
+
+#[test]
+fn 上限ちょうどは送り_超えたら送らずに断る() {
+    let mut h = harness();
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    assert!(h.store.add_task(add(&"あ".repeat(500))).is_ok());
+    assert_eq!(h.batch_count(), 1);
+    // UTF-16 で数える。BMP の外の文字は 2 つに数える
+    assert_eq!(
+        h.store.add_task(add(&"𠮷".repeat(251))),
+        Err(Failure::TooLong(Limit::Title))
+    );
+    assert_eq!(
+        h.store.add_task(add(&"a".repeat(501))),
+        Err(Failure::TooLong(Limit::Title))
+    );
+    let update = |changes: TaskChanges| {
+        move |h: &mut Harness| {
+            h.store
+                .update_task("t1", changes, PerformOptions::default())
+        }
+    };
+    assert_eq!(
+        update(TaskChanges {
+            memo: Some("a".repeat(20001)),
+            ..Default::default()
+        })(&mut h),
+        Err(Failure::TooLong(Limit::Memo))
+    );
+    let items = |count: usize, len: usize| {
+        (0..count)
+            .map(|i| ChecklistItem {
+                id: format!("c{i}"),
+                title: "a".repeat(len),
+                done: false,
+            })
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(
+        update(TaskChanges {
+            checklist: Some(items(201, 1)),
+            ..Default::default()
+        })(&mut h),
+        Err(Failure::TooLong(Limit::ChecklistItems))
+    );
+    assert_eq!(
+        update(TaskChanges {
+            checklist: Some(items(1, 501)),
+            ..Default::default()
+        })(&mut h),
+        Err(Failure::TooLong(Limit::ChecklistItem))
+    );
+    assert!(
+        update(TaskChanges {
+            checklist: Some(items(200, 500)),
+            ..Default::default()
+        })(&mut h)
+        .is_ok()
+    );
+    assert_eq!(
+        h.store.create_project(&"a".repeat(101), &[]),
+        Err(Failure::TooLong(Limit::ProjectName))
+    );
+    // 断った操作は送っていない（上限ちょうどの 2 件だけ）
+    assert_eq!(h.batch_count(), 1);
+    assert_eq!(h.store.pending_count(), 2);
+}
+
+#[test]
+fn 行数の上限で断られたら_上限の知らせを出して表示を戻す() {
+    let mut h = harness();
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    let id = h.store.add_task(add("あふれる")).unwrap().ids[0].clone();
+    h.fail_last(ApiFailure::Rejected {
+        status: 400,
+        reason: Some("quota_exceeded".into()),
+    });
+    assert!(h.store.replica.task(&id).is_none());
+    assert!(matches!(
+        h.store.take_notices().as_slice(),
+        [Notice::SaveFailed {
+            reason: SaveFailure::Quota(Quota::Tasks),
+            ..
+        }]
+    ));
 }

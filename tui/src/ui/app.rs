@@ -817,15 +817,18 @@ impl App {
                     }
                     self.dismiss_undo_toasts();
                     let message = match (reason, undo_conflict) {
-                        (_, true) => "ほかの画面で先に変更されていたため、元に戻せませんでした",
-                        (SaveFailure::Conflict, _) => {
-                            "ほかの画面で先に変更されていたため、保存できませんでした"
+                        (SaveFailure::Quota(quota), _) => quota.message(),
+                        (_, true) => {
+                            "ほかの画面で先に変更されていたため、元に戻せませんでした".to_string()
                         }
-                        _ => "保存できませんでした",
+                        (SaveFailure::Conflict, _) => {
+                            "ほかの画面で先に変更されていたため、保存できませんでした".to_string()
+                        }
+                        _ => "保存できませんでした".to_string(),
                     };
                     let detail = (!failed_creates.is_empty())
                         .then_some("追加した文字は、追加欄（n）に戻してあります");
-                    self.toast_error(message, detail);
+                    self.toast_error(&message, detail);
                 }
                 Notice::Unauthorized { failed_creates }
                 | Notice::VersionMismatch { failed_creates } => {

@@ -18,7 +18,9 @@ use super::undo::{UndoEntry, UndoStack};
 use crate::dates::{iso, logical_date};
 use crate::log;
 use crate::model::{
-    Bucket, MAX_MUTATIONS_PER_BATCH, Mutation, MutationBatch, SyncRow, TaskChanges,
+    Bucket, ChecklistItem, MAX_CHECKLIST_ITEM_LENGTH, MAX_CHECKLIST_ITEMS, MAX_MEMO_LENGTH,
+    MAX_MUTATIONS_PER_BATCH, MAX_PROJECT_NAME_LENGTH, MAX_PROJECTS_PER_USER, MAX_TASKS_PER_USER,
+    MAX_TITLE_LENGTH, Mutation, MutationBatch, SyncRow, TaskChanges,
 };
 use crate::rank::is_valid_rank;
 
@@ -86,9 +88,51 @@ pub enum Failure {
     HasOpenTasks,
     /// 1回の操作の対象が 500（Worker の上限）を超えた
     TooMany,
+    /// 文字数か項目数が Worker の上限を超えている（送らずに断る）
+    TooLong(Limit),
     /// 元に戻す操作が、ほかの画面の変更とぶつかった
     Conflict,
     NothingToUndo,
+}
+
+/// Worker が受け付ける文字数と項目数の上限（src/shared/mutations.ts）のうち、超えたもの
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Limit {
+    Title,
+    Memo,
+    ChecklistItems,
+    ChecklistItem,
+    ProjectName,
+}
+
+impl Limit {
+    pub fn message(self) -> String {
+        match self {
+            Limit::Title => format!("タイトルは {MAX_TITLE_LENGTH} 文字まで"),
+            Limit::Memo => format!("メモは {MAX_MEMO_LENGTH} 文字まで"),
+            Limit::ChecklistItems => format!("チェックリストは {MAX_CHECKLIST_ITEMS} 項目まで"),
+            Limit::ChecklistItem => {
+                format!("チェックリストの項目は {MAX_CHECKLIST_ITEM_LENGTH} 文字まで")
+            }
+            Limit::ProjectName => format!("プロジェクト名は {MAX_PROJECT_NAME_LENGTH} 文字まで"),
+        }
+    }
+}
+
+/// Worker が 400 の `quota_exceeded` で断った、利用者ごとの行数の上限
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Quota {
+    Tasks,
+    Projects,
+}
+
+impl Quota {
+    pub fn message(self) -> String {
+        match self {
+            Quota::Tasks => format!("タスクは {MAX_TASKS_PER_USER} 件まで"),
+            Quota::Projects => format!("プロジェクトは {MAX_PROJECTS_PER_USER} 件まで"),
+        }
+    }
 }
 
 /// 受け付けた操作。ids は操作の対象になった行（作った行を含む）の id。操作した順
@@ -123,6 +167,8 @@ pub enum SaveFailure {
     Network,
     /// 400 など（ほぼ不具合。記録はログに残す）
     Rejected,
+    /// 利用者ごとの行数の上限を超える追加だった
+    Quota(Quota),
     /// ほかの画面が先に変えていた。ストアは最新を取りに行く
     Conflict,
 }
@@ -457,6 +503,9 @@ impl Store {
         if mutations.len() > MAX_MUTATIONS_PER_BATCH {
             return Err(Failure::TooMany);
         }
+        if let Some(limit) = mutations.iter().find_map(exceeded_limit) {
+            return Err(Failure::TooLong(limit));
+        }
         if !mutations.iter().all(is_well_formed) {
             log::error(&format!("操作の形が正しくありません: {mutations:?}"));
             return Err(Failure::Invalid);
@@ -567,7 +616,9 @@ impl Store {
                 let conflict = reason
                     .as_deref()
                     .is_some_and(|reason| CONFLICT_REASONS.contains(&reason));
-                if conflict {
+                if reason.as_deref() == Some(QUOTA_REASON) {
+                    save_failed(self, SaveFailure::Quota(exceeded_quota(&discarded)));
+                } else if conflict {
                     // ほかの画面が先に変えていた。最新を取りに行く（自動で合わせることはしない）
                     save_failed(self, SaveFailure::Conflict);
                     self.sync();
@@ -668,6 +719,60 @@ impl Store {
             self.replica.drop_confirmed(&task_ids, &project_ids);
         }
         self.persist(|local| local.purge_deleted(&cutoff));
+    }
+}
+
+const QUOTA_REASON: &str = "quota_exceeded";
+
+/// 断られた追加がタスクならタスクの上限、タスクの追加がなければプロジェクトの上限
+fn exceeded_quota(discarded: &[PendingBatch]) -> Quota {
+    let adds_task = discarded
+        .iter()
+        .flat_map(|batch| &batch.mutations)
+        .any(|mutation| matches!(mutation, Mutation::TaskCreate { .. }));
+    if adds_task {
+        Quota::Tasks
+    } else {
+        Quota::Projects
+    }
+}
+
+/// UTF-16 の単位での長さ（Worker の JavaScript の `length` と同じ数え方）
+fn utf16_len(text: &str) -> usize {
+    text.encode_utf16().count()
+}
+
+fn checklist_limit(checklist: &[ChecklistItem]) -> Option<Limit> {
+    if checklist.len() > MAX_CHECKLIST_ITEMS {
+        return Some(Limit::ChecklistItems);
+    }
+    checklist
+        .iter()
+        .any(|item| utf16_len(&item.title) > MAX_CHECKLIST_ITEM_LENGTH)
+        .then_some(Limit::ChecklistItem)
+}
+
+/// 送る前の上限の確かめ（Worker の検証で必ず落ちる長さを、送らずに止める）
+fn exceeded_limit(mutation: &Mutation) -> Option<Limit> {
+    let title = |title: &str| (utf16_len(title) > MAX_TITLE_LENGTH).then_some(Limit::Title);
+    let memo = |memo: &str| (utf16_len(memo) > MAX_MEMO_LENGTH).then_some(Limit::Memo);
+    let name =
+        |name: &str| (utf16_len(name) > MAX_PROJECT_NAME_LENGTH).then_some(Limit::ProjectName);
+    match mutation {
+        Mutation::TaskCreate { task } => title(&task.title).or_else(|| memo(&task.memo)),
+        Mutation::TaskUpdate {
+            changes,
+            base_checklist,
+            ..
+        } => changes
+            .title
+            .as_deref()
+            .and_then(title)
+            .or_else(|| changes.memo.as_deref().and_then(memo))
+            .or_else(|| changes.checklist.as_deref().and_then(checklist_limit))
+            .or_else(|| base_checklist.as_deref().and_then(checklist_limit)),
+        Mutation::ProjectCreate { project } => name(&project.name),
+        Mutation::ProjectUpdate { changes, .. } => changes.name.as_deref().and_then(name),
     }
 }
 

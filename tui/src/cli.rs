@@ -447,6 +447,7 @@ impl Session {
                         SaveFailure::Conflict => {
                             "ほかの画面で先に変更されていたため、保存できませんでした".to_string()
                         }
+                        SaveFailure::Quota(quota) => quota.message(),
                         SaveFailure::Rejected => {
                             "保存できませんでした（Worker に受け付けられませんでした）".to_string()
                         }
@@ -500,6 +501,7 @@ fn accepted(result: OpResult) -> Result<(), String> {
         Err(Failure::Stopped) => {
             Err("ログインが切れているか、nagi の版が古くて送れません".to_string())
         }
+        Err(Failure::TooLong(limit)) => Err(limit.message()),
         Err(_) => Err("受け付けられない内容です".to_string()),
     }
 }

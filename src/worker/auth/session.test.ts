@@ -10,6 +10,7 @@ import {
   deleteSession,
   generateSessionToken,
   SESSION_TTL_MS,
+  sweepExpiredSessions,
   validateSession,
 } from "./session";
 
@@ -249,5 +250,53 @@ describe("deleteSession", () => {
   it("知らないトークンでも失敗しない", async () => {
     const db = getDb(env.DB);
     await expect(deleteSession(db, generateSessionToken())).resolves.toBeUndefined();
+  });
+});
+
+describe("sweepExpiredSessions", () => {
+  const now = new Date("2026-06-01T00:00:00.000Z");
+  const row = (id: string, expiresAt: Date) => ({
+    id,
+    userId: OWNER_USER_ID,
+    expiresAt: expiresAt.toISOString(),
+    createdAt: "2025-01-01T00:00:00.000Z",
+  });
+
+  it("期限切れだけが消え、有効なものと、ちょうど今が期限のものは残る", async () => {
+    const db = getDb(env.DB);
+    await db
+      .insert(sessions)
+      .values([
+        row("expired", new Date(now.getTime() - 1)),
+        row("expires-now", now),
+        row("valid", new Date(now.getTime() + DAY_MS)),
+      ]);
+
+    expect(await sweepExpiredSessions(db, now)).toBe(1);
+
+    expect((await db.select().from(sessions)).map((r) => r.id).sort()).toEqual([
+      "expires-now",
+      "valid",
+    ]);
+  });
+
+  it("2500 行（1000 行ずつの回数を超える）でも全部消える", async () => {
+    await env.DB.prepare(
+      `WITH RECURSIVE n(i) AS (SELECT 1 UNION ALL SELECT i + 1 FROM n WHERE i < 2500)
+       INSERT INTO user_sessions (id, user_id, expires_at, created_at)
+       SELECT 'old-' || i, ?1, '2026-01-01T00:00:00.000Z', '2025-01-01T00:00:00.000Z' FROM n`,
+    )
+      .bind(OWNER_USER_ID)
+      .run();
+    const db = getDb(env.DB);
+    await db.insert(sessions).values(row("valid", new Date(now.getTime() + DAY_MS)));
+
+    expect(await sweepExpiredSessions(db, now)).toBe(2500);
+
+    expect((await db.select().from(sessions)).map((r) => r.id)).toEqual(["valid"]);
+  });
+
+  it("消す行がなければ 0", async () => {
+    expect(await sweepExpiredSessions(getDb(env.DB), now)).toBe(0);
   });
 });

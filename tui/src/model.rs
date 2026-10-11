@@ -10,6 +10,16 @@ pub const API_VERSION_HEADER: &str = "X-Api-Version";
 /// 1つのまとまりに入れられる操作の数（Worker の上限）
 pub const MAX_MUTATIONS_PER_BATCH: usize = 500;
 
+/// 文字列と配列の上限（src/shared/mutations.ts と同じ値）。長さは UTF-16 の単位で数える
+pub const MAX_TITLE_LENGTH: usize = 500;
+pub const MAX_MEMO_LENGTH: usize = 20000;
+pub const MAX_CHECKLIST_ITEMS: usize = 200;
+pub const MAX_CHECKLIST_ITEM_LENGTH: usize = 500;
+pub const MAX_PROJECT_NAME_LENGTH: usize = 100;
+/// 利用者ごとの行数の上限（Worker の MAX_TASKS_PER_USER と MAX_PROJECTS_PER_USER。論理削除の行も数える）
+pub const MAX_TASKS_PER_USER: usize = 20000;
+pub const MAX_PROJECTS_PER_USER: usize = 500;
+
 /// タスクの置き場。必ず1つだけ持つ
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]

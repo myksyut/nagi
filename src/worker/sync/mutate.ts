@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, count, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { BatchItem } from "drizzle-orm/batch";
 import type { InvalidRequestReason } from "../../shared/api";
 import {
@@ -16,6 +16,10 @@ import { appliedMutations, meta, projects, tasks } from "../db/schema";
 import { metaRow } from "./meta";
 import { chunk, projectColumns, readRowsByIds, taskColumns, toSyncRows } from "./rows";
 import { advanceSeq, seqFor } from "./seq";
+
+/** 利用者ごとの行の上限。論理削除した行も数える（30 日で物理削除される） */
+export const MAX_TASKS_PER_USER = 20000;
+export const MAX_PROJECTS_PER_USER = 500;
 
 export type MutateOutcome =
   | { ok: true; rows: SyncRow[]; duplicate: boolean }
@@ -124,7 +128,9 @@ async function loadFacts(db: Db, userId: string, batch: ParsedMutationBatch) {
     startedAt: tasks.startedAt,
     deletedAt: tasks.deletedAt,
   };
-  const [targetTasks, openTasks, projectRows] = await Promise.all([
+  const createsTask = batch.mutations.some((mutation) => mutation.type === "task.create");
+  const createsProject = batch.mutations.some((mutation) => mutation.type === "project.create");
+  const [targetTasks, openTasks, projectRows, taskCount, projectCount] = await Promise.all([
     Promise.all(
       chunk(taskIds).map((ids) =>
         db
@@ -160,6 +166,8 @@ async function loadFacts(db: Db, userId: string, batch: ParsedMutationBatch) {
           .where(and(eq(projects.userId, userId), inArray(projects.id, ids))),
       ),
     ),
+    createsTask ? countRows(db, tasks, userId) : 0,
+    createsProject ? countRows(db, projects, userId) : 0,
   ]);
 
   const taskFacts = new Map<string, TaskFacts>();
@@ -170,7 +178,38 @@ async function loadFacts(db: Db, userId: string, batch: ParsedMutationBatch) {
   }
   const projectFacts = new Map<string, ProjectFacts>();
   for (const { id, ...facts } of projectRows.flat()) projectFacts.set(id, facts);
-  return { taskFacts, projectFacts, checklistTexts };
+  return { taskFacts, projectFacts, checklistTexts, taskCount, projectCount };
+}
+
+async function countRows(db: Db, table: typeof tasks | typeof projects, userId: string) {
+  const row = await db.select({ n: count() }).from(table).where(eq(table.userId, userId)).get();
+  return row?.n ?? 0;
+}
+
+/**
+ * 作る行を足すと上限を超えるとき、最初の作成の位置を返す（超えなければ null）。
+ * すでにある ID の作成は、作成にならない（task_exists で別に断る）ので数えない
+ */
+function quotaViolation(
+  batch: ParsedMutationBatch,
+  taskFacts: Map<string, TaskFacts>,
+  projectFacts: Map<string, ProjectFacts>,
+  counts: { taskCount: number; projectCount: number },
+): number | null {
+  const newTasks: number[] = [];
+  const newProjects: number[] = [];
+  batch.mutations.forEach((mutation, index) => {
+    if (mutation.type === "task.create" && !taskFacts.has(mutation.task.id)) {
+      newTasks.push(index);
+    } else if (mutation.type === "project.create" && !projectFacts.has(mutation.project.id)) {
+      newProjects.push(index);
+    }
+  });
+  const over = [
+    counts.taskCount + newTasks.length > MAX_TASKS_PER_USER ? newTasks[0] : undefined,
+    counts.projectCount + newProjects.length > MAX_PROJECTS_PER_USER ? newProjects[0] : undefined,
+  ].filter((index) => index !== undefined);
+  return over.length === 0 ? null : Math.min(...over);
 }
 
 /**
@@ -303,7 +342,9 @@ async function plan(
   | { ok: true; writes: PendingWrite[]; checklistGuards: ChecklistGuard[] }
   | Extract<MutateOutcome, { ok: false }>
 > {
-  const { taskFacts, projectFacts, checklistTexts } = await loadFacts(db, userId, batch);
+  const { taskFacts, projectFacts, checklistTexts, ...counts } = await loadFacts(db, userId, batch);
+  const overQuota = quotaViolation(batch, taskFacts, projectFacts, counts);
+  if (overQuota !== null) return { ok: false, reason: "quota_exceeded", mutationIndex: overQuota };
   try {
     const { writes, checklistChecked } = planWrites(batch, taskFacts, projectFacts);
     const checklistGuards = [...checklistChecked].flatMap((id) => {
@@ -345,6 +386,30 @@ function requireExistingRows(db: Db, userId: string, writes: readonly PendingWri
   ];
 }
 
+/**
+ * 作成で行数が上限を超えていないことを、バッチの最後に確かめる文。同時の書き込みが、数えたあとに
+ * 行を足していて上限を超えたら、meta.seq の value に NULL を入れようとして、バッチ全体を失敗させる
+ * （そのあと検証し直して quota_exceeded）
+ */
+function requireWithinQuota(db: Db, userId: string, writes: readonly PendingWrite[]) {
+  const guard = (table: typeof tasks | typeof projects, max: number) =>
+    db
+      .update(meta)
+      .set({ value: sql`NULL` })
+      .where(
+        and(
+          metaRow(userId, "seq"),
+          sql`(SELECT COUNT(*) FROM ${table} WHERE ${eq(table.userId, userId)}) > ${sql.raw(String(max))}`,
+        ),
+      );
+  const creates = (kind: PendingWrite["kind"]) =>
+    writes.some((write) => write.kind === kind && write.create !== null);
+  return [
+    ...(creates("task") ? [guard(tasks, MAX_TASKS_PER_USER)] : []),
+    ...(creates("project") ? [guard(projects, MAX_PROJECTS_PER_USER)] : []),
+  ];
+}
+
 /** 1つの文に入れる守りの数（1つの守りでバインド変数を3つ使う。1つの文で 100 まで） */
 const CHECKLIST_GUARDS_PER_STATEMENT = 30;
 
@@ -379,6 +444,7 @@ function requireUnchangedChecklists(db: Db, userId: string, guards: readonly Che
  * （D1 には対話的なトランザクションがないので、Drizzle の transaction() は使わない）。
  * バッチの中身は、applied_mutations の INSERT → 更新する行がまだあること・チェックリストが検証のときのままで
  * あることの確認 → meta.seq を行数ぶん進める → 行ごとの INSERT / UPDATE。
+ * 最後に、作成で行数が上限（利用者ごと）を超えていないことを確かめる。
  * 同じ id のまとまりが再び来たら、書き込まずに、対象の行の今の内容を返す
  */
 export async function applyMutationBatch(
@@ -407,6 +473,7 @@ export async function applyMutationBatch(
 
   const timestamp = now.toISOString();
   const count = writes.length;
+  const quotaGuards = requireWithinQuota(db, userId, writes);
   const statements: BatchItem<"sqlite">[] = [
     db.insert(appliedMutations).values({ userId, id: batch.id, appliedAt: timestamp }),
     ...requireExistingRows(db, userId, writes),
@@ -437,6 +504,7 @@ export async function applyMutationBatch(
             .where(and(eq(projects.userId, userId), eq(projects.id, write.id)))
             .returning(projectColumns);
     }),
+    ...quotaGuards,
   ];
 
   let results: unknown[];
@@ -451,8 +519,11 @@ export async function applyMutationBatch(
     throw error;
   }
 
-  // 行の書き込みは、バッチの最後に書き込んだ順で並ぶ（RETURNING の行）
-  const written = results.slice(results.length - count) as (Task[] | Project[])[];
+  // 行の書き込みは、バッチの最後の守りの前に書き込んだ順で並ぶ（RETURNING の行）
+  const written = results.slice(
+    results.length - quotaGuards.length - count,
+    results.length - quotaGuards.length,
+  ) as (Task[] | Project[])[];
   const taskRows: Task[] = [];
   const projectRows: Project[] = [];
   writes.forEach((write, i) => {

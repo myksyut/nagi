@@ -585,11 +585,12 @@ impl App {
                 }
                 true
             }
-            Err(_) => {
-                self.toast_error(
-                    "保存できませんでした",
-                    Some("打った文字は欄に残してあります"),
-                );
+            Err(failure) => {
+                let message = match failure {
+                    crate::data::Failure::TooLong(limit) => limit.message(),
+                    _ => "保存できませんでした".to_string(),
+                };
+                self.toast_error(&message, Some("打った文字は欄に残してあります"));
                 if let Some(detail) = &mut self.detail {
                     detail.edit = Some(edit);
                 }
@@ -607,8 +608,10 @@ impl App {
             },
             options,
         );
-        if matches!(result, Err(crate::data::Failure::Invalid)) {
-            self.toast_error("保存できませんでした", None);
+        match result {
+            Err(crate::data::Failure::Invalid) => self.toast_error("保存できませんでした", None),
+            Err(crate::data::Failure::TooLong(limit)) => self.toast_error(&limit.message(), None),
+            _ => {}
         }
     }
 

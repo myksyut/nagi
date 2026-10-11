@@ -3,6 +3,12 @@
 declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
+    /** /auth/device/start の回数制限（IP ごとに 60 秒で 5 回） */
+    AUTH_START_LIMITER: RateLimit;
+    /** /auth/device/token と /auth/logout の回数制限（IP ごとに 60 秒で 30 回） */
+    AUTH_POLL_LIMITER: RateLimit;
+    /** /api/* の回数制限（利用者ごとに 60 秒で 600 回） */
+    API_LIMITER: RateLimit;
     APP_TIMEZONE: string;
     GITHUB_CLIENT_ID: string;
     /** 利用者を分ける前からあったデータの持ち主としてログインする GitHub ユーザー ID（なければ空） */
