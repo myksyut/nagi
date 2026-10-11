@@ -30,8 +30,12 @@ export type SyncRequest = z.input<typeof syncRequestSchema>;
  * - rows：cursor より新しい行を seq の順に最大 500 行。論理削除した行（deletedAt あり）も入る
  * - nextCursor：次のページの cursor。最後のページ（hasMore: false）では、そこまでの変更をすべて
  *   受け取ったことを表す値（seq のすき間を飛ばす）なので、全部そろえて反映したあとに保存する
+ * - timeZone：Worker が日付の切り替えに使ったタイムゾーン（利用者の設定。なければ APP_TIMEZONE）。
+ *   画面は、この名前で「今日」を出す（Worker と画面の日付をそろえる）。どのページにも付く
  */
-export type SyncResponse =
+export type SyncResponse = { timeZone: string } & SyncChanges;
+/** SyncResponse から timeZone を除いたもの（行の差分の部分） */
+export type SyncChanges =
   | { reset: true }
   | { reset: false; rows: SyncRow[]; nextCursor: number; hasMore: boolean };
 

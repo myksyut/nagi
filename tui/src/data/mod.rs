@@ -35,7 +35,8 @@ pub use store::{Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReas
 ///   日付の切り替え（午前 4 時）と「今日」は、この端末のタイムゾーンで決める
 /// - Worker と同期するとき：相手は通信。user_id は token の持ち主（auth::current_user_id）で、手元の控えは、
 ///   利用者ごとのものを開く。手元の控えが開けなければ、保存せずに動く。
-///   日付は、Worker が切り替える時刻に合わせて APP_TIME_ZONE（日本時間）で決める（利用者ごとの設定は、まだない）
+///   日付は、Worker が切り替える時刻に合わせて、利用者のタイムゾーンで決める。始めは、保存してあるログインの
+///   タイムゾーン（なければ APP_TIME_ZONE の日本時間）で、差分の取得のたびに Worker が返すタイムゾーンに合わせる
 pub fn open_store(
     config: &Config,
     token: Option<String>,
@@ -52,6 +53,12 @@ pub fn open_store(
             tz,
         }));
     }
+    // NAGI_TOKEN の持ち主は、保存してあるログインの持ち主とは限らない。最初の同期の応答で合わせる
+    let tz = config
+        .saved_session()
+        .filter(|_| !Config::has_env_token())
+        .and_then(|session| session.time_zone?.parse().ok())
+        .unwrap_or(APP_TIME_ZONE);
     let client = ApiClient::new(&config.server, token);
     let transport = NetTransport::spawn(client, notify);
     let local = match LocalDb::open(&config.db_path(user_id)) {
@@ -67,6 +74,6 @@ pub fn open_store(
         transport: Box::new(transport),
         local,
         clock: Box::new(Utc::now),
-        tz: APP_TIME_ZONE,
+        tz,
     }))
 }

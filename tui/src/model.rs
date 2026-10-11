@@ -316,6 +316,9 @@ pub struct SyncResponse {
     pub next_cursor: u64,
     #[serde(default)]
     pub has_more: bool,
+    /// Worker が日付の切り替えに使ったタイムゾーン（古い Worker には、ない）
+    #[serde(default)]
+    pub time_zone: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -392,5 +395,11 @@ mod tests {
         assert_eq!(row.seq(), 3);
         let reset: SyncResponse = serde_json::from_value(json!({ "reset": true })).unwrap();
         assert!(reset.reset);
+        assert_eq!(reset.time_zone, None);
+        let page: SyncResponse = serde_json::from_value(
+            json!({ "reset": false, "rows": [], "nextCursor": 0, "hasMore": false, "timeZone": "Europe/Berlin" }),
+        )
+        .unwrap();
+        assert_eq!(page.time_zone.as_deref(), Some("Europe/Berlin"));
     }
 }

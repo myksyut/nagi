@@ -1,5 +1,5 @@
 import { and, asc, eq, gt, lte } from "drizzle-orm";
-import type { SyncRequest, SyncResponse } from "../../shared/api";
+import type { SyncChanges, SyncRequest } from "../../shared/api";
 import type { Db } from "../db/client";
 import { meta, projects, tasks } from "../db/schema";
 import { parseMeta } from "./meta";
@@ -22,7 +22,7 @@ export async function readChanges(
   userId: string,
   { cursor, baseCursor }: SyncRequest,
   pageSize: number = SYNC_PAGE_SIZE,
-): Promise<SyncResponse> {
+): Promise<SyncChanges> {
   // meta と行は1つのバッチ（同じ時点の読み取り）で読み、行は cursor < seq <= その meta.seq に限る。
   // 最後のページの nextCursor にこの meta.seq を使うので、行を読んだあとに別の読み取りで meta.seq を
   // 読んではいけない（そのあいだに書かれた行を、次の同期で取りに行かなくなる）

@@ -1,6 +1,7 @@
+import { eq } from "drizzle-orm";
 import { createMiddleware } from "hono/factory";
 import { getDb } from "../db/client";
-import { OWNER_USER_ID } from "../db/schema";
+import { OWNER_USER_ID, users } from "../db/schema";
 import type { AppEnv } from "../types";
 import { readBearerToken } from "./bearer";
 import { deleteSession, validateSession } from "./session";
@@ -26,7 +27,13 @@ export function isAuthDisabled(env: Pick<Cloudflare.Env, "AUTH_DISABLED">, url: 
  */
 export const requireSession = createMiddleware<AppEnv>(async (c, next) => {
   if (isAuthDisabled(c.env, c.req.url)) {
+    const owner = await getDb(c.env.DB)
+      .select({ timeZone: users.timeZone })
+      .from(users)
+      .where(eq(users.id, OWNER_USER_ID))
+      .get();
     c.set("userId", OWNER_USER_ID);
+    c.set("timeZone", owner?.timeZone ?? null);
     return next();
   }
 
@@ -44,5 +51,6 @@ export const requireSession = createMiddleware<AppEnv>(async (c, next) => {
     return c.json({ error: "unauthorized" }, 401);
   }
   c.set("userId", session.userId);
+  c.set("timeZone", session.timeZone);
   return next();
 });

@@ -99,6 +99,7 @@ impl Harness {
             base_cursor: 0,
             rows: tasks.into_iter().map(SyncRow::Task).collect(),
             cursor: 10,
+            time_zone: None,
         }));
     }
 
@@ -228,6 +229,7 @@ fn 通信できなかったらオフラインになり_操作を止める_差分
         base_cursor: 10,
         rows: vec![],
         cursor: 10,
+        time_zone: None,
     }));
     assert!(h.store.is_online);
     assert!(h.store.complete_tasks(&ids(&["t1"])).is_ok());
@@ -591,6 +593,7 @@ fn 差分の取得のあいだに確定した行は_全件の置き換えのあ�
         base_cursor: 0,
         rows: vec![SyncRow::Task(task("t1", Bucket::Inbox, "a0"))],
         cursor: 20,
+        time_zone: None,
     }));
     assert!(h.task("t1").completed_at.is_some());
     // 取得中に来たきっかけは、終わったあとにもう1回
@@ -601,6 +604,7 @@ fn 差分の取得のあいだに確定した行は_全件の置き換えのあ�
         base_cursor: 20,
         rows: vec![],
         cursor: 20,
+        time_zone: None,
     }));
     assert_eq!(h.sent.borrow().syncs, vec![0, 10, 20, 20]);
 }
@@ -637,6 +641,7 @@ fn 元に戻すと決まりが崩れるときは_戻さずに知らせる() {
         base_cursor: 10,
         rows: vec![SyncRow::Task(moved)],
         cursor: 999,
+        time_zone: None,
     }));
     let sent = h.batch_count();
     // 「未着手に戻した」を戻すと、あとでにあるのに進行中になってしまう
@@ -650,4 +655,34 @@ fn 元に戻すと決まりが崩れるときは_戻さずに知らせる() {
             ..
         }]
     ));
+}
+
+#[test]
+fn 同期の応答のタイムゾーンで_今日が変わる() {
+    let mut h = harness();
+    assert_eq!(h.store.today, TODAY);
+
+    let sync_with = |h: &mut Harness, time_zone: Option<&str>| {
+        h.store.sync();
+        h.store.on_sync_done(Ok(SyncFlow {
+            base_cursor: 10,
+            rows: vec![],
+            cursor: 10,
+            time_zone: time_zone.map(str::to_string),
+        }));
+    };
+    // 東京の 12:00 は、Pago Pago（UTC-11）ではまだ前の日の 16:00
+    sync_with(&mut h, Some("Pacific/Pago_Pago"));
+    assert_eq!(h.store.tz, chrono_tz::Pacific::Pago_Pago);
+    assert_eq!(h.store.today, "2026-10-05");
+
+    // 知らない名前と、ゾーンのない応答（古い Worker）では変わらない
+    sync_with(&mut h, Some("Mars/Base"));
+    sync_with(&mut h, None);
+    assert_eq!(h.store.today, "2026-10-05");
+
+    sync_with(&mut h, Some("Asia/Tokyo"));
+    assert_eq!(h.store.today, TODAY);
+    // 変えるのに、差分を取り直さない（Worker は同じゾーンで切り替えてから行を返している）
+    assert_eq!(h.sent.borrow().syncs.len(), 4);
 }

@@ -8,6 +8,7 @@ use serde_json::json;
 
 use crate::config::Config;
 use crate::data::net::ApiClient;
+use crate::dates::device_time_zone;
 
 /// ログインの持ち主を Worker に聞くときに待つ時間（画面を出す前に聞くので、短くする）
 const WHOAMI_TIMEOUT: Duration = Duration::from_secs(3);
@@ -83,10 +84,13 @@ pub fn start(client: &ApiClient) -> Result<DeviceStart, String> {
     serde_json::from_str(&text).map_err(|_| "ログインの応答が読めません".to_string())
 }
 
-/// 承認されたかを1回確かめる
+/// 承認されたかを1回確かめる。この端末のタイムゾーンを添える（ログインできたときだけ、Worker が利用者に書く）
 pub fn poll(client: &ApiClient, device_code: &str) -> Result<DevicePoll, String> {
     let (status, text) = client
-        .post_raw("/auth/device/token", &json!({ "deviceCode": device_code }))
+        .post_raw(
+            "/auth/device/token",
+            &json!({ "deviceCode": device_code, "timeZone": device_time_zone().name() }),
+        )
         .map_err(|_| "Worker に接続できませんでした".to_string())?;
     if status != 200 {
         return Err(failure(status, &text));
@@ -200,6 +204,7 @@ mod tests {
         Some(Session {
             token: token.to_string(),
             user_id: user_id.map(str::to_string),
+            time_zone: None,
         })
     }
 

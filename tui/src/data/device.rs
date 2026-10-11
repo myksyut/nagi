@@ -576,6 +576,7 @@ impl DeviceDb {
             base_cursor,
             rows,
             cursor: seq,
+            time_zone: None,
         })
     }
 

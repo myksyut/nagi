@@ -1,11 +1,12 @@
 import { Hono } from "hono";
 import { z } from "zod";
+import { timeZoneSchema } from "../../shared/time-zone";
 import { getDb } from "../db/client";
 import type { AppEnv } from "../types";
 import { readBearerToken } from "./bearer";
 import { fetchGitHubUserId, pollDeviceToken, requestDeviceCode } from "./github";
 import { createSession, deleteSession } from "./session";
-import { readSignupPolicy, resolveUser, type SignupPolicy } from "./users";
+import { readSignupPolicy, resolveUser, type SignupPolicy, setUserTimeZone } from "./users";
 
 /**
  * TUI のログイン（GitHub のデバイスフロー）。
@@ -20,7 +21,7 @@ import { readSignupPolicy, resolveUser, type SignupPolicy } from "./users";
  * - config（500）：GITHUB_CLIENT_ID が入っていない、または、だれがログインできるかの設定
  *   （OWNER_GITHUB_USER_ID・SIGNUP・ALLOWED_GITHUB_USER_IDS）が正しくない
  * - github（502）：GitHub とのやり取りの失敗（OAuth App のデバイスフローが無効のときも。理由はログに残す）
- * - invalid_request（400）：/auth/device/token の本文の形が違う
+ * - invalid_request（400）：/auth/device/token の本文の形が違う（timeZone が読めない名前のときも）
  */
 export type AuthErrorResponse = { error: "config" | "github" | "invalid_request" };
 
@@ -50,8 +51,14 @@ export type DeviceTokenResponse =
   | { status: "forbidden" }
   | { status: "ok"; token: string; expiresAt: string; userId: string };
 
-/** GitHub のデバイスコードは 40 文字。念のため長さに上限を付ける */
-const deviceTokenRequestSchema = z.strictObject({ deviceCode: z.string().min(1).max(256) });
+/**
+ * GitHub のデバイスコードは 40 文字。念のため長さに上限を付ける。
+ * timeZone は端末のタイムゾーン。status が ok になるときだけ、利用者の設定に書く
+ */
+const deviceTokenRequestSchema = z.strictObject({
+  deviceCode: z.string().min(1).max(256),
+  timeZone: timeZoneSchema.optional(),
+});
 
 /** ログインに要る設定。欠けている・正しくないものがあれば null（GitHub には問い合わせない） */
 function readLoginConfig(env: Cloudflare.Env): { clientId: string; policy: SignupPolicy } | null {
@@ -99,6 +106,9 @@ export const authRoutes = new Hono<AppEnv>()
     const userId = await resolveUser(db, config.policy, githubUserId, now);
     if (userId === null) return c.json({ status: "forbidden" } satisfies DeviceTokenResponse);
 
+    if (parsed.data.timeZone !== undefined) {
+      await setUserTimeZone(db, userId, parsed.data.timeZone);
+    }
     const session = await createSession(db, userId, now);
     return c.json({
       status: "ok",

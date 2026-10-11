@@ -53,6 +53,8 @@ pub struct SyncFlow {
     pub base_cursor: u64,
     pub rows: Vec<SyncRow>,
     pub cursor: u64,
+    /// Worker が日付の切り替えに使ったタイムゾーン（IANA の名前。この端末のデータと、古い Worker では None）
+    pub time_zone: Option<String>,
 }
 
 /// 通信の出口。結果は Store の on_mutate_done・on_sync_done に届ける
@@ -368,6 +370,9 @@ impl Store {
                 }
                 self.synced = true;
                 self.is_online = true;
+                if let Some(tz) = flow.time_zone.as_deref().and_then(|name| name.parse().ok()) {
+                    self.set_time_zone(tz);
+                }
             }
         }
         if self.sync_again && self.is_active() {
@@ -597,6 +602,22 @@ impl Store {
         self.purge_expired();
         self.sync();
         true
+    }
+
+    /// 日付を決めるタイムゾーンを変える（Worker が、利用者のゾーンとして返したもの）。
+    /// 今日は refresh_day と同じ決まりで計算し直す。Worker は同じゾーンで切り替えてから行を返しているので、
+    /// refresh_day と違って、差分は取り直さない
+    pub fn set_time_zone(&mut self, tz: Tz) {
+        if tz == self.tz {
+            return;
+        }
+        self.tz = tz;
+        *self.lists.borrow_mut() = None;
+        let next = logical_date(self.now(), tz);
+        if next != self.today {
+            self.today = next;
+            self.purge_expired();
+        }
     }
 
     fn purge_cutoff(&self) -> String {

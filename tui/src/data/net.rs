@@ -109,6 +109,7 @@ impl ApiClient {
         let mut cursor = cursor;
         let mut reset = false;
         let mut rows = Vec::new();
+        let mut time_zone = None;
         loop {
             let page: SyncResponse = self.post(
                 "/api/sync",
@@ -131,6 +132,7 @@ impl ApiClient {
                 rows.clear();
                 continue;
             }
+            time_zone = page.time_zone.or(time_zone);
             rows.extend(page.rows);
             cursor = page.next_cursor;
             if !page.has_more {
@@ -141,7 +143,17 @@ impl ApiClient {
             base_cursor,
             rows,
             cursor,
+            time_zone,
         })
+    }
+
+    /// この端末のタイムゾーンを、利用者の設定として Worker に書く
+    pub fn set_time_zone(&self, time_zone: &str) -> Result<(), ApiFailure> {
+        self.post::<serde_json::Value>(
+            "/api/time-zone",
+            &serde_json::json!({ "timeZone": time_zone }),
+        )
+        .map(|_| ())
     }
 
     /// まとまりを送る。通信エラー・タイムアウト・5xx は、同じ ID のまま 2 回まで再送する。

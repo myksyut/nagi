@@ -10,6 +10,8 @@ import {
   syncRequestSchema,
 } from "../../shared/api";
 import { mutationBatchSchema } from "../../shared/mutations";
+import { type TimeZoneResponse, timeZoneRequestSchema } from "../../shared/time-zone";
+import { setUserTimeZone } from "../auth/users";
 import { getDb } from "../db/client";
 import type { AppEnv } from "../types";
 import { readChanges } from "./changes";
@@ -55,7 +57,7 @@ export type SyncRoutesOptions = {
   now: () => Date;
 };
 
-/** /api/sync と /api/mutate。ログインの確認（/api/*）は index.ts でかける。どちらも、ログインしている利用者の行だけを扱う */
+/** /api/sync と /api/mutate と /api/time-zone。ログインの確認（/api/*）は index.ts でかける。どちらも、ログインしている利用者の行だけを扱う */
 export function createSyncRoutes({ now }: SyncRoutesOptions) {
   return new Hono<AppEnv>()
     .post("/sync", requireApiVersion, async (c) => {
@@ -64,8 +66,16 @@ export function createSyncRoutes({ now }: SyncRoutesOptions) {
       const db = getDb(c.env.DB);
       const userId = c.get("userId");
       // 差分を読む前に、必要なら日付の切り替えを進める（移した行も、この応答か次のページで届く）
-      await rolloverIfDue(db, userId, now(), c.env.APP_TIMEZONE);
-      return c.json((await readChanges(db, userId, parsed.data)) satisfies SyncResponse);
+      const timeZone = c.get("timeZone") ?? c.env.APP_TIMEZONE;
+      await rolloverIfDue(db, userId, now(), timeZone);
+      const changes = await readChanges(db, userId, parsed.data);
+      return c.json({ ...changes, timeZone } satisfies SyncResponse);
+    })
+    .post("/time-zone", async (c) => {
+      const parsed = await parseJsonBody(c, timeZoneRequestSchema);
+      if (!parsed.ok) return c.json(parsed.error, 400);
+      await setUserTimeZone(getDb(c.env.DB), c.get("userId"), parsed.data.timeZone);
+      return c.json(parsed.data satisfies TimeZoneResponse);
     })
     .post("/mutate", requireApiVersion, async (c) => {
       const parsed = await parseJsonBody(c, mutationBatchSchema);
