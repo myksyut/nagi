@@ -338,7 +338,7 @@ TUI の画面は `scripts/tui-shot.py` で PNG に撮れる（`uv` が要る。�
 ```sh
 scripts/tui-shot.py --keys 'sleep 1; key n; type 牛乳を買う; key Enter; sleep 0.3; shot add; key Esc; sleep 0.3; key q' --out-dir /tmp/shots
 scripts/tui-shot.py --cmd 'tui/target/release/nagi list --json' --shot list   # 任意のコマンドも同じ PTY で撮れる
-uv run --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py   # 道具のテスト
+uv run --python '>=3.13' --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py   # 道具のテスト（macOS の os.waitid は 3.13 から）
 ```
 
 手順は `sleep` `type` `key` `shot` `resize` `run` `wait-exit`。`<out-dir>/run.json` に終了コードと毎秒の書き出し回数が出る。

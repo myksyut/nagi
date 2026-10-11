@@ -87,8 +87,15 @@ class Terminated(Exception):
         self.signum = signum
 
 
+# 届いた SIGTERM/SIGINT のうち最初のもの。ハンドラは記すだけで、Terminated は Session の待ちの輪か片付けのあとで上げる。
+# ハンドラが例外を上げると、続けて届いたシグナルが片付けの途中（子の起動直後や killpg の手前）を飛ばしてしまう
+_stop_signal: int | None = None
+
+
 def _terminate(signum, _frame) -> None:
-    raise Terminated(signum)
+    global _stop_signal
+    if _stop_signal is None:
+        _stop_signal = signum
 
 
 def _has_exited(pid: int) -> bool:
@@ -334,16 +341,16 @@ def set_winsize(fd: int, cols: int, rows: int) -> None:
 
 
 class TermScreen(pyte.Screen):
-    """crossterm のカーソル位置の問い合わせ（ESC[6n）などに、子の入力へ答える。"""
+    """crossterm のカーソル位置の問い合わせ（ESC[6n）などへの答えを、子への入力の列に積む。書くのは Session。
 
-    fd = -1
+    PTY は書き込みで待たないので、子が入力を読まず詰まっているとその場では書けない。台本の入力と同じ列で順に書く。"""
+
+    def __init__(self, columns: int, lines: int):
+        super().__init__(columns, lines)
+        self.outbox = bytearray()
 
     def write_process_input(self, data: str) -> None:
-        if self.fd >= 0:
-            try:
-                os.write(self.fd, data.encode())
-            except OSError:
-                pass
+        self.outbox += data.encode()
 
 
 class Session:
@@ -370,7 +377,6 @@ class Session:
                 os._exit(127)
         self.pid, self.fd = pid, fd
         os.set_blocking(fd, False)
-        self.screen.fd = fd
 
     # 読み書き
     def _read(self) -> None:
@@ -390,14 +396,39 @@ class Session:
         self.output_bytes += len(data)
         self.stream.feed(data)
 
-    def _readable(self, timeout: float) -> bool:
-        return bool(select.select([self.fd], [], [], timeout)[0])
+    def _write(self) -> None:
+        outbox = self.screen.outbox
+        try:
+            del outbox[: os.write(self.fd, outbox)]
+        except BlockingIOError:
+            pass
+        except OSError:
+            outbox.clear()
+
+    def _io(self, timeout: float) -> bool:
+        """読めれば読み、子への入力が積まれていれば書けるだけ書く。どちらもできなければ False。"""
+        reads = [] if self.eof else [self.fd]
+        writes = [self.fd] if self.screen.outbox and not self.done else []
+        r, w, _ = select.select(reads, writes, [], timeout)
+        if r:
+            self._read()
+        if w:
+            self._write()
+        return bool(r or w)
+
+    def _check(self) -> float:
+        """止めるシグナルか時間切れなら例外にする。残りの秒を返す。"""
+        if _stop_signal is not None:
+            raise Terminated(_stop_signal)
+        left = self.deadline - time.monotonic()
+        if left <= 0:
+            raise Timeout
+        return left
 
     def _drain(self) -> None:
         for _ in range(DRAIN_READS):
-            if time.monotonic() >= self.deadline:
-                raise Timeout
-            if self.eof or not self._readable(0):
+            self._check()
+            if self.eof or not select.select([self.fd], [], [], 0)[0]:
                 return
             self._read()
 
@@ -409,39 +440,21 @@ class Session:
     def pump(self, seconds: float, stop_on_exit: bool = False) -> None:
         until = time.monotonic() + seconds
         while not (self.done and stop_on_exit):
-            now = time.monotonic()
-            if now >= self.deadline:
-                raise Timeout
-            wait = min(until, self.deadline) - now
+            wait = min(until - time.monotonic(), self._check())
             if wait <= 0:
                 break
             if self.done or self.eof:
                 time.sleep(min(wait, 0.01))
                 self._poll_exit()
-            elif self._readable(min(wait, 0.05)):
-                self._read()
-            else:
+            elif not self._io(min(wait, 0.05)):
                 self._poll_exit()
         self._drain()
 
     def send(self, data: bytes) -> None:
-        """書けるだけ書き、残りは子の出力を読みながら待つ。子が入力を読まなくても、時間切れで抜けられる。"""
-        view = memoryview(data)
-        while view and not self.done:
-            now = time.monotonic()
-            if now >= self.deadline:
-                raise Timeout
-            reads = [] if self.eof else [self.fd]
-            r, w, _ = select.select(reads, [self.fd], [], min(self.deadline - now, 0.05))
-            if r:
-                self._read()
-            if w:
-                try:
-                    view = view[os.write(self.fd, view) :]
-                except BlockingIOError:
-                    pass
-                except OSError:
-                    return
+        """端末の答えと同じ列に積んで書き切る。待つ間も子の出力を読む。子が入力を読まなくても、時間切れで抜けられる。"""
+        self.screen.outbox += data
+        while self.screen.outbox and not self.done:
+            self._io(min(self._check(), 0.05))
             self._poll_exit()
 
     def resize(self, cols: int, rows: int) -> None:
@@ -514,6 +527,7 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
 
 
 def run(args: argparse.Namespace) -> int:
+    global _stop_signal
     size = parse_size(args.size)
     steps = parse_script(args.keys)
     argv = build_argv(args)
@@ -562,6 +576,7 @@ def run(args: argparse.Namespace) -> int:
             sys.stderr.write(log.read().decode("utf-8", errors="replace"))
         runs.append({"cmd": cmd, "exit_code": proc.returncode})
 
+    _stop_signal = None
     previous = {s: signal.signal(s, _terminate) for s in TERM_SIGNALS}
     try:
         if own_home:
@@ -595,7 +610,6 @@ def run(args: argparse.Namespace) -> int:
         except Timeout:
             timed_out = True
     finally:
-        signal.pthread_sigmask(signal.SIG_BLOCK, TERM_SIGNALS)  # 片付けの途中で止められないようにする
         try:
             if session is not None:
                 session.kill()
@@ -604,7 +618,8 @@ def run(args: argparse.Namespace) -> int:
         finally:
             for s, handler in previous.items():
                 signal.signal(s, handler)
-            signal.pthread_sigmask(signal.SIG_UNBLOCK, TERM_SIGNALS)
+    if _stop_signal is not None:
+        raise Terminated(_stop_signal)
 
     wall = time.monotonic() - started
     buckets = int(wall) + 1

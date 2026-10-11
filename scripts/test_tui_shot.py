@@ -1,6 +1,6 @@
 """scripts/tui-shot.py の確かめ。
 
-実行: uv run --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py
+実行: uv run --python '>=3.13' --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py
 """
 
 import importlib.util
@@ -226,18 +226,20 @@ def test_bad_option_leaves_no_temporary_home(tmp_path):
     assert not homes_left(tmp_path)
 
 
-@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
-def test_termination_signal_cleans_up_children_and_home(tmp_path, marker, sig):
+# 2 つが同時に届くと、1 つ目で片付けを始めた直後に 2 つ目のハンドラが走る
+@pytest.mark.parametrize("sigs", [(signal.SIGTERM,), (signal.SIGINT,), (signal.SIGINT, signal.SIGTERM)])
+def test_termination_signal_cleans_up_children_and_home(tmp_path, marker, sigs):
     keys = f"run sleep {marker} & touch $HOME/ready\\; wait"
     proc = spawn(tmp_path, "--cmd", f"trap '' HUP; sleep {marker}", "--keys", keys, "--timeout", "30")
     until = time.monotonic() + 10
     while not list((tmp_path / "tmp").glob("tui-shot-home-*/ready")):
         assert time.monotonic() < until and proc.poll() is None
         time.sleep(0.05)
-    proc.send_signal(sig)
+    for sig in sigs:
+        proc.send_signal(sig)
     code = finish(proc, 5)
     assert not alive(marker) and not homes_left(tmp_path)
-    assert code == 128 + sig
+    assert code == 128 + sigs[0]
 
 
 def test_first_output_is_read_while_a_run_step_runs(shot, tmp_path):
@@ -256,3 +258,13 @@ def test_typed_input_is_delivered_in_full_and_never_outlasts_timeout(tmp_path, m
     proc = spawn(tmp_path, "--cmd", f"stty raw -echo; sleep {marker}", "--keys", f"@{keys}", "--timeout", "2")
     assert finish(proc, 8) == 124
     assert not alive(marker) and not homes_left(tmp_path)
+
+
+def test_cursor_query_is_answered_even_when_typed_input_backs_up(tmp_path):
+    size = 200_000  # 端末の入力の詰まりより十分に大きい
+    keys = tmp_path / "keys"
+    keys.write_text(f"sleep 0.5\ntype {'a' * size}\nwait-exit 20\n")
+    # 入力が詰まったまま問い合わせ、打たれた分を読み切ってから答えを待つ
+    cmd = f"stty raw -echo; sleep 1; printf '\\033[6n'; head -c {size} >/dev/null; read -s -t 5 -d R r; [ -n \"$r\" ]"
+    proc = spawn(tmp_path, "--cmd", cmd, "--keys", f"@{keys}", "--timeout", "20")
+    assert finish(proc, 25) == 0
