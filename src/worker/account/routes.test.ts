@@ -24,6 +24,7 @@ import {
   insertRawUser,
   resetSyncTables,
 } from "../test/sync-app";
+import { exportAccount } from "./export";
 
 const db = getDb(env.DB);
 const app = createApp();
@@ -277,5 +278,58 @@ describe("GET /api/export", () => {
     expect(ids).toHaveLength(1501);
     expect(new Set(ids).size).toBe(1501);
     expect(ids).toEqual([early.id, ...rows.map((row) => row.id).sort()]);
+  });
+
+  it("最大のタスク（メモ 20000 文字、200 項目 × 500 文字のチェックリスト）も書き出せる", async () => {
+    const checklist = Array.from({ length: 200 }, (_, i) => ({
+      id: crypto.randomUUID(),
+      title: "あ".repeat(500),
+      done: i % 2 === 0,
+    }));
+    const big = await insertRawTask(db, { seq: 1, memo: "い".repeat(20_000), checklist });
+    const token = await tokenOf(OWNER_USER_ID);
+
+    const res = await request(token, "GET", "/api/export");
+
+    const document = exportSchema.parse(await res.json());
+    expect(document.tasks).toEqual([big]);
+  });
+
+  it("大きい行が続くと、1 ページを文章の量で区切り、全部の行を 1 回ずつ id の順に返す", async () => {
+    const rows = [];
+    for (let i = 0; i < 30; i += 1) {
+      rows.push(await insertRawTask(db, { id: idOf(i), seq: i + 1, memo: "x".repeat(10_000) }));
+    }
+    let queries = 0;
+    const counting = getDb(
+      new Proxy(env.DB, {
+        get(target, key) {
+          if (key !== "prepare") return Reflect.get(target, key).bind(target);
+          return (query: string) => {
+            queries += 1;
+            return target.prepare(query);
+          };
+        },
+      }),
+    );
+    const read = async (pageBytes?: number) => {
+      queries = 0;
+      const stream = await exportAccount(counting, OWNER_USER_ID, new Date(), pageBytes);
+      return exportSchema.parse(await new Response(stream).json());
+    };
+
+    const whole = await read();
+    const wholeQueries = queries;
+    // 1 行が約 10000 文字なので、35000 文字なら 1 ページは 3 行
+    const split = await read(35_000);
+    const splitQueries = queries;
+
+    const ids = rows.map((row) => row.id);
+    expect(whole.tasks.map((task) => task.id)).toEqual(ids);
+    expect(split.tasks.map((task) => task.id)).toEqual(ids);
+    expect(split.tasks).toEqual(whole.tasks);
+    // タスクは 10 ページ × 2 回、プロジェクトは 1 回（行がないので、大きさだけ）
+    expect(splitQueries).toBe(10 * 2 + 1);
+    expect(splitQueries).toBeGreaterThan(wholeQueries);
   });
 });

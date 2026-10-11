@@ -353,13 +353,18 @@ impl App {
         if !deleting {
             if key.code == KeyCode::Enter {
                 if input.text().trim() == "delete" {
-                    self.delete_account();
-                    return Some(Overlay::DeleteAccount {
-                        input,
-                        tasks,
-                        projects,
-                        deleting: true,
-                    });
+                    if self.delete_account() {
+                        return Some(Overlay::DeleteAccount {
+                            input,
+                            tasks,
+                            projects,
+                            deleting: true,
+                        });
+                    }
+                    self.toast_error(
+                        t(Msg::AccountDeleteNoOwner),
+                        Some(t(Msg::AccountDeleteRelogin)),
+                    );
                 }
             } else {
                 input.handle_key(key);
@@ -373,11 +378,12 @@ impl App {
         })
     }
 
-    /// Worker にアカウントを消させる。通信は別のスレッドで行い、返事は世代を付けずに送る（on_account_deleted）
-    fn delete_account(&mut self) {
+    /// Worker にアカウントを消させる。通信は別のスレッドで行い、返事は世代を付けずに送る（on_account_deleted）。
+    /// ログインの情報がなくて始められなかったときは false
+    fn delete_account(&mut self) -> bool {
         let (Some(user_id), Some(token)) = (self.user_id.clone(), self.delete_account_token())
         else {
-            return;
+            return false;
         };
         self.deleting_account = true;
         let client = ApiClient::new(&self.config.server, Some(token.clone()));
@@ -390,6 +396,7 @@ impl App {
                 result,
             }));
         });
+        true
     }
 }
 
@@ -542,6 +549,30 @@ mod tests {
         assert!(app.config.db_path(Some("user-a")).exists());
         app.show_login_if_unauthorized();
         assert!(app.login.is_some());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn ログインの情報がなくて消せないときは_消している状態に入らず_確かめの画面を直せる() {
+        let dir = temp_dir("delete-no-token");
+        let (mut app, _) = deleting(&dir, ("token-a", "user-a"));
+        app.deleting_account = false;
+        app.config.clear_token();
+        let enter = KeyEvent::new(KeyCode::Enter, crossterm::event::KeyModifiers::NONE);
+
+        let next = app.delete_account_key(enter, TextInput::new("delete"), 0, 0, false);
+
+        assert!(!app.deleting_account);
+        let Some(Overlay::DeleteAccount {
+            input,
+            deleting: false,
+            ..
+        }) = next
+        else {
+            panic!("確かめの画面のまま");
+        };
+        assert_eq!(input.text(), "delete");
+        assert_eq!(app.toasts.len(), 1);
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
