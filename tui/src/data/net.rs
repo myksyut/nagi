@@ -98,6 +98,7 @@ impl ApiClient {
                 Err(ApiFailure::Rejected {
                     status,
                     reason: body.reason.or(Some(body.error).filter(|e| !e.is_empty())),
+                    mutation_index: body.mutation_index,
                 })
             }
         }
@@ -125,6 +126,7 @@ impl ApiClient {
                     return Err(ApiFailure::Rejected {
                         status: 200,
                         reason: Some("reset が続きました".to_string()),
+                        mutation_index: None,
                     });
                 }
                 reset = true;

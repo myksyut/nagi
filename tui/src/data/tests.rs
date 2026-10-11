@@ -195,6 +195,7 @@ fn 送信は1つずつ順に行い_失敗したら後ろのまとまりも捨て
     h.fail_last(ApiFailure::Rejected {
         status: 400,
         reason: Some("schema".into()),
+        mutation_index: None,
     });
     assert_eq!(h.store.pending_count(), 0);
     assert!(h.task("t1").completed_at.is_none());
@@ -860,12 +861,34 @@ fn 行数の上限で断られたら_上限の知らせを出して表示を戻�
     h.fail_last(ApiFailure::Rejected {
         status: 400,
         reason: Some("quota_exceeded".into()),
+        mutation_index: Some(0),
     });
     assert!(h.store.replica.task(&id).is_none());
     assert!(matches!(
         h.store.take_notices().as_slice(),
         [Notice::SaveFailed {
             reason: SaveFailure::Quota(Quota::Tasks),
+            ..
+        }]
+    ));
+}
+
+#[test]
+fn 上限の知らせは_断られた操作で決め_あとに続く別の操作では決めない() {
+    let mut h = harness();
+    h.seed(vec![task("t1", Bucket::Inbox, "a0")]);
+    // プロジェクトの追加を送っているあいだに、タスクを足した（まだ送っていない）
+    h.store.create_project("新しい", &[]).unwrap();
+    h.store.add_task(add("続けて足す")).unwrap();
+    h.fail_last(ApiFailure::Rejected {
+        status: 400,
+        reason: Some("quota_exceeded".into()),
+        mutation_index: Some(0),
+    });
+    assert!(matches!(
+        h.store.take_notices().as_slice(),
+        [Notice::SaveFailed {
+            reason: SaveFailure::Quota(Quota::Projects),
             ..
         }]
     ));

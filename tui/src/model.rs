@@ -343,6 +343,9 @@ pub struct ApiErrorBody {
     pub error: String,
     #[serde(default)]
     pub reason: Option<String>,
+    /// 断られた操作の位置（0 始まり）
+    #[serde(default, rename = "mutationIndex")]
+    pub mutation_index: Option<usize>,
 }
 
 #[cfg(test)]

@@ -39,7 +39,12 @@ pub enum ApiFailure {
     /// 409。この TUI の版が古い
     VersionMismatch,
     /// 400 など、再送しても通らない
-    Rejected { status: u16, reason: Option<String> },
+    /// mutation_index は Worker が示した、断られた操作の位置（0 始まり）
+    Rejected {
+        status: u16,
+        reason: Option<String>,
+        mutation_index: Option<usize>,
+    },
 }
 
 impl ApiFailure {
@@ -612,12 +617,19 @@ impl Store {
             ApiFailure::Unauthorized | ApiFailure::VersionMismatch => {
                 self.stop(&error, failed_creates.clone());
             }
-            ApiFailure::Rejected { reason, .. } => {
+            ApiFailure::Rejected {
+                reason,
+                mutation_index,
+                ..
+            } => {
                 let conflict = reason
                     .as_deref()
                     .is_some_and(|reason| CONFLICT_REASONS.contains(&reason));
                 if reason.as_deref() == Some(QUOTA_REASON) {
-                    save_failed(self, SaveFailure::Quota(exceeded_quota(&discarded)));
+                    save_failed(
+                        self,
+                        SaveFailure::Quota(exceeded_quota(&discarded, *mutation_index)),
+                    );
                 } else if conflict {
                     // ほかの画面が先に変えていた。最新を取りに行く（自動で合わせることはしない）
                     save_failed(self, SaveFailure::Conflict);
@@ -724,13 +736,14 @@ impl Store {
 
 const QUOTA_REASON: &str = "quota_exceeded";
 
-/// 断られた追加がタスクならタスクの上限、タスクの追加がなければプロジェクトの上限
-fn exceeded_quota(discarded: &[PendingBatch]) -> Quota {
-    let adds_task = discarded
-        .iter()
-        .flat_map(|batch| &batch.mutations)
-        .any(|mutation| matches!(mutation, Mutation::TaskCreate { .. }));
-    if adds_task {
+/// Worker が断った操作（送った先頭のまとまりの mutation_index 番目）がタスクの追加ならタスクの上限、
+/// そうでなければプロジェクトの上限。あとに続いて捨てたまとまりは送っていないので見ない
+fn exceeded_quota(discarded: &[PendingBatch], mutation_index: Option<usize>) -> Quota {
+    let rejected = discarded
+        .first()
+        .zip(mutation_index)
+        .and_then(|(batch, index)| batch.mutations.get(index));
+    if matches!(rejected, Some(Mutation::TaskCreate { .. })) {
         Quota::Tasks
     } else {
         Quota::Projects
