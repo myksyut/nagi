@@ -9,6 +9,7 @@ use ratatui::widgets::Paragraph;
 
 use super::calendar::filter_label;
 use crate::dates::{add_days, weekday_index};
+use crate::i18n::{Msg, fill, t};
 use crate::ui::app::App;
 use crate::ui::text::pad;
 use crate::ui::theme;
@@ -27,9 +28,12 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         Layout::vertical([Constraint::Length(2), Constraint::Min(4)]).areas(area);
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled("1 週前から 8 週先まで", theme::muted()),
+            Span::styled(t(Msg::TimelineRange), theme::muted()),
             Span::styled(
-                format!("    絞り込み：{}", filter_label(app, &app.timeline.filter)),
+                fill(
+                    Msg::FilterLabel,
+                    &[&filter_label(app, &app.timeline.filter)],
+                ),
                 if app.timeline.filter == ProjectFilter::All {
                     theme::faint()
                 } else {
@@ -62,7 +66,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         if (i == 0 || day.ends_with("-01")) && i + 2 <= days.len() {
             let month: u32 = day[5..7].parse().unwrap_or(1);
             months.push(Span::styled(
-                pad(&format!("{month}月"), DAY_WIDTH * 2),
+                pad(&fill(Msg::MonthLabel, &[&month]), DAY_WIDTH * 2),
                 theme::muted(),
             ));
             skip_cells = 1;
@@ -98,7 +102,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         let name = match &group.project_id {
             Some(id) => format!("● {}", app.project_name(id).unwrap_or_default()),
-            None => "プロジェクトなし".to_string(),
+            None => t(Msg::ProjectNone).to_string(),
         };
         lines.push(Line::from(Span::styled(
             pad(&name, label_width),
@@ -170,7 +174,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     }
     if groups.is_empty() {
         lines.push(Line::from(Span::styled(
-            "  やる日か締切のあるタスクはありません（n で追加、d で日付）",
+            t(Msg::TimelineEmpty),
             theme::faint(),
         )));
     }

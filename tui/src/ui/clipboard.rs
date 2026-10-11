@@ -1,6 +1,7 @@
 //! タスクをクリップボードに入れる（y）。形は Web 版の ⇧⌘C と同じ。
 //! 端末のクリップボードには、OSC 52 のエスケープシーケンスで入れる（SSH の先からでも、手元の端末に届く）
 
+use crate::i18n::{Msg, fill, t};
 use std::io::{self, Write};
 
 use base64::Engine;
@@ -42,9 +43,9 @@ pub fn task_clipboard_text(tasks: &[(String, String)]) -> String {
 /// コピーしたときのトーストの文言
 pub fn copied_message(tasks: &[(String, String)]) -> String {
     match tasks {
-        [(_, memo)] if memo.trim().is_empty() => "タイトルをコピーしました".to_string(),
-        [_] => "タイトルとメモをコピーしました".to_string(),
-        _ => format!("{}件のタイトルとメモをコピーしました", tasks.len()),
+        [(_, memo)] if memo.trim().is_empty() => t(Msg::CopiedTitle).to_string(),
+        [_] => t(Msg::CopiedTitleAndMemo).to_string(),
+        _ => fill(Msg::CopiedCount, &[&tasks.len()]),
     }
 }
 

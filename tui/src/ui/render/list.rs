@@ -8,6 +8,7 @@ use ratatui::widgets::Paragraph;
 
 use super::{detail, priority_mark, status_glyph};
 use crate::dates::{DeadlineTone, deadline_status, format_short_date_with_weekday};
+use crate::i18n::{Msg, fill, t};
 use crate::model::{Bucket, Task};
 use crate::ui::app::{App, Screen};
 use crate::ui::list::{ListKind, ListView};
@@ -141,15 +142,15 @@ fn task_row(app: &App, view: &ListView, task: &Task, total: usize) -> Line<'stat
 fn empty_lines(app: &App) -> Vec<&'static str> {
     let lists = app.store.lists();
     match &app.screen {
-        Screen::Inbox => vec!["受信箱は空です", "n で追加"],
+        Screen::Inbox => vec![t(Msg::EmptyInbox), t(Msg::HintAdd)],
         Screen::Today if !lists.completed_today.is_empty() => {
-            vec!["今日のタスクはすべて完了しました"]
+            vec![t(Msg::EmptyTodayAllDone)]
         }
-        Screen::Today => vec!["今日のタスクはまだありません", "n で追加"],
-        Screen::Upcoming => vec!["予定のタスクはありません", "n で追加（受信箱に入ります）"],
-        Screen::Later => vec!["あとでのタスクはありません", "n で追加"],
-        Screen::Logbook => vec!["完了したタスクは、次の日からここに並びます"],
-        Screen::Project(_) => vec!["このプロジェクトのタスクはまだありません", "n で追加"],
+        Screen::Today => vec![t(Msg::EmptyToday), t(Msg::HintAdd)],
+        Screen::Upcoming => vec![t(Msg::EmptyUpcoming), t(Msg::HintAddToInbox)],
+        Screen::Later => vec![t(Msg::EmptyLater), t(Msg::HintAdd)],
+        Screen::Logbook => vec![t(Msg::EmptyLogbook)],
+        Screen::Project(_) => vec![t(Msg::EmptyProject), t(Msg::HintAdd)],
         _ => vec![],
     }
 }
@@ -206,7 +207,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             lines.push(Line::from(vec![
                 Span::styled(if open { "  ▾ " } else { "  ▸ " }, theme::faint()),
                 Span::styled(label.clone(), theme::muted()),
-                Span::styled("   z で開く／閉じる", theme::faint()),
+                Span::styled(t(Msg::FoldToggleHint), theme::faint()),
             ]));
         } else if let Some(heading) = &section.heading
             && !section.rows.is_empty()
@@ -277,7 +278,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         if shown < all {
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
-                format!("  ほか {} 件（一番下で ↓ を押すと続きを表示）", all - shown),
+                fill(Msg::MoreRows, &[&(all - shown)]),
                 theme::faint(),
             )));
         }

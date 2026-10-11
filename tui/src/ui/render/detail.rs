@@ -9,6 +9,7 @@ use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::{centered, clear_for_popup, status_glyph};
 use crate::dates::{deadline_status, format_long_date};
+use crate::i18n::{Msg, fill, t};
 use crate::model::{Bucket, Task};
 use crate::ui::app::{App, DetailEdit, DetailField};
 use crate::ui::text::{truncate, wrap};
@@ -25,16 +26,16 @@ pub struct DetailBlock {
 
 fn when_label(app: &App, task: &Task) -> String {
     if task.is_completed() {
-        return "完了".to_string();
+        return t(Msg::ListCompleted).to_string();
     }
     match task.bucket {
-        Bucket::Inbox => "受信箱".to_string(),
-        Bucket::Today => "今日".to_string(),
-        Bucket::Later => "あとで".to_string(),
+        Bucket::Inbox => t(Msg::ListInbox).to_string(),
+        Bucket::Today => t(Msg::ListToday).to_string(),
+        Bucket::Later => t(Msg::ListLater).to_string(),
         Bucket::Scheduled => task
             .scheduled_on
             .as_deref()
-            .map_or("予定".to_string(), |on| {
+            .map_or(t(Msg::ListScheduled).to_string(), |on| {
                 format_long_date(on, &app.store.today)
             }),
     }
@@ -104,7 +105,7 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
             lines.push(Line::from(vec![
                 mark(memo_focus),
                 Span::raw("  "),
-                Span::styled("メモ", style),
+                Span::styled(t(Msg::LabelMemo), style),
             ]));
         }
         _ => {
@@ -124,7 +125,7 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
             if more > 0 {
                 lines.push(Line::from(vec![
                     mark(memo_focus),
-                    Span::styled(format!("  …ほか {more} 行"), theme::faint()),
+                    Span::styled(fill(Msg::MoreMemoLines, &[&more]), theme::faint()),
                 ]));
             }
         }
@@ -183,18 +184,18 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
             lines.push(Line::from(vec![
                 mark(add_focus),
                 Span::raw("  "),
-                Span::styled("＋ 項目を追加", style),
+                Span::styled(t(Msg::ChecklistAddItem), style),
             ]));
         }
     }
 
     // 小さなボタン：状態・いつやる・締切／プロジェクト・優先度・工数
     let status = if task.is_completed() {
-        "● 完了"
+        t(Msg::StatusCompleted)
     } else if task.is_in_progress() {
-        "◐ 進行中"
+        t(Msg::StatusInProgress)
     } else {
-        "○ 未着手"
+        t(Msg::StatusNotStarted)
     };
     let deadline = task.deadline_on.as_deref().map(|on| {
         format!(
@@ -228,20 +229,20 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
         vec![
             button(
                 DetailField::Status,
-                "状態",
+                t(Msg::LabelStatus),
                 status.to_string(),
                 Style::new(),
             ),
             button(
                 DetailField::When,
-                "いつやる",
+                t(Msg::LabelWhen),
                 when_label(app, task),
                 Style::new(),
             ),
             button(
                 DetailField::Deadline,
-                "締切",
-                deadline.unwrap_or_else(|| "なし".to_string()),
+                t(Msg::LabelDeadline),
+                deadline.unwrap_or_else(|| t(Msg::NoneLabel).to_string()),
                 if task.deadline_on.is_some() {
                     Style::new()
                 } else {
@@ -252,8 +253,10 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
         vec![
             button(
                 DetailField::Project,
-                "プロジェクト",
-                project.map_or("なし".to_string(), |(_, name)| format!("● {name}")),
+                t(Msg::LabelProject),
+                project.map_or(t(Msg::NoneLabel).to_string(), |(_, name)| {
+                    format!("● {name}")
+                }),
                 match project {
                     Some((id, _)) => Style::new().fg(theme::project_color(lists.project_color(id))),
                     None => theme::muted(),
@@ -261,9 +264,9 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
             ),
             button(
                 DetailField::Priority,
-                "優先度",
+                t(Msg::LabelPriority),
                 task.priority
-                    .map_or("なし".to_string(), |p| p.label().to_string()),
+                    .map_or(t(Msg::NoneLabel).to_string(), |p| p.label().to_string()),
                 if task.priority.is_some() {
                     Style::new()
                 } else {
@@ -272,8 +275,9 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
             ),
             button(
                 DetailField::Points,
-                "工数",
-                task.points.map_or("なし".to_string(), |p| p.to_string()),
+                t(Msg::LabelPoints),
+                task.points
+                    .map_or(t(Msg::NoneLabel).to_string(), |p| p.to_string()),
                 if task.points.is_some() {
                     Style::new()
                 } else {
@@ -305,7 +309,7 @@ pub fn draw_popup(frame: &mut Frame, app: &App, area: Rect) {
         .border_style(Style::new().fg(theme::BORDER))
         .style(Style::new().bg(theme::SURFACE))
         .title(Span::styled(
-            " タスク ",
+            t(Msg::TitleTask),
             theme::muted().add_modifier(Modifier::BOLD),
         ));
     let inner = frame_block.inner(rect);

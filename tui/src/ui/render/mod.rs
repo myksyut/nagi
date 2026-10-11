@@ -25,6 +25,7 @@ use super::theme;
 use crate::data::StopReason;
 use crate::data::lists::sum_points;
 use crate::dates::format_day_heading;
+use crate::i18n::{Msg, fill, t};
 use crate::model::Task;
 use crate::upgrade::{upgrade_message, waiting_message};
 
@@ -110,7 +111,11 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) -> Option<
     let inner_width = area.width.saturating_sub(2) as usize;
     let heading = |text: &'static str| Line::from(Span::styled(text, theme::faint()));
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        if rail { " 凪" } else { " nagi" },
+        if rail {
+            t(Msg::SidebarRailTitle)
+        } else {
+            " nagi"
+        },
         theme::accent().add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::default());
@@ -124,27 +129,37 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) -> Option<
             Screen::Calendar => {
                 lines.push(Line::default());
                 if !rail {
-                    lines.push(heading(" ビュー"));
+                    lines.push(heading(t(Msg::SidebarViews)));
                 }
             }
             Screen::Project(_) if Some(index) == project_start => {
                 lines.push(Line::default());
                 if !rail {
-                    lines.push(heading(" プロジェクト"));
+                    lines.push(heading(t(Msg::SidebarProjects)));
                 }
             }
             Screen::Logbook => lines.push(Line::default()),
             _ => {}
         }
         let (mark, mark_style, label, count) = match screen {
-            Screen::Inbox => ("1", theme::faint(), "受信箱".to_string(), lists.inbox.len()),
-            Screen::Today => ("2", theme::faint(), "今日".to_string(), lists.today.len()),
-            Screen::Upcoming => ("3", theme::faint(), "予定".to_string(), 0),
-            Screen::Later => ("4", theme::faint(), "あとで".to_string(), 0),
-            Screen::Logbook => ("5", theme::faint(), "完了ログ".to_string(), 0),
-            Screen::Calendar => ("6", theme::faint(), "カレンダー".to_string(), 0),
-            Screen::Timeline => ("7", theme::faint(), "タイムライン".to_string(), 0),
-            Screen::Shortcuts => ("?", theme::faint(), "ショートカット".to_string(), 0),
+            Screen::Inbox => (
+                "1",
+                theme::faint(),
+                t(Msg::ListInbox).to_string(),
+                lists.inbox.len(),
+            ),
+            Screen::Today => (
+                "2",
+                theme::faint(),
+                t(Msg::ListToday).to_string(),
+                lists.today.len(),
+            ),
+            Screen::Upcoming => ("3", theme::faint(), t(Msg::ListScheduled).to_string(), 0),
+            Screen::Later => ("4", theme::faint(), t(Msg::ListLater).to_string(), 0),
+            Screen::Logbook => ("5", theme::faint(), t(Msg::ScreenLogbook).to_string(), 0),
+            Screen::Calendar => ("6", theme::faint(), t(Msg::ScreenCalendar).to_string(), 0),
+            Screen::Timeline => ("7", theme::faint(), t(Msg::ScreenTimeline).to_string(), 0),
+            Screen::Shortcuts => ("?", theme::faint(), t(Msg::ScreenShortcuts).to_string(), 0),
             Screen::Project(id) => (
                 "●",
                 Style::new().fg(theme::project_color(lists.project_color(id))),
@@ -196,8 +211,14 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) -> Option<
     }
     if project_start.is_none() && !rail {
         lines.push(Line::default());
-        lines.push(Line::from(Span::styled(" プロジェクト", theme::faint())));
-        lines.push(Line::from(Span::styled("  N で作成", theme::faint())));
+        lines.push(Line::from(Span::styled(
+            t(Msg::SidebarProjects),
+            theme::faint(),
+        )));
+        lines.push(Line::from(Span::styled(
+            t(Msg::SidebarCreateHint),
+            theme::faint(),
+        )));
     }
     let elapsed = app.started_at.elapsed();
     let fits_logo = !rail && area.height as usize > lines.len() + LOGO_HEIGHT as usize + 1;
@@ -229,21 +250,21 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let count_and_points = |count: usize, points: u32| {
         let mut parts = Vec::new();
         if count > 0 {
-            parts.push(format!("{count} 件"));
+            parts.push(fill(Msg::CountSpaced, &[&count]));
         }
         if points > 0 {
-            parts.push(format!("工数 {points}"));
+            parts.push(fill(Msg::PointsLabel, &[&points]));
         }
-        parts.join(" ・ ")
+        parts.join(t(Msg::JoinDot))
     };
     let (title, title_style, sub) = match &app.screen {
         Screen::Inbox => (
-            "受信箱".to_string(),
+            t(Msg::ListInbox).to_string(),
             theme::bold(),
             count_and_points(lists.inbox.len(), 0),
         ),
         Screen::Today => (
-            "今日".to_string(),
+            t(Msg::ListToday).to_string(),
             theme::bold(),
             [
                 format_day_heading(today, today),
@@ -255,19 +276,35 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             .join("　"),
         ),
         Screen::Upcoming => (
-            "予定".to_string(),
+            t(Msg::ListScheduled).to_string(),
             theme::bold(),
             count_and_points(lists.scheduled.len(), 0),
         ),
         Screen::Later => (
-            "あとで".to_string(),
+            t(Msg::ListLater).to_string(),
             theme::bold(),
             count_and_points(lists.later.len(), 0),
         ),
-        Screen::Logbook => ("完了ログ".to_string(), theme::bold(), String::new()),
-        Screen::Calendar => ("カレンダー".to_string(), theme::bold(), String::new()),
-        Screen::Timeline => ("タイムライン".to_string(), theme::bold(), String::new()),
-        Screen::Shortcuts => ("ショートカット".to_string(), theme::bold(), String::new()),
+        Screen::Logbook => (
+            t(Msg::ScreenLogbook).to_string(),
+            theme::bold(),
+            String::new(),
+        ),
+        Screen::Calendar => (
+            t(Msg::ScreenCalendar).to_string(),
+            theme::bold(),
+            String::new(),
+        ),
+        Screen::Timeline => (
+            t(Msg::ScreenTimeline).to_string(),
+            theme::bold(),
+            String::new(),
+        ),
+        Screen::Shortcuts => (
+            t(Msg::ScreenShortcuts).to_string(),
+            theme::bold(),
+            String::new(),
+        ),
         Screen::Project(id) => {
             let groups = lists.project(id);
             let archived = replica
@@ -279,7 +316,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
                     .fg(theme::project_color(lists.project_color(id)))
                     .add_modifier(Modifier::BOLD),
                 if archived {
-                    "アーカイブ済み".to_string()
+                    t(Msg::ProjectArchived).to_string()
                 } else {
                     count_and_points(groups.open_count(), sum_points(replica, groups.open_ids()))
                 },
@@ -295,7 +332,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             theme::accent()
         };
-        right.push(Span::styled(format!("並び方：{}  ", sort.label()), style));
+        right.push(Span::styled(fill(Msg::SortedBy, &[&sort.label()]), style));
     }
     if app.screen.has_board() {
         let (list, board) = if app.is_board() {
@@ -303,9 +340,9 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             (theme::accent(), theme::faint())
         };
-        right.push(Span::styled("リスト", list));
+        right.push(Span::styled(t(Msg::ViewList), list));
         right.push(Span::styled("｜", theme::faint()));
-        right.push(Span::styled("ボード", board));
+        right.push(Span::styled(t(Msg::ViewBoard), board));
     }
     let right_width: usize = right.iter().map(|span| width(&span.content)).sum();
     let title_width = (area.width as usize).saturating_sub(right_width + 1);
@@ -323,29 +360,23 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
 /// 一番下の1行：左に今の場面で使えるキー、右に通信の状態
 fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let hint = if app.adding.is_some() {
-        "Enter 追加して続ける  Esc 閉じる"
+        t(Msg::HintBarAdd)
     } else if app
         .detail
         .as_ref()
         .is_some_and(|detail| detail.edit.is_some())
     {
-        "Enter / Esc 保存して欄を出る（メモは Esc か Ctrl+S）"
+        t(Msg::HintBarMemo)
     } else if app.detail.is_some() {
-        "↑↓ 欄を移る  Enter 直す・押す  x 完了  s 進行中  d 日付  D 締切  p プロジェクト  Esc 閉じる"
+        t(Msg::HintBarDetail)
     } else if app.focus == Focus::Sidebar {
-        "↑↓ リストを選ぶ  Enter 一覧へ  N プロジェクトを作成"
+        t(Msg::HintBarSidebar)
     } else {
         match app.screen {
-            Screen::Calendar => {
-                "←→↑↓ 日  j/k その日の中  Enter 開く  < > 1日ずらす  [ ] 月  n 追加  f 絞り込み  ? キー"
-            }
-            Screen::Timeline => {
-                "↑↓ タスク  Enter 開く  < > 1日ずらす  d 日付  D 締切  [ ] 週  n 追加  f 絞り込み  ? キー"
-            }
-            Screen::Shortcuts => "文字で絞り込み  ↑↓ スクロール  Esc / ? 戻る",
-            _ => {
-                "n 追加  x 完了  Enter 開く  t 今日  l あとで  d 日付  u 元に戻す  Ctrl+K 検索  ? キー"
-            }
+            Screen::Calendar => t(Msg::HintBarCalendar),
+            Screen::Timeline => t(Msg::HintBarTimeline),
+            Screen::Shortcuts => t(Msg::HintBarShortcuts),
+            _ => t(Msg::HintBarList),
         }
     };
     let (state, state_style) = match app.store.stopped_by {
@@ -354,7 +385,7 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(theme::ATTENTION),
         ),
         Some(StopReason::Unauthorized) => (
-            "ログインが切れました".to_string(),
+            t(Msg::StatusLoginExpired).to_string(),
             Style::new().fg(theme::ATTENTION),
         ),
         None if app.store.waiting_for_server => (
@@ -362,14 +393,16 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
             Style::new().fg(theme::ATTENTION),
         ),
         None if !app.store.is_online => (
-            "オフライン：操作は保存できません".to_string(),
+            t(Msg::StatusOffline).to_string(),
             Style::new().fg(theme::ATTENTION),
         ),
-        None if app.should_quit => ("保存しています…".to_string(), theme::muted()),
-        None if app.store.pending_count() > 0 => ("保存中…".to_string(), theme::muted()),
-        None if !app.store.synced => ("同期中…".to_string(), theme::muted()),
+        None if app.should_quit => (t(Msg::StatusSaving).to_string(), theme::muted()),
+        None if app.store.pending_count() > 0 => {
+            (t(Msg::StatusSavingShort).to_string(), theme::muted())
+        }
+        None if !app.store.synced => (t(Msg::StatusSyncing).to_string(), theme::muted()),
         // この端末だけで使っている（Worker とは同期していない）
-        None if !app.config.is_cloud() => ("ローカル".to_string(), theme::faint()),
+        None if !app.config.is_cloud() => (t(Msg::StatusLocal).to_string(), theme::faint()),
         None => (String::new(), theme::muted()),
     };
     let state_width = width(&state);
@@ -392,7 +425,7 @@ fn draw_toasts(frame: &mut Frame, app: &App, area: Rect) {
             text = format!("{text}— {detail} ");
         }
         let action = if toast.kind == ToastKind::Undo {
-            " u 元に戻す "
+            t(Msg::HintUndo)
         } else {
             ""
         };

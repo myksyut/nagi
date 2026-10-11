@@ -9,6 +9,7 @@ use serde_json::json;
 use crate::config::Config;
 use crate::data::net::ApiClient;
 use crate::dates::device_time_zone;
+use crate::i18n::{Msg, fill, t};
 
 /// ログインの持ち主を Worker に聞くときに待つ時間（画面を出す前に聞くので、短くする）
 const WHOAMI_TIMEOUT: Duration = Duration::from_secs(3);
@@ -64,13 +65,10 @@ fn failure(status: u16, text: &str) -> String {
         .ok()
         .and_then(|body| body.get("error")?.as_str().map(str::to_string));
     match error.as_deref() {
-        Some("config") => "Worker のログインの設定が足りません".to_string(),
-        Some("github") => {
-            "GitHub とやり取りできませんでした（OAuth App でデバイスフローが有効か確かめてください）"
-                .to_string()
-        }
-        _ if status == 429 => "試行が多すぎます。1 分待ってください".to_string(),
-        _ => format!("ログインを始められませんでした（HTTP {status}）"),
+        Some("config") => t(Msg::AuthWorkerNotConfigured).to_string(),
+        Some("github") => t(Msg::AuthGithubUnreachable).to_string(),
+        _ if status == 429 => t(Msg::AuthTooManyAttempts).to_string(),
+        _ => fill(Msg::AuthStartFailed, &[&status]),
     }
 }
 
@@ -78,11 +76,11 @@ fn failure(status: u16, text: &str) -> String {
 pub fn start(client: &ApiClient) -> Result<DeviceStart, String> {
     let (status, text) = client
         .post_raw("/auth/device/start", &json!({}))
-        .map_err(|_| "Worker に接続できませんでした".to_string())?;
+        .map_err(|_| t(Msg::WorkerUnreachable).to_string())?;
     if status != 200 {
         return Err(failure(status, &text));
     }
-    serde_json::from_str(&text).map_err(|_| "ログインの応答が読めません".to_string())
+    serde_json::from_str(&text).map_err(|_| t(Msg::AuthResponseUnreadable).to_string())
 }
 
 /// 承認されたかを1回確かめる。この端末のタイムゾーンを添える（ログインできたときだけ、Worker が利用者に書く）
@@ -92,7 +90,7 @@ pub fn poll(client: &ApiClient, device_code: &str) -> Result<DevicePoll, String>
             "/auth/device/token",
             &json!({ "deviceCode": device_code, "timeZone": device_time_zone().name() }),
         )
-        .map_err(|_| "Worker に接続できませんでした".to_string())?;
+        .map_err(|_| t(Msg::WorkerUnreachable).to_string())?;
     if status != 200 {
         return Err(failure(status, &text));
     }
@@ -101,7 +99,7 @@ pub fn poll(client: &ApiClient, device_code: &str) -> Result<DevicePoll, String>
 
 fn parse_poll(text: &str) -> Result<DevicePoll, String> {
     let body: PollBody =
-        serde_json::from_str(text).map_err(|_| "ログインの応答が読めません".to_string())?;
+        serde_json::from_str(text).map_err(|_| t(Msg::AuthResponseUnreadable).to_string())?;
     Ok(match body.status.as_str() {
         "pending" => DevicePoll::Pending,
         "slow_down" => DevicePoll::SlowDown(body.interval.unwrap_or(10)),
@@ -109,10 +107,10 @@ fn parse_poll(text: &str) -> Result<DevicePoll, String> {
         "denied" => DevicePoll::Denied,
         "forbidden" => DevicePoll::Forbidden,
         "ok" => DevicePoll::Ok {
-            token: body.token.ok_or("ログインの応答が読めません")?,
+            token: body.token.ok_or(t(Msg::AuthResponseUnreadable))?,
             user_id: body.user_id.filter(|id| !id.is_empty()),
         },
-        other => return Err(format!("ログインの応答が読めません（{other}）")),
+        other => return Err(fill(Msg::AuthResponseUnreadableWith, &[&other])),
     })
 }
 
@@ -189,7 +187,7 @@ fn login_with(
     let user_id = session.user_id.or_else(|| {
         let user_id = whoami(&session.token)?;
         if let Err(error) = config.save_session(&session.token, Some(&user_id)) {
-            crate::log::error(&format!("ログインを保存できませんでした: {error}"));
+            crate::log::error(&fill(Msg::AuthSaveLoginFailed, &[&error]));
         }
         config.adopt_shared_db(&user_id);
         Some(user_id)

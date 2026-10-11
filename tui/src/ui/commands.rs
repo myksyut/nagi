@@ -9,15 +9,14 @@ use super::clipboard::{copied_message, task_clipboard_text, write_clipboard};
 use super::list::plan_step;
 use crate::data::{AddTask, Destination, Failure, OpResult, Store};
 use crate::dates::format_long_date;
+use crate::i18n::{Msg, fill, t};
 use crate::model::{MAX_MUTATIONS_PER_BATCH, Priority, ProjectChanges};
 
 /// 一度に扱える件数（データ層の1回の操作の上限と同じ）。超えたら分けずに断る
 pub const MAX_BULK: usize = MAX_MUTATIONS_PER_BATCH;
-/// 並び方（手動以外）で並べ替えて見せているあいだに並べ替えようとしたときの知らせ
-const MANUAL_ORDER_ONLY: &str = "手動の並びのときに使えます";
 
 fn too_many_message() -> String {
-    format!("一度に扱えるのは {MAX_BULK} 件まで")
+    fill(Msg::ToastTooMany, &[&MAX_BULK])
 }
 
 impl App {
@@ -36,7 +35,7 @@ impl App {
         match reason {
             Failure::TooMany => self.toast_error(&too_many_message(), None),
             // 並び順キーが長くなりすぎた（同じ隙間へ入れ続けた）など
-            Failure::Invalid => self.toast_error("保存できませんでした", None),
+            Failure::Invalid => self.toast_error(t(Msg::SaveFailed), None),
             Failure::TooLong(limit) => self.toast_error(&limit.message(), None),
             _ => {}
         }
@@ -126,7 +125,7 @@ impl App {
     /// 1件なら、一覧から抜けたときだけタイトル（「「請求書の確認」」）。残っているときは出さない
     fn toast_subject(&self, left: &[String], changed: &[String]) -> Option<String> {
         if changed.len() >= 2 {
-            return Some(format!("{}件", changed.len()));
+            return Some(fill(Msg::CountItems, &[&changed.len()]));
         }
         match left {
             [] => None,
@@ -134,7 +133,7 @@ impl App {
                 "「{}」",
                 self.task(id).map_or("", |task| task.title.as_str())
             )),
-            _ => Some(format!("{}件", left.len())),
+            _ => Some(fill(Msg::CountItems, &[&left.len()])),
         }
     }
 
@@ -149,11 +148,11 @@ impl App {
             |store| store.complete_tasks(ids),
             |_, _, changed| {
                 if changed.len() >= 2 {
-                    Some(format!("{}件を完了しました", changed.len()))
+                    Some(fill(Msg::ToastCompletedCount, &[&changed.len()]))
                 } else if in_today {
                     None
                 } else {
-                    Some("完了しました".to_string())
+                    Some(t(Msg::ToastCompleted).to_string())
                 }
             },
         )
@@ -167,7 +166,7 @@ impl App {
             |store| store.uncomplete_tasks(ids, false),
             |app, left, changed| {
                 app.toast_subject(left, changed)
-                    .map(|subject| format!("{subject}を今日に戻しました"))
+                    .map(|subject| fill(Msg::ToastBackToToday, &[&subject]))
             },
         )
     }
@@ -197,10 +196,10 @@ impl App {
     /// 振り分け（t：今日の一番下へ、l：あとでへ）。一覧から抜けたら（2件以上なら残っていても）「今日へ」
     pub fn move_tasks(&mut self, ids: &[String], to: Destination) {
         let name = match &to {
-            Destination::Inbox => "受信箱",
-            Destination::Today => "今日",
-            Destination::Later => "あとで",
-            Destination::Scheduled(_) => "予定",
+            Destination::Inbox => t(Msg::ListInbox),
+            Destination::Today => t(Msg::ListToday),
+            Destination::Later => t(Msg::ListLater),
+            Destination::Scheduled(_) => t(Msg::ListScheduled),
         };
         let _ = self.run_op(
             ids,
@@ -208,7 +207,7 @@ impl App {
             |store| store.move_tasks(ids, to.clone()),
             |app, left, changed| {
                 app.toast_subject(left, changed)
-                    .map(|subject| format!("{subject}を{name}へ"))
+                    .map(|subject| fill(Msg::ToastMovedTo, &[&subject, &name]))
             },
         );
     }
@@ -217,7 +216,7 @@ impl App {
     pub fn schedule_tasks(&mut self, ids: &[String], on: &str) {
         let today = self.store.today.clone();
         let destination = if on <= today.as_str() {
-            "今日".to_string()
+            t(Msg::ListToday).to_string()
         } else {
             format_long_date(on, &today)
         };
@@ -227,7 +226,7 @@ impl App {
             |store| store.move_tasks(ids, Destination::Scheduled(on.to_string())),
             |app, left, changed| {
                 app.toast_subject(left, changed)
-                    .map(|subject| format!("{subject}を{destination}へ"))
+                    .map(|subject| fill(Msg::ToastMovedTo, &[&subject, &destination]))
             },
         );
     }
@@ -243,16 +242,15 @@ impl App {
                 // 2件以上なら、一覧に残っていても件数で
                 if changed.len() >= 2 {
                     return Some(match deadline_on {
-                        None => format!("{}件の締切を外しました", changed.len()),
-                        Some(on) => format!(
-                            "{}件の締切を{}にしました",
-                            changed.len(),
-                            format_long_date(on, &today)
+                        None => fill(Msg::ToastDeadlinesCleared, &[&changed.len()]),
+                        Some(on) => fill(
+                            Msg::ToastDeadlinesSet,
+                            &[&changed.len(), &format_long_date(on, &today)],
                         ),
                     });
                 }
                 app.toast_subject(left, changed)
-                    .map(|subject| format!("{subject}を今日へ"))
+                    .map(|subject| fill(Msg::ToastToToday, &[&subject]))
             },
         );
     }
@@ -264,7 +262,7 @@ impl App {
             false,
             |store| store.shift_task_dates(ids, days),
             |_, _, changed| {
-                (changed.len() >= 2).then(|| format!("{}件の日付をずらしました", changed.len()))
+                (changed.len() >= 2).then(|| fill(Msg::ToastDatesShifted, &[&changed.len()]))
             },
         );
     }
@@ -296,7 +294,7 @@ impl App {
                     |store| store.uncomplete_tasks(&completed, true),
                     |_, _, changed| {
                         (changed.len() >= 2)
-                            .then(|| format!("{}件を進行中に戻しました", changed.len()))
+                            .then(|| fill(Msg::ToastBackToInProgress, &[&changed.len()]))
                     },
                 );
             }
@@ -315,7 +313,8 @@ impl App {
                 false,
                 |store| store.stop_tasks(&all),
                 |_, _, changed| {
-                    (changed.len() >= 2).then(|| format!("{}件を未着手に戻しました", changed.len()))
+                    (changed.len() >= 2)
+                        .then(|| fill(Msg::ToastBackToNotStarted, &[&changed.len()]))
                 },
             )
         } else {
@@ -326,10 +325,10 @@ impl App {
                 |store| store.start_tasks(&not_started),
                 |app, left, changed| {
                     if changed.len() >= 2 {
-                        return Some(format!("{}件を進行中にしました", changed.len()));
+                        return Some(fill(Msg::ToastStarted, &[&changed.len()]));
                     }
                     app.toast_subject(left, changed)
-                        .map(|subject| format!("{subject}を今日へ"))
+                        .map(|subject| fill(Msg::ToastToToday, &[&subject]))
                 },
             )
         };
@@ -350,7 +349,7 @@ impl App {
             return;
         };
         if section.sorted {
-            self.toast_error(MANUAL_ORDER_ONLY, None);
+            self.toast_error(t(Msg::ManualOrderOnly), None);
             return;
         }
         let selected: HashSet<String> = ids.iter().cloned().collect();
@@ -373,9 +372,9 @@ impl App {
             |store| store.delete_tasks(ids),
             |_, _, changed| {
                 Some(if changed.len() >= 2 {
-                    format!("{}件を削除しました", changed.len())
+                    fill(Msg::ToastDeletedCount, &[&changed.len()])
                 } else {
-                    "削除しました".to_string()
+                    t(Msg::ToastDeleted).to_string()
                 })
             },
         );
@@ -424,7 +423,7 @@ impl App {
         }
         match write_clipboard(&task_clipboard_text(&tasks)) {
             Ok(()) => self.toast_info(&copied_message(&tasks)),
-            Err(_) => self.toast_error("コピーできませんでした", None),
+            Err(_) => self.toast_error(t(Msg::ToastCopyFailed), None),
         }
     }
 
@@ -442,8 +441,8 @@ impl App {
             |app, left, changed| {
                 let subject = app.toast_subject(left, changed)?;
                 Some(match &name {
-                    None => format!("{subject}のプロジェクトを外しました"),
-                    Some(name) => format!("{subject}を「{name}」へ"),
+                    None => fill(Msg::ToastProjectCleared, &[&subject]),
+                    Some(name) => fill(Msg::ToastProjectSet, &[&subject, name]),
                 })
             },
         );
@@ -458,7 +457,7 @@ impl App {
             |store| store.create_project(name, ids),
             |app, left, changed| {
                 app.toast_subject(left, changed)
-                    .map(|subject| format!("{subject}を「{}」へ", name.trim()))
+                    .map(|subject| fill(Msg::ToastProjectSet, &[&subject, &name.trim()]))
             },
         );
         !matches!(result, Err(Failure::TooLong(_)))
@@ -471,12 +470,10 @@ impl App {
             |store| store.set_priority(ids, priority),
             |_, _, changed| {
                 (changed.len() >= 2).then(|| match priority {
-                    Some(priority) => format!(
-                        "{}件の優先度を{}にしました",
-                        changed.len(),
-                        priority.label()
-                    ),
-                    None => format!("{}件の優先度を外しました", changed.len()),
+                    Some(priority) => {
+                        fill(Msg::ToastPrioritySet, &[&changed.len(), &priority.label()])
+                    }
+                    None => fill(Msg::ToastPriorityCleared, &[&changed.len()]),
                 })
             },
         );
@@ -489,8 +486,8 @@ impl App {
             |store| store.set_points(ids, points),
             |_, _, changed| {
                 (changed.len() >= 2).then(|| match points {
-                    Some(points) => format!("{}件の工数を {points} にしました", changed.len()),
-                    None => format!("{}件の工数を外しました", changed.len()),
+                    Some(points) => fill(Msg::ToastPointsSet, &[&changed.len(), &points]),
+                    None => fill(Msg::ToastPointsCleared, &[&changed.len()]),
                 })
             },
         );
@@ -559,14 +556,14 @@ impl App {
         );
         match result {
             Ok(_) => {
-                self.toast_undo(&format!("「{name}」をアーカイブしました"));
+                self.toast_undo(&fill(Msg::ToastArchived, &[&name]));
                 self.navigate(Screen::Today);
             }
             Err(Failure::HasOpenTasks) => {
                 let count = self.store.open_task_count_of_project(id);
                 self.toast_error(
-                    "アーカイブできません",
-                    Some(&format!("未完了のタスクが {count} 件残っています")),
+                    t(Msg::ToastCannotArchive),
+                    Some(&fill(Msg::ToastOpenTasksRemain, &[&count])),
                 );
             }
             Err(reason) => self.notify_failure(reason),
@@ -637,11 +634,11 @@ impl App {
     /// 小さな追加欄から追加する。追加しても画面に出ないことがある（受信箱など）ので、追加したら知らせる
     pub fn quick_add(&mut self, title: &str, to: Destination, project_id: Option<String>) -> bool {
         let name = match &to {
-            Destination::Inbox => "受信箱".to_string(),
-            Destination::Today => "今日".to_string(),
-            Destination::Later => "あとで".to_string(),
+            Destination::Inbox => t(Msg::ListInbox).to_string(),
+            Destination::Today => t(Msg::ListToday).to_string(),
+            Destination::Later => t(Msg::ListLater).to_string(),
             Destination::Scheduled(on) if on.as_str() <= self.store.today.as_str() => {
-                "今日".to_string()
+                t(Msg::ListToday).to_string()
             }
             Destination::Scheduled(on) => format_long_date(on, &self.store.today),
         };
@@ -652,7 +649,7 @@ impl App {
             to,
         }) {
             Ok(_) => {
-                self.toast_undo(&format!("{name}に追加しました"));
+                self.toast_undo(&fill(Msg::ToastAddedTo, &[&name]));
                 self.reconcile();
                 true
             }

@@ -12,6 +12,7 @@ use super::views::calendar_entries;
 use crate::data::Destination;
 use crate::data::sort::TaskSort;
 use crate::dates::{add_days, add_months, month_start};
+use crate::i18n::{Msg, fill, t};
 use crate::model::PROJECT_COLORS;
 
 /// ショートカットのページとコマンドの一覧でのまとまり
@@ -36,11 +37,11 @@ impl Group {
 
     pub fn label(self) -> &'static str {
         match self {
-            Group::Task => "タスク",
-            Group::When => "いつやる",
-            Group::Move => "移動",
-            Group::List => "リスト",
-            Group::Global => "全体",
+            Group::Task => t(Msg::GroupTask),
+            Group::When => t(Msg::GroupWhen),
+            Group::Move => t(Msg::GroupMove),
+            Group::List => t(Msg::GroupList),
+            Group::Global => t(Msg::GroupGlobal),
         }
     }
 }
@@ -111,9 +112,9 @@ pub struct Binding {
     pub action: Action,
 }
 
-fn binding(label: &str, group: Group, keys: &'static [&'static str], action: Action) -> Binding {
+fn binding(label: Msg, group: Group, keys: &'static [&'static str], action: Action) -> Binding {
     Binding {
-        label: label.to_string(),
+        label: t(label).to_string(),
         group,
         keys,
         place: None,
@@ -121,9 +122,9 @@ fn binding(label: &str, group: Group, keys: &'static [&'static str], action: Act
     }
 }
 
-fn at(place: &'static str, binding: Binding) -> Binding {
+fn at(place: Msg, binding: Binding) -> Binding {
     Binding {
-        place: Some(place),
+        place: Some(t(place)),
         ..binding
     }
 }
@@ -133,198 +134,183 @@ pub fn bindings() -> Vec<Binding> {
     use Action as A;
     use Group as G;
     let mut list = vec![
-        binding("下へ", G::Move, &["Down", "j"], A::Down),
-        binding("上へ", G::Move, &["Up", "k"], A::Up),
+        binding(Msg::KeyDown, G::Move, &["Down", "j"], A::Down),
+        binding(Msg::KeyUp, G::Move, &["Up", "k"], A::Up),
         binding(
-            "選択を下へ広げる",
+            Msg::KeyExtendDown,
             G::Move,
             &["Shift+Down", "J"],
             A::ExtendDown,
         ),
-        binding("選択を上へ広げる", G::Move, &["Shift+Up", "K"], A::ExtendUp),
-        binding("一番上へ", G::Move, &["g", "Home"], A::Top),
-        binding("一番下へ", G::Move, &["G", "End"], A::Bottom),
+        binding(Msg::KeyExtendUp, G::Move, &["Shift+Up", "K"], A::ExtendUp),
+        binding(Msg::KeyTop, G::Move, &["g", "Home"], A::Top),
+        binding(Msg::KeyBottom, G::Move, &["G", "End"], A::Bottom),
         binding(
-            "並べ替え（上へ）",
+            Msg::KeyReorderUp,
             G::Task,
             &["Alt+Up", "Ctrl+Up", "Alt+k"],
             A::ReorderUp,
         ),
         binding(
-            "並べ替え（下へ）",
+            Msg::KeyReorderDown,
             G::Task,
             &["Alt+Down", "Ctrl+Down", "Alt+j"],
             A::ReorderDown,
         ),
-        binding("追加", G::Task, &["n"], A::Add),
-        binding("開く", G::Task, &["Enter"], A::Open),
-        binding("閉じる", G::Task, &["Esc"], A::Close),
+        binding(Msg::KeyAdd, G::Task, &["n"], A::Add),
+        binding(Msg::KeyOpen, G::Task, &["Enter"], A::Open),
+        binding(Msg::KeyClose, G::Task, &["Esc"], A::Close),
+        binding(Msg::KeyComplete, G::Task, &["x", "Space"], A::Complete),
+        binding(Msg::KeyStart, G::Task, &["s"], A::Start),
+        binding(Msg::KeyToToday, G::When, &["t"], A::ToToday),
+        binding(Msg::KeyToLater, G::When, &["l"], A::ToLater),
+        binding(Msg::KeySchedule, G::When, &["d"], A::Schedule),
+        binding(Msg::KeyDeadline, G::When, &["D"], A::Deadline),
+        binding(Msg::KeyProject, G::Task, &["p"], A::Project),
+        binding(Msg::KeyPriority, G::Task, &["P"], A::Priority),
+        binding(Msg::KeyPoints, G::Task, &["e"], A::Points),
         binding(
-            "完了（もう一度で戻す）",
+            Msg::KeyDelete,
             G::Task,
-            &["x", "Space"],
-            A::Complete,
+            &["Delete", "Alt+Backspace"],
+            A::Delete,
         ),
-        binding("進行中にする／未着手に戻す", G::Task, &["s"], A::Start),
-        binding("今日へ", G::When, &["t"], A::ToToday),
-        binding("あとでへ", G::When, &["l"], A::ToLater),
-        binding("日付を決めて予定へ", G::When, &["d"], A::Schedule),
-        binding("締切", G::When, &["D"], A::Deadline),
-        binding("プロジェクト", G::Task, &["p"], A::Project),
-        binding("優先度", G::Task, &["P"], A::Priority),
-        binding("工数", G::Task, &["e"], A::Points),
-        binding("削除", G::Task, &["Delete", "Alt+Backspace"], A::Delete),
-        binding("タイトルとメモをコピー", G::Task, &["y", "c"], A::Copy),
-        binding("元に戻す", G::Task, &["u", "Ctrl+z"], A::Undo),
-        binding("受信箱を開く", G::List, &["1"], A::Go(Screen::Inbox)),
-        binding("今日を開く", G::List, &["2"], A::Go(Screen::Today)),
-        binding("予定を開く", G::List, &["3"], A::Go(Screen::Upcoming)),
-        binding("あとでを開く", G::List, &["4"], A::Go(Screen::Later)),
-        binding("完了ログを開く", G::List, &["5"], A::Go(Screen::Logbook)),
-        binding("カレンダーを開く", G::List, &["6"], A::Go(Screen::Calendar)),
-        binding(
-            "タイムラインを開く",
-            G::List,
-            &["7"],
-            A::Go(Screen::Timeline),
+        binding(Msg::KeyCopy, G::Task, &["y", "c"], A::Copy),
+        binding(Msg::KeyUndo, G::Task, &["u", "Ctrl+z"], A::Undo),
+        binding(Msg::KeyGoInbox, G::List, &["1"], A::Go(Screen::Inbox)),
+        binding(Msg::KeyGoToday, G::List, &["2"], A::Go(Screen::Today)),
+        binding(Msg::KeyGoUpcoming, G::List, &["3"], A::Go(Screen::Upcoming)),
+        binding(Msg::KeyGoLater, G::List, &["4"], A::Go(Screen::Later)),
+        binding(Msg::KeyGoLogbook, G::List, &["5"], A::Go(Screen::Logbook)),
+        binding(Msg::KeyGoCalendar, G::List, &["6"], A::Go(Screen::Calendar)),
+        binding(Msg::KeyGoTimeline, G::List, &["7"], A::Go(Screen::Timeline)),
+        at(
+            Msg::PlaceTodayProject,
+            binding(Msg::KeyToggleBoard, G::List, &["v"], A::ToggleBoard),
         ),
         at(
-            "今日・プロジェクト",
-            binding("リスト／ボードの切り替え", G::List, &["v"], A::ToggleBoard),
+            Msg::PlaceBoard,
+            binding(Msg::KeyColumnLeft, G::Move, &["Left", "h"], A::ColumnLeft),
         ),
         at(
-            "ボード",
-            binding("左の列へ", G::Move, &["Left", "h"], A::ColumnLeft),
+            Msg::PlaceBoard,
+            binding(Msg::KeyColumnRight, G::Move, &["Right"], A::ColumnRight),
         ),
         at(
-            "ボード",
-            binding("右の列へ", G::Move, &["Right"], A::ColumnRight),
+            Msg::PlaceTodayLaterProject,
+            binding(Msg::KeySortMenu, G::List, &["o"], A::SortMenu),
         ),
         at(
-            "今日・あとで・プロジェクト",
-            binding("並び方を選ぶ", G::List, &["o"], A::SortMenu),
+            Msg::PlaceTodayProject,
+            binding(Msg::KeyToggleFold, G::List, &["z"], A::ToggleFold),
+        ),
+        binding(Msg::KeyCreateProject, G::List, &["N"], A::CreateProject),
+        at(
+            Msg::PlaceProject,
+            binding(Msg::KeyRenameProject, G::List, &["R"], A::RenameProject),
         ),
         at(
-            "今日・プロジェクト",
-            binding("「完了 N件」を開く／閉じる", G::List, &["z"], A::ToggleFold),
+            Msg::PlaceProject,
+            binding(Msg::KeyArchiveProject, G::List, &["A"], A::ArchiveProject),
         ),
-        binding("プロジェクトを作成", G::List, &["N"], A::CreateProject),
         at(
-            "プロジェクト",
+            Msg::PlaceProject,
+            binding(Msg::KeyProjectColor, G::List, &["C"], A::ProjectColor),
+        ),
+        at(
+            Msg::PlaceCalendar,
+            binding(Msg::KeyPrevDay, G::Move, &["Left", "h"], A::CalendarDay(-1)),
+        ),
+        at(
+            Msg::PlaceCalendar,
+            binding(Msg::KeyNextDay, G::Move, &["Right"], A::CalendarDay(1)),
+        ),
+        at(
+            Msg::PlaceCalendar,
+            binding(Msg::KeyPrevWeek, G::Move, &["Up"], A::CalendarDay(-7)),
+        ),
+        at(
+            Msg::PlaceCalendar,
+            binding(Msg::KeyNextWeek, G::Move, &["Down"], A::CalendarDay(7)),
+        ),
+        at(
+            Msg::PlaceCalendar,
+            binding(Msg::KeyEntryDown, G::Move, &["j"], A::CalendarEntry(1)),
+        ),
+        at(
+            Msg::PlaceCalendar,
+            binding(Msg::KeyEntryUp, G::Move, &["k"], A::CalendarEntry(-1)),
+        ),
+        at(
+            Msg::PlaceCalendar,
+            binding(Msg::KeyBackToToday, G::Move, &["."], A::CalendarToday),
+        ),
+        at(
+            Msg::PlaceTimeline,
             binding(
-                "プロジェクトの名前を変更",
-                G::List,
-                &["R"],
-                A::RenameProject,
+                Msg::KeyTimelineDown,
+                G::Move,
+                &["Down", "j"],
+                A::TimelineMove(1),
             ),
         ),
         at(
-            "プロジェクト",
+            Msg::PlaceTimeline,
             binding(
-                "プロジェクトをアーカイブ（もう一度で解除）",
-                G::List,
-                &["A"],
-                A::ArchiveProject,
+                Msg::KeyTimelineUp,
+                G::Move,
+                &["Up", "k"],
+                A::TimelineMove(-1),
             ),
         ),
         at(
-            "プロジェクト",
-            binding("プロジェクトの色", G::List, &["C"], A::ProjectColor),
+            Msg::PlaceCalendarTimeline,
+            binding(Msg::KeyPrevPeriod, G::Move, &["["], A::PreviousPeriod),
         ),
         at(
-            "カレンダー",
-            binding("前の日へ", G::Move, &["Left", "h"], A::CalendarDay(-1)),
+            Msg::PlaceCalendarTimeline,
+            binding(Msg::KeyNextPeriod, G::Move, &["]"], A::NextPeriod),
         ),
         at(
-            "カレンダー",
-            binding("次の日へ", G::Move, &["Right"], A::CalendarDay(1)),
+            Msg::PlaceCalendarTimeline,
+            binding(Msg::KeyShiftBack, G::When, &["<", ","], A::ShiftDates(-1)),
         ),
         at(
-            "カレンダー",
-            binding("前の週へ", G::Move, &["Up"], A::CalendarDay(-7)),
+            Msg::PlaceCalendarTimeline,
+            binding(Msg::KeyShiftForward, G::When, &[">"], A::ShiftDates(1)),
         ),
         at(
-            "カレンダー",
-            binding("次の週へ", G::Move, &["Down"], A::CalendarDay(7)),
+            Msg::PlaceCalendarTimeline,
+            binding(Msg::KeyFilterProject, G::List, &["f"], A::Filter),
         ),
-        at(
-            "カレンダー",
-            binding("その日の中で下へ", G::Move, &["j"], A::CalendarEntry(1)),
-        ),
-        at(
-            "カレンダー",
-            binding("その日の中で上へ", G::Move, &["k"], A::CalendarEntry(-1)),
-        ),
-        at(
-            "カレンダー",
-            binding("今日の日へ戻る", G::Move, &["."], A::CalendarToday),
-        ),
-        at(
-            "タイムライン",
-            binding("下のタスクへ", G::Move, &["Down", "j"], A::TimelineMove(1)),
-        ),
-        at(
-            "タイムライン",
-            binding("上のタスクへ", G::Move, &["Up", "k"], A::TimelineMove(-1)),
-        ),
-        at(
-            "カレンダー・タイムライン",
-            binding("前の月・前の週へ", G::Move, &["["], A::PreviousPeriod),
-        ),
-        at(
-            "カレンダー・タイムライン",
-            binding("次の月・次の週へ", G::Move, &["]"], A::NextPeriod),
-        ),
-        at(
-            "カレンダー・タイムライン",
-            binding("1日前へずらす", G::When, &["<", ","], A::ShiftDates(-1)),
-        ),
-        at(
-            "カレンダー・タイムライン",
-            binding("1日後へずらす", G::When, &[">"], A::ShiftDates(1)),
-        ),
-        at(
-            "カレンダー・タイムライン",
-            binding("プロジェクトで絞り込む", G::List, &["f"], A::Filter),
-        ),
-        binding("サイドバーへ移る", G::Move, &["Tab"], A::FocusSidebar),
+        binding(Msg::KeyFocusSidebar, G::Move, &["Tab"], A::FocusSidebar),
+        binding(Msg::KeyToggleSidebar, G::Global, &["\\"], A::ToggleSidebar),
         binding(
-            "サイドバーを畳む・広げる",
-            G::Global,
-            &["\\"],
-            A::ToggleSidebar,
-        ),
-        binding(
-            "検索とコマンド",
+            Msg::KeyPalette,
             G::Global,
             &["Ctrl+k", ":", "/"],
             A::Palette,
         ),
         at(
-            "ショートカット",
+            Msg::PlaceShortcuts,
             binding(
-                "ショートカットを閉じる",
+                Msg::KeyShortcutsClose,
                 G::Global,
                 &["?", "Esc"],
                 A::ShortcutsBack,
             ),
         ),
-        binding("ショートカットの一覧", G::Global, &["?"], A::Shortcuts),
-        binding("今すぐ同期", G::Global, &["Ctrl+r"], A::Sync),
-        binding(
-            "クラウドと同期する（ログイン。いまは招待制）",
-            G::Global,
-            &[],
-            A::Login,
-        ),
-        binding("ログアウト", G::Global, &[], A::Logout),
-        binding("終了", G::Global, &["q", "Ctrl+c"], A::Quit),
+        binding(Msg::KeyShortcuts, G::Global, &["?"], A::Shortcuts),
+        binding(Msg::KeySync, G::Global, &["Ctrl+r"], A::Sync),
+        binding(Msg::KeyLogin, G::Global, &[], A::Login),
+        binding(Msg::KeyLogout, G::Global, &[], A::Logout),
+        binding(Msg::KeyQuit, G::Global, &["q", "Ctrl+c"], A::Quit),
     ];
     for sort in TaskSort::ALL {
         list.push(at(
-            "今日・あとで・プロジェクト",
+            Msg::PlaceTodayLaterProject,
             Binding {
-                label: format!("並び方：{}", sort.label()),
+                label: fill(Msg::KeySortBy, &[&sort.label()]),
                 group: G::List,
                 keys: &[],
                 place: None,
@@ -342,86 +328,83 @@ pub type FieldKey = (&'static str, &'static [&'static str]);
 pub fn field_keys() -> Vec<(&'static str, Vec<FieldKey>)> {
     vec![
         (
-            "追加欄",
-            vec![("追加して続ける", &["Enter"][..]), ("閉じる", &["Esc"])],
-        ),
-        (
-            "開いたタスク",
+            t(Msg::FieldAddBox),
             vec![
-                ("欄を移る", &["Up", "Down", "Tab"][..]),
-                ("欄を直す・押す", &["Enter"]),
-                ("直した文字を保存して欄を出る（メモ）", &["Esc", "Ctrl+s"]),
-                ("閉じる", &["Esc"]),
+                (t(Msg::FieldAddContinue), &["Enter"][..]),
+                (t(Msg::FieldClose), &["Esc"]),
             ],
         ),
         (
-            "チェックリスト",
+            t(Msg::FieldOpenTask),
             vec![
-                ("チェックを付ける・外す", &["Space", "x"][..]),
-                ("名前を直す", &["Enter"]),
-                ("項目を消す", &["Delete", "Backspace"]),
-                ("項目を上・下へ", &["Alt+Up", "Alt+Down"]),
+                (t(Msg::FieldMove), &["Up", "Down", "Tab"][..]),
+                (t(Msg::FieldEdit), &["Enter"]),
+                (t(Msg::FieldSaveMemo), &["Esc", "Ctrl+s"]),
+                (t(Msg::FieldClose), &["Esc"]),
             ],
         ),
         (
-            "日付の入力（d・D）",
+            t(Msg::FieldChecklist),
             vec![
-                ("決める", &["Enter"][..]),
-                ("締切を外す（空のまま）", &["Enter"]),
-                ("やめる", &["Esc"]),
+                (t(Msg::FieldCheckToggle), &["Space", "x"][..]),
+                (t(Msg::FieldRename), &["Enter"]),
+                (t(Msg::FieldRemoveItem), &["Delete", "Backspace"]),
+                (t(Msg::FieldMoveItem), &["Alt+Up", "Alt+Down"]),
             ],
         ),
         (
-            "p の候補",
+            t(Msg::FieldDateInput),
             vec![
-                ("候補を選ぶ", &["Up", "Down"][..]),
-                ("決める（「◯◯」を作成も）", &["Enter"]),
-                ("やめる", &["Esc"]),
+                (t(Msg::FieldDecide), &["Enter"][..]),
+                (t(Msg::FieldClearDeadline), &["Enter"]),
+                (t(Msg::FieldCancel), &["Esc"]),
             ],
         ),
         (
-            "優先度・工数の候補",
+            t(Msg::FieldProjectPicker),
             vec![
-                ("候補を選ぶ", &["Up", "Down"][..]),
-                (
-                    "その場で決める（優先度：1 高・2 中・3 低・0 なし）",
-                    &["1", "2", "3", "0"],
-                ),
-                ("決める", &["Enter"]),
-                ("やめる", &["Esc"]),
+                (t(Msg::FieldPickCandidate), &["Up", "Down"][..]),
+                (t(Msg::FieldDecideCreate), &["Enter"]),
+                (t(Msg::FieldCancel), &["Esc"]),
             ],
         ),
         (
-            "並び方の一覧",
+            t(Msg::FieldPriorityPoints),
             vec![
-                (
-                    "その場で決める（1 手動・2 優先度・3 工数が少ない順・4 工数が多い順）",
-                    &["1", "2", "3", "4"][..],
-                ),
-                ("決める", &["Enter"]),
+                (t(Msg::FieldPickCandidate), &["Up", "Down"][..]),
+                (t(Msg::FieldQuickPriority), &["1", "2", "3", "0"]),
+                (t(Msg::FieldDecide), &["Enter"]),
+                (t(Msg::FieldCancel), &["Esc"]),
             ],
         ),
         (
-            "小さな追加欄（カレンダー・タイムライン）",
+            t(Msg::FieldSortList),
             vec![
-                ("追加して続ける", &["Enter"][..]),
-                ("行き先を切り替える", &["Tab"]),
-                ("閉じる", &["Esc"]),
+                (t(Msg::FieldQuickSort), &["1", "2", "3", "4"][..]),
+                (t(Msg::FieldDecide), &["Enter"]),
             ],
         ),
         (
-            "検索とコマンド",
+            t(Msg::FieldQuickAdd),
             vec![
-                ("候補を選ぶ", &["Up", "Down"][..]),
-                ("実行する・開く", &["Enter"]),
-                ("閉じる", &["Esc"]),
+                (t(Msg::FieldAddContinue), &["Enter"][..]),
+                (t(Msg::FieldSwitchTarget), &["Tab"]),
+                (t(Msg::FieldClose), &["Esc"]),
             ],
         ),
         (
-            "サイドバー",
+            t(Msg::KeyPalette),
             vec![
-                ("リストを選ぶ", &["Up", "Down"][..]),
-                ("一覧へ戻る", &["Enter", "Tab", "Esc"]),
+                (t(Msg::FieldPickCandidate), &["Up", "Down"][..]),
+                (t(Msg::FieldRunOpen), &["Enter"]),
+                (t(Msg::FieldClose), &["Esc"]),
+            ],
+        ),
+        (
+            t(Msg::FieldSidebar),
+            vec![
+                (t(Msg::FieldPickList), &["Up", "Down"][..]),
+                (t(Msg::FieldBackToList), &["Enter", "Tab", "Esc"]),
             ],
         ),
     ]
@@ -842,7 +825,7 @@ impl App {
             }
             A::Sync => {
                 self.sync_now();
-                self.toast_info("同期しています");
+                self.toast_info(t(Msg::ToastSyncing));
             }
             A::Login => self.show_login(None),
             A::Logout => self.logout(),

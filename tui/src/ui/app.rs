@@ -16,6 +16,7 @@ use crate::data::net::{ApiClient, NetEvent};
 use crate::data::sort::{TaskSort, sort_tasks};
 use crate::data::{Destination, Notice, SaveFailure, Store};
 use crate::dates::{APP_TIME_ZONE, add_days, device_time_zone, schedule_heading};
+use crate::i18n::{Msg, fill, t};
 use crate::model::{Mutation, Task};
 use crate::upgrade::upgrade_hint;
 
@@ -119,8 +120,8 @@ pub enum ValueKind {
 impl ValueKind {
     pub fn label(self) -> &'static str {
         match self {
-            ValueKind::Priority => "優先度",
-            ValueKind::Points => "工数",
+            ValueKind::Priority => t(Msg::LabelPriority),
+            ValueKind::Points => t(Msg::LabelPoints),
         }
     }
 }
@@ -403,7 +404,7 @@ impl App {
         let inbox_target = AddTarget {
             to: Destination::Inbox,
             project_id: None,
-            label: "受信箱に追加",
+            label: t(Msg::AddToInbox),
         };
         let view = match &self.screen {
             Screen::Inbox => ListView {
@@ -418,7 +419,7 @@ impl App {
                 let add_to = AddTarget {
                     to: Destination::Today,
                     project_id: None,
-                    label: "今日に追加",
+                    label: t(Msg::AddToToday),
                 };
                 if board {
                     let (not_started, in_progress) = split_by_started(replica, &lists.today);
@@ -455,7 +456,10 @@ impl App {
                                 ..section("open", &lists.today)
                             },
                             Section {
-                                fold: Some(format!("完了 {}件", lists.completed_today.len())),
+                                fold: Some(fill(
+                                    Msg::FoldCompleted,
+                                    &[&lists.completed_today.len()],
+                                )),
                                 ..section("completed", &lists.completed_today)
                             },
                         ]),
@@ -536,7 +540,7 @@ impl App {
                     add_to: AddTarget {
                         to: Destination::Later,
                         project_id: None,
-                        label: "あとでに追加",
+                        label: t(Msg::AddToLater),
                     },
                     add_in_section: Some("none".to_string()),
                     board,
@@ -581,7 +585,7 @@ impl App {
                     AddTarget {
                         to: Destination::Later,
                         project_id: Some(id.clone()),
-                        label: "あとでに追加",
+                        label: t(Msg::AddToLater),
                     }
                 };
                 let headed =
@@ -602,19 +606,24 @@ impl App {
                         sections: self.sort_sections(vec![
                             column(
                                 Column::NotStarted,
-                                headed("today", "今日", &not_started, true),
+                                headed("today", t(Msg::ListToday), &not_started, true),
                             ),
                             column(
                                 Column::NotStarted,
-                                headed("scheduled", "予定", &groups.scheduled, false),
+                                headed(
+                                    "scheduled",
+                                    t(Msg::ListScheduled),
+                                    &groups.scheduled,
+                                    false,
+                                ),
                             ),
                             column(
                                 Column::NotStarted,
-                                headed("later", "あとで", &groups.later, true),
+                                headed("later", t(Msg::ListLater), &groups.later, true),
                             ),
                             column(
                                 Column::NotStarted,
-                                headed("inbox", "受信箱", &groups.inbox, false),
+                                headed("inbox", t(Msg::ListInbox), &groups.inbox, false),
                             ),
                             column(
                                 Column::InProgress,
@@ -638,12 +647,12 @@ impl App {
                         key,
                         kind: ListKind::Project,
                         sections: self.sort_sections(vec![
-                            headed("today", "今日", &groups.today, true),
-                            headed("scheduled", "予定", &groups.scheduled, false),
-                            headed("later", "あとで", &groups.later, true),
-                            headed("inbox", "受信箱", &groups.inbox, false),
+                            headed("today", t(Msg::ListToday), &groups.today, true),
+                            headed("scheduled", t(Msg::ListScheduled), &groups.scheduled, false),
+                            headed("later", t(Msg::ListLater), &groups.later, true),
+                            headed("inbox", t(Msg::ListInbox), &groups.inbox, false),
                             Section {
-                                fold: Some(format!("完了 {}件", groups.completed.len())),
+                                fold: Some(fill(Msg::FoldCompleted, &[&groups.completed.len()])),
                                 ..section("completed", &groups.completed)
                             },
                         ]),
@@ -806,7 +815,7 @@ impl App {
             match notice {
                 Notice::OfflineBlocked { autosave } => {
                     if !autosave {
-                        self.toast_error("オフラインのため、操作できません", None);
+                        self.toast_error(t(Msg::ToastOfflineBlocked), None);
                     }
                 }
                 Notice::SaveFailed {
@@ -822,16 +831,11 @@ impl App {
                     self.dismiss_undo_toasts();
                     let message = match (reason, undo_conflict) {
                         (SaveFailure::Quota(quota), _) => quota.message(),
-                        (_, true) => {
-                            "ほかの画面で先に変更されていたため、元に戻せませんでした".to_string()
-                        }
-                        (SaveFailure::Conflict, _) => {
-                            "ほかの画面で先に変更されていたため、保存できませんでした".to_string()
-                        }
-                        _ => "保存できませんでした".to_string(),
+                        (_, true) => t(Msg::ToastUndoConflict).to_string(),
+                        (SaveFailure::Conflict, _) => t(Msg::SaveFailedConflict).to_string(),
+                        _ => t(Msg::SaveFailed).to_string(),
                     };
-                    let detail = (!failed_creates.is_empty())
-                        .then_some("追加した文字は、追加欄（n）に戻してあります");
+                    let detail = (!failed_creates.is_empty()).then_some(t(Msg::InputKeptInAddBox));
                     self.toast_error(&message, detail);
                 }
                 Notice::Unauthorized { failed_creates } => {
@@ -944,11 +948,11 @@ impl App {
             self.time_zone_sending = false;
             if report.sent {
                 if let Err(error) = self.config.save_time_zone(&report.token, &report.time_zone) {
-                    crate::log::error(&format!("タイムゾーンを保存できませんでした: {error}"));
+                    crate::log::error(&fill(Msg::LogTimeZoneSaveFailed, &[&error]));
                 }
                 // 保存してあるものがなく、日本時間のままのとき（今までの利用者）は、変わったことがないので知らせない
                 if report.previous.is_some() || report.time_zone != APP_TIME_ZONE.name() {
-                    self.toast_info(&format!("タイムゾーンを {} にしました", report.time_zone));
+                    self.toast_info(&fill(Msg::ToastTimeZoneSet, &[&report.time_zone]));
                 }
             }
             self.store.release_sync();

@@ -9,6 +9,7 @@
 use std::collections::{HashMap, HashSet};
 
 use crate::data::Destination;
+use crate::i18n::{Msg, t};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ListKind {
@@ -33,9 +34,9 @@ impl Column {
 
     pub fn label(self) -> &'static str {
         match self {
-            Column::NotStarted => "未着手",
-            Column::InProgress => "進行中",
-            Column::Completed => "完了",
+            Column::NotStarted => t(Msg::ColumnNotStarted),
+            Column::InProgress => t(Msg::ColumnInProgress),
+            Column::Completed => t(Msg::ColumnCompleted),
         }
     }
 }

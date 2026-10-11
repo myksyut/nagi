@@ -9,6 +9,7 @@ use ratatui::widgets::Paragraph;
 use super::list::task_meta;
 use super::status_glyph;
 use crate::data::lists::sum_points;
+use crate::i18n::{Msg, fill, t};
 use crate::ui::app::App;
 use crate::ui::list::{Column, ListKind};
 use crate::ui::text::{pad, width};
@@ -54,7 +55,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         );
         let mut header = format!("{}  {}", column.label(), rows.len());
         if points > 0 {
-            header.push_str(&format!(" ・ 工数 {points}"));
+            header.push_str(&fill(Msg::BoardHeaderPoints, &[&points]));
         }
         let mut lines: Vec<Line<'static>> = vec![
             Line::from(Span::styled(
@@ -129,7 +130,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             }
         }
         if rows.is_empty() {
-            lines.push(Line::from(Span::styled("なし", theme::faint())));
+            lines.push(Line::from(Span::styled(t(Msg::NoneLabel), theme::faint())));
         }
         // 列ごとに、選んでいるカードが見えるところまで送る（見出しの2行は残す）
         let height = (column_area.height as usize).saturating_sub(2);

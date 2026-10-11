@@ -22,6 +22,7 @@ use rusqlite::{Connection, OptionalExtension, Params, Transaction, TransactionBe
 use super::net::NetEvent;
 use super::store::{ApiFailure, DELETED_ROW_TTL_DAYS, SyncFlow, Transport};
 use crate::dates::{iso, logical_date};
+use crate::i18n::{Msg, fill};
 use crate::log;
 use crate::model::{
     Bucket, MAX_MUTATIONS_PER_BATCH, Mutation, MutationBatch, Project, RowKind, SyncRow, Task,
@@ -71,9 +72,7 @@ impl From<Stop> for ApiFailure {
                 mutation_index: None,
             },
             Stop::Broken(message) => {
-                log::error(&format!(
-                    "この端末のデータを読み書きできませんでした: {message}"
-                ));
+                log::error(&fill(Msg::LogDeviceReadWriteFailed, &[&message]));
                 ApiFailure::Server(500)
             }
         }
@@ -513,14 +512,8 @@ fn newer_format_message(conn: &Connection, path: &Path) -> String {
         )
         .ok();
     match written_by {
-        Some(version) => format!(
-            "この端末のデータ（{}）は nagi {version} で作られました。nagi を {version} 以降に更新してください",
-            path.display()
-        ),
-        None => format!(
-            "この端末のデータ（{}）は、新しい版の nagi のものです。nagi を更新してください",
-            path.display()
-        ),
+        Some(version) => fill(Msg::DeviceNewerFormatBy, &[&path.display(), &version]),
+        None => fill(Msg::DeviceNewerFormat, &[&path.display()]),
     }
 }
 
@@ -528,19 +521,11 @@ impl DeviceDb {
     /// この端末のデータのファイルを開く（なければ作る。古い版なら今の版へ移す）。開けなければ、理由の文言を返す
     /// （手元の控えと違って、保存できないまま動かさない）
     pub fn open(path: &Path) -> Result<DeviceDb, String> {
-        let failed = |error: rusqlite::Error| {
-            format!(
-                "この端末のデータ（{}）を開けませんでした：{error}",
-                path.display()
-            )
-        };
+        let failed =
+            |error: rusqlite::Error| fill(Msg::DeviceOpenFailed, &[&path.display(), &error]);
         // SQLite は 0644 でファイルを作るので、先に自分だけが読める空のファイルを置く
-        create_private_file(path).map_err(|error| {
-            format!(
-                "この端末のデータ（{}）を作れませんでした：{error}",
-                path.display()
-            )
-        })?;
+        create_private_file(path)
+            .map_err(|error| fill(Msg::DeviceCreateFailed, &[&path.display(), &error]))?;
         let mut conn = Connection::open(path).map_err(failed)?;
         conn.busy_timeout(StdDuration::from_secs(5))
             .map_err(failed)?;
@@ -609,12 +594,8 @@ impl DeviceDb {
     /// 途中で失敗したら何も変えずに、控えのパスを含む文言を返す
     fn migrate(conn: &mut Connection, path: &Path, migrations: &[Migration]) -> Result<(), String> {
         let target = 1 + migrations.len() as i64;
-        let failed = |error: rusqlite::Error| {
-            format!(
-                "この端末のデータ（{}）を開けませんでした：{error}",
-                path.display()
-            )
-        };
+        let failed =
+            |error: rusqlite::Error| fill(Msg::DeviceOpenFailed, &[&path.display(), &error]);
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(failed)?;
@@ -626,10 +607,9 @@ impl DeviceDb {
         }
         let backup = backup_path(path, from);
         back_up(path, &backup).map_err(|error| {
-            format!(
-                "この端末のデータ（{}）を移す前の控え（{}）を取れなかったので、移さずに止めました：{error}",
-                path.display(),
-                backup.display()
+            fill(
+                Msg::DeviceBackupFailed,
+                &[&path.display(), &backup.display(), &error],
             )
         })?;
         migrations[(from - 1) as usize..]
@@ -639,10 +619,9 @@ impl DeviceDb {
             .and_then(|()| stamp_written_by(&tx))
             .and_then(|_| tx.commit())
             .map_err(|error| {
-                format!(
-                    "この端末のデータ（{}）を版 {from} から版 {target} に移せなかったので、元のまま残しました：{error}。移す前の控えは {} にあります",
-                    path.display(),
-                    backup.display()
+                fill(
+                    Msg::DeviceMigrateFailed,
+                    &[&path.display(), &from, &target, &error, &backup.display()],
                 )
             })
     }
@@ -703,7 +682,7 @@ impl DeviceDb {
                     let task = facts
                         .tasks
                         .get_mut(id)
-                        .ok_or_else(|| Stop::Broken(format!("書き込む行がありません: {id}")))?;
+                        .ok_or_else(|| Stop::Broken(fill(Msg::DeviceRowMissing, &[&id])))?;
                     task.seq = seq;
                     task.updated_at.clone_from(&timestamp);
                     if created.contains(key) {
@@ -716,7 +695,7 @@ impl DeviceDb {
                     let project = facts
                         .projects
                         .get_mut(id)
-                        .ok_or_else(|| Stop::Broken(format!("書き込む行がありません: {id}")))?;
+                        .ok_or_else(|| Stop::Broken(fill(Msg::DeviceRowMissing, &[&id])))?;
                     project.seq = seq;
                     project.updated_at.clone_from(&timestamp);
                     if created.contains(key) {
