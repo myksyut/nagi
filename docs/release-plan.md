@@ -1105,6 +1105,8 @@ Worker は `pnpm dev --test-scheduled` で起動する（`AUTH_DISABLED=true`、
 - [ ] `upgrade.rs` の `upgrade_command()` は `std::env::current_exe()` の実際の場所を見る。`/Cellar/` を含めば `brew upgrade nagi`、それ以外は `https://github.com/myksyut/nagi/releases/latest`。R05 と R15 のうち後に入るほうが、Windows の入れ方の分岐を足す。
 - [ ] 下の欄（`render/mod.rs`）と CLI（`cli.rs` の `StopReason::VersionMismatch` の文）は「nagi を更新してください。`brew upgrade nagi`。送っていない変更 3 件は残してあります」の形にする。
 - [ ] `pending` に行があるときのログアウトは、一度「送っていない変更が 3 件あります。ログアウトすると消えます」と出し、もう一度選んだときだけ消す。
+- [ ] Worker の `applied_mutations` と、ローカルの `applied` は消さない。版のずれのあと、nagi は同じ ID でまとまりを送り直し、前の送信が届いたかを知る手立てがない。ID を忘れると古い更新が新しい編集を上書きしうるので、ID を残して送り直しをいつでも書かずに済ませる（監査を受けて、送った時刻と日数の窓で守る案をやめた）。
+- [ ] `pending` の行は、残した利用者とトークンの見分けに結び、別の人のトークンでは送らない。起動のときは、トークンと利用者の ID を同じログインの読み取りから取る。
 
 **You see.**
 - [ ] Worker が先に新しくなっても、打った変更は画面に残り、下の欄に更新のコマンドが出る。
@@ -1195,7 +1197,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 - [ ] Lane 1. Regression lane against trunk. `time_zone` が NULL の利用者に、日本の今日に予定したタスクを入れ、`TZ=Asia/Tokyo` で trunk と head の nagi を開く。Save `r16-lane1-tokyo.png`. Pass when 両方でタスクが「今日」にあり、見出しの日付が同じ.
 - [ ] Lane 2. 西の利用者。日本の今日に予定したタスクを入れ、`TZ=Pacific/Pago_Pago` で head を開く。Save `r16-lane2-pago.png`. Pass when タスクは「予定」に残り、見出しが Pago Pago の論理日付で、`SELECT time_zone FROM users` が `Pacific/Pago_Pago`。trunk なら今日へ移ることを記録する.
-- [ ] Lane 3. 西の利用者の今日。日付の切り替えは論理日付ごとに一度だけなので、その利用者の `meta` の `last_rollover_on` を Pago Pago の前の日にしておく。画面を開いたまま Pago Pago の今日に予定したタスクを足し、45 秒の同期を待つ。Save `r16-lane3-pago-today.png`. Pass when タスクが「今日」に移り、`arrivedOn` が Pago Pago の論理日付.
+- [ ] Lane 3. 西の利用者の今日。日付の切り替えは論理日付ごとに一度だけで、起動の最初の同期がそれを使う。画面を開いた**あとで**、その利用者の `meta` の `last_rollover_on` を Pago Pago の前の日にし、Pago Pago の今日に予定したタスクを足して、45 秒の同期を待つ（日本時間の 4 時より前は Pago Pago と日本の論理日付が同じになるので、そのときは `Etc/GMT+12` で代える）。Save `r16-lane3-pago-today.png`. Pass when タスクが「今日」に移り、`arrivedOn` が Pago Pago の論理日付.
 - [ ] Lane 4. 端末のゾーンが変わる。lane 2 の HOME で `TZ=Europe/Berlin` を付けて head を開き直す。Save `r16-lane4-berlin.png`. Pass when 「タイムゾーンを Europe/Berlin にしました」と出て、D1 の列とセッションのファイルの `time_zone` が `Europe/Berlin`.
 - [ ] Lane 5. 二台の端末。同じ利用者の二つの HOME を、A は `Asia/Tokyo`、B は `Pacific/Pago_Pago` で保存済みにする。A を最後にログインした端末として列を `Asia/Tokyo` にし、B を開く。Save `r16-lane5-two-devices.png`. Pass when B は日本の論理日付を見出しに出し、D1 の列は `Asia/Tokyo` のまま変わらない.
 - [ ] Lane 6. 自動の実行。`TZ=Europe/London` と `NAGI_TOKEN` を付けて `scripts/tui-shot.py --cmd 'nagi list today --json'` を動かす。Save `r16-lane6-cli-token.png`. Pass when D1 の列が変わらず、JSON の今日は列のゾーンの論理日付で決まっている.
