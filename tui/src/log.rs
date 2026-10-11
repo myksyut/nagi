@@ -40,7 +40,15 @@ fn open(path: &Path) -> std::io::Result<File> {
 fn open_rotated(path: &Path) -> std::io::Result<File> {
     let mut name = path.as_os_str().to_owned();
     name.push(".lock");
-    let lock = open(Path::new(&name))?;
+    // Windows の File::lock は追記だけのハンドルでは失敗するので、ロックの札は読み書きで開く
+    let mut options = OpenOptions::new();
+    options.create(true).truncate(false).read(true).write(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let lock = options.open(Path::new(&name))?;
     lock.lock()?;
     rotate(path);
     open(path)
