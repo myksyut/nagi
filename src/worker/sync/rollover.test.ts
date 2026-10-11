@@ -425,3 +425,89 @@ describe("★ 論理日付の境目（サーバー）", () => {
     expect(after?.value).toBe(TODAY);
   });
 });
+
+describe("★ 利用者のタイムゾーン", () => {
+  const PAGO_PAGO = "Pacific/Pago_Pago";
+  /** Pago Pago（UTC-11）の論理日付は、同じ時刻の日本より 1 日前になる（2026-09-27） */
+  const PAGO_TODAY = YESTERDAY;
+
+  async function setTimeZone(timeZone: string | null) {
+    await env.DB.prepare("UPDATE users SET time_zone = ? WHERE id = ?")
+      .bind(timeZone, OWNER_USER_ID)
+      .run();
+  }
+
+  async function lastRolloverOn() {
+    return (await db.select().from(meta).where(eq(meta.key, "last_rollover_on")).get())?.value;
+  }
+
+  async function sync() {
+    const { post } = apiApp(() => NOW);
+    const res = await post("/api/sync", { cursor: 0, baseCursor: 0 });
+    return (await res.json()) as { timeZone: string };
+  }
+
+  beforeEach(async () => {
+    await setTimeZone(null);
+  });
+
+  it("同じ時刻で、Pago Pago の利用者は日本の今日に予定したタスクを移さず、time_zone が NULL の利用者は移す", async () => {
+    const scheduledJapanToday = await insertRawTask(db, {
+      bucket: "scheduled",
+      scheduledOn: TODAY,
+      seq: 1,
+    });
+    await setMeta(db, "seq", "1");
+
+    await setTimeZone(PAGO_PAGO);
+    expect((await sync()).timeZone).toBe(PAGO_PAGO);
+    expect(await taskById(scheduledJapanToday.id)).toEqual(scheduledJapanToday);
+    expect(await lastRolloverOn()).toBe(PAGO_TODAY);
+
+    await setTimeZone(null);
+    expect((await sync()).timeZone).toBe("Asia/Tokyo");
+    expect((await taskById(scheduledJapanToday.id))?.bucket).toBe("today");
+    expect(await lastRolloverOn()).toBe(TODAY);
+  });
+
+  it("Pago Pago の今日に予定したタスクは、Pago Pago の利用者の今日へ移る", async () => {
+    const task = await insertRawTask(db, {
+      bucket: "scheduled",
+      scheduledOn: PAGO_TODAY,
+      seq: 1,
+    });
+    await setMeta(db, "seq", "1");
+    await setTimeZone(PAGO_PAGO);
+
+    await sync();
+    const row = await taskById(task.id);
+    expect(row?.bucket).toBe("today");
+    expect(row?.arrivedOn).toBe(PAGO_TODAY);
+  });
+
+  it("西へ変えて論理日付が戻っても、何も動かず last_rollover_on も変わらない", async () => {
+    const today = await insertRawTask(db, { bucket: "today", arrivedOn: TODAY, seq: 1 });
+    await setMeta(db, "seq", "1");
+    await setMeta(db, "last_rollover_on", TODAY);
+    await setTimeZone(PAGO_PAGO);
+
+    await sync();
+    expect(await taskById(today.id)).toEqual(today);
+    expect(await lastRolloverOn()).toBe(TODAY);
+  });
+
+  it("東へ変えて論理日付が進むと、次の同期で一度だけ切り替える", async () => {
+    const task = await insertRawTask(db, { bucket: "scheduled", scheduledOn: TODAY, seq: 1 });
+    await setMeta(db, "seq", "1");
+    await setMeta(db, "last_rollover_on", PAGO_TODAY);
+    await setTimeZone("Asia/Tokyo");
+
+    await sync();
+    const moved = await taskById(task.id);
+    expect(moved?.bucket).toBe("today");
+    expect(await lastRolloverOn()).toBe(TODAY);
+
+    await sync();
+    expect(await taskById(task.id)).toEqual(moved);
+  });
+});

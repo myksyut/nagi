@@ -1,9 +1,10 @@
 //! 日付の計算と文言。日付は論理日付（YYYY-MM-DD の文字列。文字列の大小で比べられる）で持つ。
-//! 論理日付：Asia/Tokyo での現在時刻から 4 時間引いた日付（午前4時に日付が切り替わる。Worker と同じ決まり）
+//! 論理日付：タイムゾーンでの日付。ただし、その土地の時計で午前4時より前は前の日（Worker と同じ決まり）。
+//! クラウドの利用者のタイムゾーンは Worker が持ち（同期の応答の timeZone）、ない人は APP_TIME_ZONE の Asia/Tokyo
 
 use std::sync::LazyLock;
 
-use chrono::{DateTime, Datelike, Duration, NaiveDate, SecondsFormat, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Duration, NaiveDate, SecondsFormat, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use regex::Regex;
 use unicode_normalization::UnicodeNormalization;
@@ -44,9 +45,16 @@ pub fn from_naive(date: NaiveDate) -> String {
     date.format("%Y-%m-%d").to_string()
 }
 
+/// 経過時間で 4 時間引いてから変換すると、夏時間の切り替えの日に境目が 3 時や 5 時にずれるので、
+/// 土地の日付と時で決める
 pub fn logical_date(now: DateTime<Utc>, tz: Tz) -> String {
-    let shifted = now - Duration::hours(i64::from(DAY_START_HOUR));
-    from_naive(shifted.with_timezone(&tz).date_naive())
+    let local = now.with_timezone(&tz);
+    let date = local.date_naive();
+    if local.hour() < DAY_START_HOUR {
+        from_naive(date.pred_opt().unwrap_or(date))
+    } else {
+        from_naive(date)
+    }
 }
 
 /// YYYY-MM-DD に日数を足す（読めない日付はそのまま返す）
@@ -339,6 +347,33 @@ mod tests {
             iso(day_start("2026-10-06", APP_TIME_ZONE)),
             "2026-10-05T19:00:00.000Z"
         );
+    }
+
+    #[test]
+    fn 夏時間の切り替えの日も_土地の時計の午前4時に切り替わる() {
+        let at = |time: &str, tz: Tz| logical_date(parse_iso(time).unwrap(), tz);
+        let los_angeles = chrono_tz::America::Los_Angeles;
+        let sydney = chrono_tz::Australia::Sydney;
+        let kathmandu = chrono_tz::Asia::Kathmandu;
+        for (time, tz, expected) in [
+            // ロサンゼルス 3/8：2 時に夏時間（-07:00）が始まる。04:00 は 11:00Z
+            ("2026-03-08T10:59:59.000Z", los_angeles, "2026-03-07"),
+            ("2026-03-08T11:00:00.000Z", los_angeles, "2026-03-08"),
+            // ロサンゼルス 11/1：2 時に夏時間が終わる（-08:00）。04:00 は 12:00Z
+            ("2026-11-01T11:59:59.000Z", los_angeles, "2026-10-31"),
+            ("2026-11-01T12:00:00.000Z", los_angeles, "2026-11-01"),
+            // シドニー 4/5：3 時に夏時間が終わる（+10:00）。04:00 は 4/4 18:00Z
+            ("2026-04-04T17:59:59.000Z", sydney, "2026-04-04"),
+            ("2026-04-04T18:00:00.000Z", sydney, "2026-04-05"),
+            // シドニー 10/4：2 時に夏時間（+11:00）が始まる。04:00 は 10/3 17:00Z
+            ("2026-10-03T16:59:59.000Z", sydney, "2026-10-03"),
+            ("2026-10-03T17:00:00.000Z", sydney, "2026-10-04"),
+            // カトマンズ（+05:45）の 10/6 04:00 は 10/5 22:15Z
+            ("2026-10-05T22:14:59.000Z", kathmandu, "2026-10-05"),
+            ("2026-10-05T22:15:00.000Z", kathmandu, "2026-10-06"),
+        ] {
+            assert_eq!(at(time, tz), expected, "{time} {tz}");
+        }
     }
 
     #[test]

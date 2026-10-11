@@ -8,5 +8,7 @@ declare namespace Cloudflare {
     MIGRATION_0003_TEST_DB: D1Database;
     /** マイグレーションのテスト用の、空の D1（0004 のテスト） */
     MIGRATION_0004_TEST_DB: D1Database;
+    /** マイグレーションのテスト用の、空の D1（0005 のテスト） */
+    MIGRATION_0005_TEST_DB: D1Database;
   }
 }

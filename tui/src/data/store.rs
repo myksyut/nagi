@@ -8,7 +8,7 @@ use std::cell::RefCell;
 use std::rc::Rc;
 
 use chrono::{DateTime, Duration, Utc};
-use chrono_tz::Tz;
+use chrono_tz::{TZ_VARIANTS, Tz};
 use uuid::{NoContext, Timestamp, Uuid};
 
 use super::lists::Lists;
@@ -53,6 +53,8 @@ pub struct SyncFlow {
     pub base_cursor: u64,
     pub rows: Vec<SyncRow>,
     pub cursor: u64,
+    /// Worker が日付の切り替えに使ったタイムゾーン（IANA の名前。この端末のデータと、古い Worker では None）
+    pub time_zone: Option<String>,
 }
 
 /// 通信の出口。結果は Store の on_mutate_done・on_sync_done に届ける
@@ -194,6 +196,8 @@ pub struct Store {
     sending: Option<String>,
     syncing: bool,
     sync_again: bool,
+    /// hold_sync で、差分の取得を待たせている
+    sync_held: bool,
     /// 取得の流れのあいだに、操作の応答で確定した行（流れが終わるまで覚えておく）
     confirmed_during_flow: Option<Vec<SyncRow>>,
     notices: Vec<Notice>,
@@ -225,6 +229,7 @@ impl Store {
             sending: None,
             syncing: false,
             sync_again: false,
+            sync_held: false,
             confirmed_during_flow: None,
             notices: Vec::new(),
             lists: RefCell::new(None),
@@ -321,18 +326,33 @@ impl Store {
 
     // --- 差分の取得 ---------------------------------------------------------------------
 
-    /// 差分を取る（取得中なら、終わったあとにもう1回）。オフラインのあいだも、つながったかを確かめるために取りに行く
+    /// 差分を取る（取得中か、hold_sync で待たせているなら、あとでもう1回）。
+    /// オフラインのあいだも、つながったかを確かめるために取りに行く
     pub fn sync(&mut self) {
         if !self.is_active() {
             return;
         }
-        if self.syncing {
+        if self.syncing || self.sync_held {
             self.sync_again = true;
             return;
         }
         self.syncing = true;
         self.confirmed_during_flow = Some(Vec::new());
         self.transport.sync(self.cursor);
+    }
+
+    /// release_sync まで、どのきっかけ（日付の切り替え・保存のぶつかりなど）の差分の取得も待たせる。
+    /// 画面が、端末のタイムゾーンを Worker に書き終えるまで使う（先に取ると、Worker が前のゾーンで日付を切り替える）
+    pub fn hold_sync(&mut self) {
+        self.sync_held = true;
+    }
+
+    /// 待たせていた差分の取得があれば、始める
+    pub fn release_sync(&mut self) {
+        self.sync_held = false;
+        if !self.syncing && std::mem::take(&mut self.sync_again) {
+            self.sync();
+        }
     }
 
     /// 差分の取得の流れが終わった。全部そろってから、まとめて確定データに反映し、最後に手元の控えに保存する。
@@ -368,6 +388,9 @@ impl Store {
                 }
                 self.synced = true;
                 self.is_online = true;
+                if let Some(name) = flow.time_zone.as_deref() {
+                    self.set_time_zone(name);
+                }
             }
         }
         if self.sync_again && self.is_active() {
@@ -597,6 +620,40 @@ impl Store {
         self.purge_expired();
         self.sync();
         true
+    }
+
+    /// 日付を決めるタイムゾーンを変える（Worker が、利用者のゾーンとして返した名前）。
+    /// 今日は refresh_day と同じ決まりで計算し直す。Worker は同じゾーンで切り替えてから行を返しているので、
+    /// refresh_day と違って、差分は取り直さない。
+    /// chrono_tz は綴りどおりにしか読まないが、Worker の Intl は大文字と小文字を区別せずに受け付けるので、
+    /// 読めなければ区別せずに探し直す。それでも読めなければ、前のゾーンのまま（どちらも記録に残す）
+    fn set_time_zone(&mut self, name: &str) {
+        let tz = name.parse::<Tz>().ok().or_else(|| {
+            log::error(&format!(
+                "Worker が返したタイムゾーン {name} を、そのままでは読めません"
+            ));
+            TZ_VARIANTS
+                .iter()
+                .copied()
+                .find(|tz| tz.name().eq_ignore_ascii_case(name))
+        });
+        let Some(tz) = tz else {
+            log::error(&format!(
+                "Worker が返したタイムゾーン {name} を読めないため、{} のままにします",
+                self.tz.name()
+            ));
+            return;
+        };
+        if tz == self.tz {
+            return;
+        }
+        self.tz = tz;
+        *self.lists.borrow_mut() = None;
+        let next = logical_date(self.now(), tz);
+        if next != self.today {
+            self.today = next;
+            self.purge_expired();
+        }
     }
 
     fn purge_cutoff(&self) -> String {

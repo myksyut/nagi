@@ -26,6 +26,7 @@ export default defineConfig(async () => {
                   MIGRATION_TEST_DB: "migration-test",
                   MIGRATION_0003_TEST_DB: "migration-0003-test",
                   MIGRATION_0004_TEST_DB: "migration-0004-test",
+                  MIGRATION_0005_TEST_DB: "migration-0005-test",
                 },
                 // テスト用の値。wrangler.jsonc や .dev.vars の値より優先される
                 bindings: {

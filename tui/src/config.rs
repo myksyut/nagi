@@ -67,9 +67,12 @@ impl Config {
     /// クラウドになるのは、ログインしてあるとき（保存してあるログインか NAGI_TOKEN）と、Worker を名指ししたとき
     /// （`--server`・NAGI_SERVER。手元の開発サーバーや、自分で立てた Worker）
     pub fn is_cloud(&self) -> bool {
-        self.explicit_server
-            || std::env::var("NAGI_TOKEN").is_ok_and(|token| !token.is_empty())
-            || self.saved_session().is_some()
+        self.explicit_server || Self::has_env_token() || self.saved_session().is_some()
+    }
+
+    /// 環境変数 NAGI_TOKEN（自動の実行のログイン）があるか
+    pub fn has_env_token() -> bool {
+        std::env::var("NAGI_TOKEN").is_ok_and(|token| !token.is_empty())
     }
 
     /// この端末だけで使うときのデータ（Worker とは同期しない）
@@ -176,13 +179,34 @@ impl Config {
         Some(session).filter(|session| !session.token.is_empty())
     }
 
-    /// ログイン（トークンと、Worker が返した利用者の ID）を、自分だけが読めるファイルに保存する
+    /// ログイン（トークンと、Worker が返した利用者の ID）を、自分だけが読めるファイルに保存する。
+    /// 同じトークンの上書き（利用者の ID の書き足し）では、Worker に伝えてあるタイムゾーンを残す。
+    /// 新しいトークンは未送信として始め、起動のときに端末のタイムゾーンを送る（App::report_time_zone）
     pub fn save_session(&self, token: &str, user_id: Option<&str>) -> std::io::Result<()> {
-        let session = Session {
+        let time_zone = self
+            .saved_session()
+            .filter(|saved| saved.token == token)
+            .and_then(|saved| saved.time_zone);
+        self.write_session(&Session {
             token: token.to_string(),
             user_id: user_id.map(str::to_string),
-        };
-        write_private(&self.session_path(), &serde_json::to_string(&session)?)
+            time_zone,
+        })
+    }
+
+    /// Worker に伝えたタイムゾーンを、保存してあるログインに書く（トークンが同じときだけ）
+    pub fn save_time_zone(&self, token: &str, time_zone: &str) -> std::io::Result<()> {
+        match self.saved_session() {
+            Some(mut session) if session.token == token => {
+                session.time_zone = Some(time_zone.to_string());
+                self.write_session(&session)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn write_session(&self, session: &Session) -> std::io::Result<()> {
+        write_private(&self.session_path(), &serde_json::to_string(session)?)
     }
 
     pub fn clear_token(&self) {
@@ -210,6 +234,9 @@ pub struct Session {
     /// トークンの持ち主（Worker の利用者の ID）。利用者の ID を返さないころにログインしたものには、ない
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub user_id: Option<String>,
+    /// Worker に伝えた、この端末のタイムゾーン（IANA の名前）。古いログインには、ない
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub time_zone: Option<String>,
 }
 
 #[cfg(unix)]
@@ -367,6 +394,7 @@ mod tests {
             Some(Session {
                 token: "token-1".to_string(),
                 user_id: Some("user-1".to_string()),
+                time_zone: None,
             })
         );
         assert_eq!(config.saved_token().as_deref(), Some("token-1"));
@@ -378,6 +406,7 @@ mod tests {
             Some(Session {
                 token: "old-token".to_string(),
                 user_id: None,
+                time_zone: None,
             })
         );
         // ID が分からないログインは、ID の項目を書かない（古い版の nagi も読める形のまま）
@@ -389,5 +418,45 @@ mod tests {
 
         config.clear_token();
         assert_eq!(config.saved_session(), None);
+    }
+
+    #[test]
+    fn タイムゾーンを保存できる_同じトークンの上書きでは残り_新しいトークンでは消える() {
+        let config = Config::at(SERVER, &temp_dir("session-zone"));
+        config.save_session("token-1", None).unwrap();
+        config.save_time_zone("token-1", "Europe/Berlin").unwrap();
+        assert_eq!(
+            fs::read_to_string(config.session_path()).unwrap(),
+            r#"{"token":"token-1","time_zone":"Europe/Berlin"}"#
+        );
+
+        config.save_session("token-1", Some("user-1")).unwrap();
+        let saved = config.saved_session().unwrap();
+        assert_eq!(saved.user_id.as_deref(), Some("user-1"));
+        assert_eq!(saved.time_zone.as_deref(), Some("Europe/Berlin"));
+
+        // 別のトークンの控えには書かない
+        config.save_time_zone("other-token", "Asia/Tokyo").unwrap();
+        assert_eq!(
+            config.saved_session().unwrap().time_zone.as_deref(),
+            Some("Europe/Berlin")
+        );
+
+        config.save_session("token-2", Some("user-1")).unwrap();
+        assert_eq!(config.saved_session().unwrap().time_zone, None);
+    }
+
+    #[test]
+    fn time_zone_のない古いセッションのファイルが読める() {
+        let config = Config::at(SERVER, &temp_dir("session-old"));
+        fs::write(
+            config.session_path(),
+            r#"{"token":"old-token","user_id":"owner"}"#,
+        )
+        .unwrap();
+        let saved = config.saved_session().unwrap();
+        assert_eq!(saved.token, "old-token");
+        assert_eq!(saved.user_id.as_deref(), Some("owner"));
+        assert_eq!(saved.time_zone, None);
     }
 }

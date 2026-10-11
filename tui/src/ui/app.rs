@@ -1,7 +1,8 @@
 //! 画面の状態。データはストアが持ち、ここでは「どの画面か・何を選んでいるか・何を開いているか」を持つ
 
 use std::collections::{HashMap, VecDeque};
-use std::sync::mpsc::Sender;
+use std::sync::mpsc::{Receiver, Sender, channel};
+use std::thread;
 use std::time::{Duration, Instant};
 
 use super::AppEvent;
@@ -11,10 +12,10 @@ use super::text::{TextArea, TextInput};
 use super::views::ProjectFilter;
 use crate::config::{Config, Prefs};
 use crate::data::lists::split_by_started;
-use crate::data::net::NetEvent;
+use crate::data::net::{ApiClient, NetEvent};
 use crate::data::sort::{TaskSort, sort_tasks};
 use crate::data::{Destination, Notice, SaveFailure, Store};
-use crate::dates::{add_days, schedule_heading};
+use crate::dates::{APP_TIME_ZONE, add_days, device_time_zone, schedule_heading};
 use crate::model::{Mutation, Task};
 
 /// 一度に描く完了ログの行数。続きは、一番下で ↓ を押すと読み込む
@@ -211,6 +212,16 @@ pub enum TextField {
     Memo,
 }
 
+/// 端末のタイムゾーンを Worker へ書く通信の結果
+struct TimeZoneReport {
+    /// 送ったときのログインのトークン（ログインし直していたら、保存しない）
+    token: String,
+    time_zone: String,
+    /// 送る前に保存してあったタイムゾーン
+    previous: Option<String>,
+    sent: bool,
+}
+
 pub struct App {
     pub config: Config,
     pub store: Store,
@@ -254,6 +265,10 @@ pub struct App {
     /// ストアと通信の世代。ログインし直して作り直すたびに進め、古い通信の結果を捨てる
     pub generation: u64,
     last_sync: Instant,
+    time_zone_reports: Receiver<TimeZoneReport>,
+    time_zone_tx: Sender<TimeZoneReport>,
+    /// 端末のタイムゾーンを Worker へ書いている途中（終わるまで、差分は取らない）
+    time_zone_sending: bool,
     /// 起動した時刻。ホームのロゴの日の出の時計
     pub started_at: Instant,
 }
@@ -267,6 +282,7 @@ impl App {
     ) -> App {
         let today = store.today.clone();
         let prefs = config.load_prefs();
+        let (time_zone_tx, time_zone_reports) = channel();
         App {
             config,
             store,
@@ -304,6 +320,9 @@ impl App {
             events,
             generation: 0,
             last_sync: Instant::now(),
+            time_zone_reports,
+            time_zone_tx,
+            time_zone_sending: false,
             started_at: Instant::now(),
         }
     }
@@ -854,6 +873,7 @@ impl App {
     pub fn tick(&mut self) {
         let now = Instant::now();
         self.toasts.retain(|toast| toast.until > now);
+        self.finish_time_zone_reports();
         if self.login.is_some() {
             return;
         }
@@ -874,7 +894,56 @@ impl App {
 
     pub fn sync_now(&mut self) {
         self.last_sync = Instant::now();
+        self.report_time_zone();
         self.store.sync();
+    }
+
+    /// この端末のタイムゾーンが、Worker に伝えてある（保存してあるログインの）ものと違えば、別のスレッドで書く。
+    /// 書き終えるまで、ストアの差分の取得はどのきっかけでも待たせる（先に取ると、Worker が前のゾーンで日付を
+    /// 切り替えてしまう）。ログインし直して作り直したストアにも、書き終えるまでかけ直す。
+    /// NAGI_TOKEN のログインでは書かない（自動の実行が、利用者のゾーンを変えないため）
+    fn report_time_zone(&mut self) {
+        if !self.time_zone_sending
+            && !Config::has_env_token()
+            && let Some(session) = self.config.saved_session()
+        {
+            let device = device_time_zone().name();
+            if session.time_zone.as_deref() != Some(device) {
+                let client = ApiClient::new(&self.config.server, Some(session.token.clone()));
+                let tx = self.time_zone_tx.clone();
+                self.time_zone_sending = true;
+                thread::spawn(move || {
+                    let sent = client.set_time_zone(device).is_ok();
+                    let _ = tx.send(TimeZoneReport {
+                        token: session.token,
+                        time_zone: device.to_string(),
+                        previous: session.time_zone,
+                        sent,
+                    });
+                });
+            }
+        }
+        if self.time_zone_sending {
+            self.store.hold_sync();
+        }
+    }
+
+    /// 書き終えたものを受け取る。書けたら保存して知らせ、どちらでも待たせていた差分の取得を始める
+    /// （書けなかったときは、次の取得のときにもう一度書く）
+    fn finish_time_zone_reports(&mut self) {
+        while let Ok(report) = self.time_zone_reports.try_recv() {
+            self.time_zone_sending = false;
+            if report.sent {
+                if let Err(error) = self.config.save_time_zone(&report.token, &report.time_zone) {
+                    crate::log::error(&format!("タイムゾーンを保存できませんでした: {error}"));
+                }
+                // 保存してあるものがなく、日本時間のままのとき（今までの利用者）は、変わったことがないので知らせない
+                if report.previous.is_some() || report.time_zone != APP_TIME_ZONE.name() {
+                    self.toast_info(&format!("タイムゾーンを {} にしました", report.time_zone));
+                }
+            }
+            self.store.release_sync();
+        }
     }
 
     /// 端末にフォーカスが戻ったとき

@@ -397,3 +397,39 @@ describe("日付の切り替え：同期した利用者の行だけ", () => {
     });
   });
 });
+
+describe("タイムゾーン：相手の列は変わらない", () => {
+  beforeEach(async () => {
+    await env.DB.prepare("UPDATE users SET time_zone = NULL").run();
+  });
+
+  it("A の POST /api/time-zone は、A の列だけを変える", async () => {
+    const a = await clientOf(A);
+    const res = await a.post("/api/time-zone", { timeZone: "Europe/Berlin" });
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ timeZone: "Europe/Berlin" });
+
+    const zones = await env.DB.prepare("SELECT id, time_zone FROM users ORDER BY id").all();
+    expect(Object.fromEntries(zones.results.map((row) => [row.id, row.time_zone]))).toEqual({
+      [A]: "Europe/Berlin",
+      [B]: null,
+    });
+  });
+
+  it("同期で返る timeZone は自分の列のもの（B は設定がなければ APP_TIMEZONE）", async () => {
+    const a = await clientOf(A);
+    const b = await clientOf(B);
+    await a.post("/api/time-zone", { timeZone: "Europe/Berlin" });
+    expect((await a.sync()).timeZone).toBe("Europe/Berlin");
+    expect((await b.sync()).timeZone).toBe(env.APP_TIMEZONE);
+  });
+
+  it("読めない名前は 400 の schema で、列は変わらない", async () => {
+    const a = await clientOf(A);
+    const res = await a.post("/api/time-zone", { timeZone: "Mars/Base" });
+    expect(res.status).toBe(400);
+    expect(await errorBody(res)).toMatchObject({ error: "invalid_request", reason: "schema" });
+    const row = await env.DB.prepare("SELECT time_zone FROM users WHERE id = ?").bind(A).first();
+    expect(row?.time_zone).toBeNull();
+  });
+});

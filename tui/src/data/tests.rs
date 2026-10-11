@@ -1,7 +1,13 @@
 //! データ層のテスト。通信は偽物（送ったものを覚えるだけ）に差し替え、応答はテストが on_*_done で渡す
 
 use std::cell::RefCell;
+use std::fs;
+use std::io::{Read, Write};
+use std::net::{TcpListener, TcpStream};
 use std::rc::Rc;
+use std::sync::mpsc::channel;
+use std::thread;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 
@@ -10,11 +16,13 @@ use super::store::{
     ApiFailure, Failure, Notice, PerformOptions, SaveFailure, StopReason, Store, StoreOptions,
     SyncFlow, Transport,
 };
-use crate::dates::{APP_TIME_ZONE, parse_iso};
+use crate::config::Config;
+use crate::dates::{APP_TIME_ZONE, device_time_zone, parse_iso};
 use crate::model::{
     Bucket, ChecklistItem, Mutation, MutationBatch, Priority, Project, ProjectChanges, SyncRow,
     Task, TaskChanges,
 };
+use crate::ui::app::App;
 
 #[derive(Default)]
 struct Sent {
@@ -99,6 +107,7 @@ impl Harness {
             base_cursor: 0,
             rows: tasks.into_iter().map(SyncRow::Task).collect(),
             cursor: 10,
+            time_zone: None,
         }));
     }
 
@@ -228,6 +237,7 @@ fn 通信できなかったらオフラインになり_操作を止める_差分
         base_cursor: 10,
         rows: vec![],
         cursor: 10,
+        time_zone: None,
     }));
     assert!(h.store.is_online);
     assert!(h.store.complete_tasks(&ids(&["t1"])).is_ok());
@@ -591,6 +601,7 @@ fn 差分の取得のあいだに確定した行は_全件の置き換えのあ�
         base_cursor: 0,
         rows: vec![SyncRow::Task(task("t1", Bucket::Inbox, "a0"))],
         cursor: 20,
+        time_zone: None,
     }));
     assert!(h.task("t1").completed_at.is_some());
     // 取得中に来たきっかけは、終わったあとにもう1回
@@ -601,6 +612,7 @@ fn 差分の取得のあいだに確定した行は_全件の置き換えのあ�
         base_cursor: 20,
         rows: vec![],
         cursor: 20,
+        time_zone: None,
     }));
     assert_eq!(h.sent.borrow().syncs, vec![0, 10, 20, 20]);
 }
@@ -637,6 +649,7 @@ fn 元に戻すと決まりが崩れるときは_戻さずに知らせる() {
         base_cursor: 10,
         rows: vec![SyncRow::Task(moved)],
         cursor: 999,
+        time_zone: None,
     }));
     let sent = h.batch_count();
     // 「未着手に戻した」を戻すと、あとでにあるのに進行中になってしまう
@@ -650,4 +663,115 @@ fn 元に戻すと決まりが崩れるときは_戻さずに知らせる() {
             ..
         }]
     ));
+}
+
+#[test]
+fn 同期の応答のタイムゾーンで_今日が変わる() {
+    let mut h = harness();
+    assert_eq!(h.store.today, TODAY);
+
+    let sync_with = |h: &mut Harness, time_zone: Option<&str>| {
+        h.store.sync();
+        h.store.on_sync_done(Ok(SyncFlow {
+            base_cursor: 10,
+            rows: vec![],
+            cursor: 10,
+            time_zone: time_zone.map(str::to_string),
+        }));
+    };
+    // 東京の 12:00 は、Pago Pago（UTC-11）ではまだ前の日の 16:00
+    sync_with(&mut h, Some("Pacific/Pago_Pago"));
+    assert_eq!(h.store.tz, chrono_tz::Pacific::Pago_Pago);
+    assert_eq!(h.store.today, "2026-10-05");
+
+    // 知らない名前と、ゾーンのない応答（古い Worker）では変わらない
+    sync_with(&mut h, Some("Mars/Base"));
+    sync_with(&mut h, None);
+    assert_eq!(h.store.today, "2026-10-05");
+
+    // 大文字と小文字だけが違う名前も読む（Worker の Intl は区別せずに受け付ける）
+    sync_with(&mut h, Some("asia/TOKYO"));
+    assert_eq!(h.store.tz, APP_TIME_ZONE);
+    assert_eq!(h.store.today, TODAY);
+    // 変えるのに、差分を取り直さない（Worker は同じゾーンで切り替えてから行を返している）
+    assert_eq!(h.sent.borrow().syncs.len(), 4);
+}
+
+/// 届いた要求を1つ、本文まで読む。応答はまだ返さないので、送った側は待ったまま
+fn accept_request(listener: &TcpListener) -> (TcpStream, String) {
+    let (mut stream, _) = listener.accept().unwrap();
+    let mut request = Vec::new();
+    let mut buf = [0; 4096];
+    loop {
+        let read = stream.read(&mut buf).unwrap();
+        assert!(read > 0, "要求の途中で切れました");
+        request.extend_from_slice(&buf[..read]);
+        let text = String::from_utf8_lossy(&request).into_owned();
+        let Some(head_end) = text.find("\r\n\r\n") else {
+            continue;
+        };
+        let length = text[..head_end]
+            .lines()
+            .filter_map(|line| line.split_once(':'))
+            .find(|(name, _)| name.eq_ignore_ascii_case("content-length"))
+            .map_or(0, |(_, value)| value.trim().parse().unwrap());
+        if request.len() >= head_end + 4 + length {
+            return (stream, text);
+        }
+    }
+}
+
+#[test]
+fn タイムゾーンを書いているあいだは_日付が変わっても差分を取らず_書けなかったときも終われば取る() {
+    let Harness {
+        store, sent, clock, ..
+    } = harness();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let dir = std::env::temp_dir().join(format!("nagi-time-zone-gate-{}", uuid::Uuid::now_v7()));
+    let config = Config::at(&format!("http://{}", listener.local_addr().unwrap()), &dir);
+    config.save_session("token-1", None).unwrap();
+    // Worker に伝えてあるのは、端末と違うゾーン（端末のゾーンを変えたあと）
+    let told = if device_time_zone() == chrono_tz::Pacific::Pago_Pago {
+        "Asia/Tokyo"
+    } else {
+        "Pacific/Pago_Pago"
+    };
+    config.save_time_zone("token-1", told).unwrap();
+    let (events, _events) = channel();
+    let mut app = App::new(config, store, None, events);
+
+    app.sync_now();
+    let (mut stream, request) = accept_request(&listener);
+    assert!(request.starts_with("POST /api/time-zone "), "{request}");
+
+    // 書いているあいだに東京の午前4時を越え、端末にフォーカスも戻る
+    *clock.borrow_mut() = parse_iso("2026-10-06T19:00:00.000Z").unwrap();
+    app.tick();
+    assert_eq!(app.store.today, "2026-10-07");
+    app.on_focus_gained();
+    app.tick();
+    assert!(sent.borrow().syncs.is_empty());
+
+    let body = r#"{"error":"internal"}"#;
+    write!(
+        stream,
+        "HTTP/1.1 500 Internal Server Error\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+        body.len()
+    )
+    .unwrap();
+    drop(stream);
+    for _ in 0..500 {
+        app.tick();
+        if !sent.borrow().syncs.is_empty() {
+            break;
+        }
+        thread::sleep(Duration::from_millis(10));
+    }
+    // 待たせていたきっかけは、まとめて1回
+    assert_eq!(sent.borrow().syncs, vec![0]);
+    assert_eq!(
+        app.config.saved_session().unwrap().time_zone.as_deref(),
+        Some(told)
+    );
+    fs::remove_dir_all(dir).unwrap();
 }

@@ -74,6 +74,11 @@ export function mayUse(
   return mayLogin(policy, user.githubUserId);
 }
 
+/** 利用者のタイムゾーンを書く（日付の切り替えに使う。src/worker/sync/rollover.ts） */
+export async function setUserTimeZone(db: Db, userId: string, timeZone: string): Promise<void> {
+  await db.update(users).set({ timeZone }).where(eq(users.id, userId));
+}
+
 async function findUserId(db: Db, githubUserId: number): Promise<string | null> {
   const row = await db
     .select({ id: users.id })

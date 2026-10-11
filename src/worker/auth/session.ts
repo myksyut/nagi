@@ -14,6 +14,8 @@ export type Session = {
   userId: string;
   /** 持ち主の GitHub ユーザー ID（持ち主の行にまだ入っていなければ null） */
   githubUserId: number | null;
+  /** 持ち主の IANA タイムゾーン（NULL は設定なし。APP_TIMEZONE として扱う） */
+  timeZone: string | null;
   expiresAt: Date;
   /**
    * 有効期限が延びた（expiresAt は延びたあとの期限）。
@@ -54,13 +56,18 @@ export async function validateSession(db: Db, token: string, now: Date): Promise
       userId: sessions.userId,
       expiresAt: sessions.expiresAt,
       githubUserId: users.githubUserId,
+      timeZone: users.timeZone,
     })
     .from(sessions)
     .innerJoin(users, eq(users.id, sessions.userId))
     .where(eq(sessions.id, id))
     .get();
   if (!row) return null;
-  const owner = { userId: row.userId, githubUserId: row.githubUserId };
+  const owner = {
+    userId: row.userId,
+    githubUserId: row.githubUserId,
+    timeZone: row.timeZone,
+  };
 
   const expiresAt = new Date(row.expiresAt);
   if (!(expiresAt.getTime() > now.getTime())) {

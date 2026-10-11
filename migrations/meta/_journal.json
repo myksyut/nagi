@@ -36,6 +36,13 @@
       "when": 1791308814754,
       "tag": "0004_users",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1791728318993,
+      "tag": "0005_user_time_zone",
+      "breakpoints": true
     }
   ]
 }

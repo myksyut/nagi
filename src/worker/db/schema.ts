@@ -27,6 +27,11 @@ export const users = sqliteTable(
     githubUserId: integer("github_user_id"),
     /** ISO 8601（UTC） */
     createdAt: text("created_at").notNull(),
+    /**
+     * 利用者の IANA タイムゾーン。NULL は APP_TIMEZONE（Asia/Tokyo）として扱う（切り替えが変わらない）。
+     * 最後にログインした端末か、ゾーンが変わった端末が書く
+     */
+    timeZone: text("time_zone"),
   },
   (t) => [uniqueIndex("users_github_user_id_idx").on(t.githubUserId)],
 );

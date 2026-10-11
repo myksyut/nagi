@@ -598,6 +598,47 @@ describe("POST /auth/device/token", () => {
   });
 });
 
+describe("POST /auth/device/token の timeZone", () => {
+  const deviceCode = DEVICE_CODE_RESPONSE.device_code;
+
+  async function ownerTimeZone() {
+    return (await userRows()).find((row) => row.id === OWNER_USER_ID)?.timeZone;
+  }
+
+  beforeEach(async () => {
+    await env.DB.prepare("UPDATE users SET time_zone = NULL").run();
+  });
+
+  it("timeZone を付けたログインで、利用者の列に入る。付けないログインでは変わらない", async () => {
+    mockGitHub();
+    expect(
+      (await post("/auth/device/token", { deviceCode, timeZone: "Europe/Berlin" })).status,
+    ).toBe(200);
+    expect(await ownerTimeZone()).toBe("Europe/Berlin");
+
+    vi.restoreAllMocks();
+    mockGitHub();
+    const res = await post("/auth/device/token", { deviceCode });
+    expect(((await res.json()) as { status: string }).status).toBe("ok");
+    expect(await ownerTimeZone()).toBe("Europe/Berlin");
+  });
+
+  it("ok にならないときは書かない", async () => {
+    mockGitHub({ tokenResponse: () => Response.json({ error: "authorization_pending" }) });
+    await post("/auth/device/token", { deviceCode, timeZone: "Europe/Berlin" });
+    expect(await ownerTimeZone()).toBeNull();
+  });
+
+  it("読めない名前は 400 の invalid_request で、GitHub へ問い合わせず、列も変わらない", async () => {
+    const spy = mockGitHub();
+    const res = await post("/auth/device/token", { deviceCode, timeZone: "Mars/Base" });
+    expect(res.status).toBe(400);
+    expect(await res.json()).toEqual({ error: "invalid_request" });
+    expect(spy).not.toHaveBeenCalled();
+    expect(await ownerTimeZone()).toBeNull();
+  });
+});
+
 describe("POST /auth/logout", () => {
   async function insertSession(token: string) {
     await getDb(env.DB)
