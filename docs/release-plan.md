@@ -1543,13 +1543,13 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 **Build.**
 
-- [ ] Stop until the operator が、`TAURI_SIGNING_PRIVATE_KEY` と `TAURI_UPDATER_PUBKEY` の削除を認め、`main` の secret scanning、push protection、branch protection を有効にする。
+- [ ] Stop until the operator が、secret の `TAURI_SIGNING_PRIVATE_KEY` と変数（variable）の `TAURI_UPDATER_PUBKEY` の削除を認め、`main` の secret scanning、push protection、branch protection を有効にする。
 - [ ] 第三者の action は、すべて完全な SHA に固定したままにする。
 - [ ] 直し方のある新しい advisory は CI を落とす。直し方のないものは、理由と日付つきで `tui/deny.toml` に載せる。
 
 **You see.**
 
-- [ ] `gh secret list` に `TAURI_*` の secret が出ない。
+- [ ] `gh secret list` と `gh variable list` に `TAURI_*` が出ない。
 - [ ] 既知の advisory のある crate を足すテスト PR は、`cargo deny check` で落ちる。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
@@ -1564,7 +1564,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 - [ ] Lane 4. head で `pnpm audit --prod` を回す。Save `pnpm-audit.png`. Pass when 終了コードが 0 である。
 - [ ] Lane 5. すべての workflow の `permissions:` を `scripts/tui-shot.py --cmd 'grep -n permissions -A4 .github/workflows/*.yml'` で読む。Save `permissions.png`. Pass when `write-all` の job がなく、書けるのは release と deploy の job だけである。
 - [ ] Lane 6. 作業用の枝に偽のトークンの文字列を push する。Save `push-protection.png`. Pass when GitHub が push を止める。
-- [ ] Lane 7. `gh secret list` を回す。Save `secrets.png`. Pass when `TAURI_*` の secret が残っていない。
+- [ ] Lane 7. `gh secret list` と `gh variable list` を回す。Save `secrets.png`. Pass when `TAURI_*` が残っていない。
 - [ ] Lane 8. `main` への直接の push を試す。Save `branch-protection.png`. Pass when GitHub が断る。
 - [ ] Lane 9. 1 日後に Dependabot のタブを読む。Save `dependabot.png`. Pass when cargo、npm、actions の更新が出ている。
 - [ ] Lane 10. すべての `uses:` の行に 40 文字の SHA があるか調べる。Save `pinned-actions.png`. Pass when タグだけを使うものがない。
