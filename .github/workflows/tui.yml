@@ -3,7 +3,8 @@ name: tui
 # TUI（Rust。バイナリの名前は nagi）を、Mac（Apple シリコン）と Linux（x86_64。musl で静的に組むので、glibc の版を問わず動く）でビルドする。
 # - PR：tui/ を変えたときに、ビルドして動かせるかだけを確かめる（公開しない）
 # - v<版> のタグの push：検査（check）と、各 target のビルドと動作確認（build）を通ったら、GitHub の Releases に出し、Homebrew の tap を更新する
-# - 手で動かす（tag を入れる）：そのタグで同じ流れを動かす。Release がもうあれば作り直さず、tap の更新だけをやり直す
+# - 手で動かす（tag を入れる）：そのタグで同じ流れを動かす。Release を新しく作るときは、そのタグの上で動かす（--ref <tag>）。Release がもうあれば作り直さず、どの ref からでも tap の更新だけをやり直せる
+# 出すソースは source job でタグを commit SHA に一度だけ解決し、全 job がその SHA を checkout する。Release を作る直前に、タグがまだその SHA を指すか確かめる
 # 版の正本は tui/Cargo.toml の version。main への push では出さない。出し方は docs/releasing.md
 on:
   pull_request:
@@ -27,8 +28,51 @@ env:
   TAG: ${{ inputs.tag || github.ref_name }}
 
 jobs:
+  # 出すソースを一度だけ決める。タグ名ではなく commit SHA を、以降の job が checkout する（途中でタグが動いても、検査したものと違うものを出さない）。
+  # PR では github.sha をそのまま使う
+  source:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    outputs:
+      sha: ${{ steps.resolve.outputs.sha }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
+      EVENT_NAME: ${{ github.event_name }}
+      REF: ${{ github.ref }}
+      EVENT_SHA: ${{ github.sha }}
+    steps:
+      - name: タグを commit SHA に解決する
+        id: resolve
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            echo "sha=$EVENT_SHA" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          read -r type sha < <(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '[.object.type, .object.sha] | join(" ")')
+          while [ "$type" = tag ]; do
+            read -r type sha < <(gh api "repos/$GH_REPO/git/tags/$sha" --jq '[.object.type, .object.sha] | join(" ")')
+          done
+          if [ "$type" != commit ]; then
+            echo "::error::タグ $TAG が commit を指していない（$type）"
+            exit 1
+          fi
+          # Release を新しく作る実行は、そのタグの上で動かす（provenance がビルドしたソースと一致するように）
+          if [ "$REF" = "refs/tags/$TAG" ]; then
+            if [ "$EVENT_SHA" != "$sha" ]; then
+              echo "::error::この実行の commit $EVENT_SHA と、タグ $TAG の指す $sha が違う"
+              exit 1
+            fi
+          elif ! gh release view "$TAG" > /dev/null 2>&1; then
+            echo "::error::Release $TAG はまだない。作るには、タグの上で動かす：gh workflow run tui.yml --ref $TAG -f tag=$TAG（今の ref は $REF）"
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "::notice::$TAG は $sha"
+
   check:
     # 出すときだけ動く。build と並んで動く
+    needs: source
     if: github.event_name != 'pull_request'
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -38,7 +82,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ needs.source.outputs.sha }}
           persist-credentials: false
       - name: タグと Cargo.toml の版が同じか確かめる
         working-directory: .
@@ -62,6 +106,7 @@ jobs:
 
   build:
     name: build (${{ matrix.target }})
+    needs: source
     runs-on: ${{ matrix.os }}
     timeout-minutes: 30
     strategy:
@@ -79,7 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ github.event_name == 'pull_request' && github.sha || format('refs/tags/{0}', env.TAG) }}
+          ref: ${{ needs.source.outputs.sha }}
           persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
@@ -126,7 +171,7 @@ jobs:
 
   release:
     if: github.event_name != 'pull_request'
-    needs: [check, build]
+    needs: [source, check, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -142,7 +187,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ needs.source.outputs.sha }}
           persist-credentials: false
       # 手で動かしたときに、Release がもうあれば作り直さない（tap の更新のやり直し用）
       - name: Release があるか見る
@@ -153,6 +198,20 @@ jobs:
             echo "::notice::Release $TAG はもうあるので、作り直さない"
           else
             echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
+      # 検査とビルドをしたあとにタグが動いていたら、出さない
+      - name: タグがまだ同じ commit を指すか確かめる
+        if: steps.existing.outputs.exists != 'true'
+        env:
+          SOURCE_SHA: ${{ needs.source.outputs.sha }}
+        run: |
+          read -r type sha < <(gh api "repos/$GH_REPO/git/ref/tags/$TAG" --jq '[.object.type, .object.sha] | join(" ")')
+          while [ "$type" = tag ]; do
+            read -r type sha < <(gh api "repos/$GH_REPO/git/tags/$sha" --jq '[.object.type, .object.sha] | join(" ")')
+          done
+          if [ "$sha" != "$SOURCE_SHA" ]; then
+            echo "::error::タグ $TAG が $SOURCE_SHA から $sha に動いた。出さない（直すなら新しい版を切る）"
+            exit 1
           fi
       - uses: actions/download-artifact@v8
         if: steps.existing.outputs.exists != 'true'
@@ -195,7 +254,7 @@ jobs:
     # 別のリポジトリへ push するので、secrets.TAP_GITHUB_TOKEN（tap の contents を書ける fine-grained PAT）が要る。なければ失敗する。
     # プレリリースでは動かさない
     if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
-    needs: release
+    needs: [source, release]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
@@ -206,12 +265,12 @@ jobs:
           TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
         run: |
           if [ -z "$TAP_GITHUB_TOKEN" ]; then
-            echo "::error::secret TAP_GITHUB_TOKEN がない。入れてから gh workflow run tui.yml -f tag=$TAG でやり直す"
+            echo "::error::secret TAP_GITHUB_TOKEN がない。入れてから gh workflow run tui.yml --ref $TAG -f tag=$TAG でやり直す"
             exit 1
           fi
       - uses: actions/checkout@v7
         with:
-          ref: refs/tags/${{ env.TAG }}
+          ref: ${{ needs.source.outputs.sha }}
           persist-credentials: false
       - uses: actions/checkout@v7
         with:

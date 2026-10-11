@@ -12,7 +12,7 @@ TUI（`nagi`）は、`v<版>` のタグを push したときだけ出る。main 
    git tag v0.2.0 && git push origin v0.2.0
    ```
 
-`tui.yml` が、`check`（整形・lint・テスト・版の突き合わせ）と、target ごとのビルドと動作確認（`nagi --version` と、一時的な HOME での `add` / `list --json`）を通したあと、次を行う。
+`tui.yml` は、まず `source` でタグを commit SHA に一度だけ解決し、`check`・各 `build`・`release`・`tap` はすべてその SHA を checkout する（タグ名では checkout しない）。そのうえで `check`（整形・lint・テスト・版の突き合わせ）と、target ごとのビルドと動作確認（`nagi --version` と、一時的な HOME での `add` / `list --json`）を通し、Release を作る直前にタグがまだその SHA を指すか確かめる（動いていたら失敗する）。そのあと次を行う。
 
 - `SHA256SUMS` と provenance をつけて Release を作る。本文は CHANGELOG のその版の節に、PR の一覧（`.github/release.yml` の label の分け方）が続く
 - Homebrew の tap（`vars.TAP_REPOSITORY`。なければ `myksyut/homebrew-tap`）の formula を更新する。secret `TAP_GITHUB_TOKEN` がなければ失敗する
@@ -21,18 +21,15 @@ TUI（`nagi`）は、`v<版>` のタグを push したときだけ出る。main 
 
 ## 失敗したら
 
-tap の更新だけが失敗したとき（トークンの期限切れなど）は、直してから、Release を作り直さずに `tap` だけをやり直す。
+tap の更新だけが失敗したとき（トークンの期限切れなど）は、直してから、Release を作り直さずに `tap` だけをやり直す。Release がもうあるので、どの ref からでも動かせる。
 
 ```sh
-gh workflow run tui.yml -f tag=v0.2.0
+gh workflow run tui.yml --ref v0.2.0 -f tag=v0.2.0
 ```
 
-`check` や `build` が失敗したときは、直す PR をマージして、タグを付け直す（Release はまだできていない）。
+タグの上で動かした `--ref v0.2.0` の形が正式な形で、Release をまだ作っていないタグを手で出すときも同じ。Release がなく、タグ以外の ref（main など）から動かすと、`source` が失敗する（provenance がビルドしたソースと合わなくなるため）。
 
-```sh
-git push origin :refs/tags/v0.2.0
-git tag -f v0.2.0 && git push origin v0.2.0
-```
+`check` や `build` が失敗したときは、公開済みのタグを動かさない。直す PR をマージして、新しい patch 版（`v0.2.1` など）を切る。
 
 ## 取り消す
 
