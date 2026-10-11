@@ -408,6 +408,21 @@ fn plan(batch: &MutationBatch, facts: &mut Facts) -> Step<Plan> {
     Ok(Plan { order, created })
 }
 
+/// ファイルがなければ、空のファイルを 0600 で置く（あれば何もしない）
+fn create_private_file(path: &Path) -> io::Result<()> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    match options.open(path) {
+        Err(error) if error.kind() != io::ErrorKind::AlreadyExists => Err(error),
+        _ => Ok(()),
+    }
+}
+
 fn user_version(conn: &Connection) -> rusqlite::Result<i64> {
     conn.query_row("PRAGMA user_version", [], |row| row.get(0))
 }
@@ -519,6 +534,13 @@ impl DeviceDb {
                 path.display()
             )
         };
+        // SQLite は 0644 でファイルを作るので、先に自分だけが読める空のファイルを置く
+        create_private_file(path).map_err(|error| {
+            format!(
+                "この端末のデータ（{}）を作れませんでした：{error}",
+                path.display()
+            )
+        })?;
         let mut conn = Connection::open(path).map_err(failed)?;
         conn.busy_timeout(StdDuration::from_secs(5))
             .map_err(failed)?;
@@ -742,6 +764,15 @@ impl DeviceDb {
         })
     }
 
+    /// 削除済みを除くすべての行を、行の JSON のまま seq の順に返す（完了したタスクとアーカイブしたプロジェクトは含む）。
+    /// 一つの読み取りのトランザクションで両方の表を読むので、ほかの nagi が書いていても、表のあいだでずれない
+    pub fn export(&mut self) -> Result<Export, String> {
+        let tx = self.conn.transaction().map_err(|error| error.to_string())?;
+        let projects = export_rows(&tx, "projects")?;
+        let tasks = export_rows(&tx, "tasks")?;
+        Ok(Export { projects, tasks })
+    }
+
     /// 未削除のタスクとプロジェクトの数（ログインしたときに、この端末に残っている行があるかを知らせるのに使う）
     pub fn count(&self) -> rusqlite::Result<usize> {
         let count: i64 = self.conn.query_row(
@@ -752,6 +783,29 @@ impl DeviceDb {
         )?;
         Ok(usize::try_from(count).unwrap_or(0))
     }
+}
+
+/// `DeviceDb::export` の結果（行の JSON は、保存してあるまま）
+pub struct Export {
+    pub projects: Vec<serde_json::Value>,
+    pub tasks: Vec<serde_json::Value>,
+}
+
+fn export_rows(tx: &Transaction, table: &str) -> Result<Vec<serde_json::Value>, String> {
+    let mut statement = tx
+        .prepare(&format!(
+            "SELECT json FROM {table} WHERE deleted_at IS NULL ORDER BY seq"
+        ))
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|error| error.to_string())?;
+    let mut values = Vec::new();
+    for json in rows {
+        let json = json.map_err(|error| error.to_string())?;
+        values.push(serde_json::from_str(&json).map_err(|error| error.to_string())?);
+    }
+    Ok(values)
 }
 
 /// 今日に入るきっかけになった日付（予定の日付と締切のうち、今日以前で早いほう）
@@ -1783,6 +1837,78 @@ mod tests {
         assert_eq!(not_deleted(all(&mut db)), expected);
         // 6 件のタスクと 2 つのプロジェクト（削除済みのタスクは除く）
         assert_eq!(expected.len(), 8);
+    }
+
+    fn seqs(values: &[serde_json::Value]) -> Vec<u64> {
+        values
+            .iter()
+            .map(|value| value["seq"].as_u64().unwrap())
+            .collect()
+    }
+
+    #[test]
+    fn 書き出しは_削除済みだけを除いた行を_seqの順に返す() {
+        let scratch = Scratch::new();
+        let path = scratch.db();
+        load_v1_fixture(&path);
+        // 削除済みのプロジェクトも、seq の順の途中に混ぜておく
+        Connection::open(&path)
+            .unwrap()
+            .execute(
+                "INSERT INTO projects VALUES ('gone', 3, '2026-10-11T00:00:00.000Z', '{\"id\":\"gone\",\"seq\":3,\"deletedAt\":\"2026-10-11T00:00:00.000Z\"}')",
+                [],
+            )
+            .unwrap();
+        let mut db = DeviceDb::open(&path).unwrap();
+
+        let export = db.export().unwrap();
+
+        // 未完了 5 件と完了 1 件（削除済みの seq 18 は除く）。アーカイブしたプロジェクト（seq 17）は入る
+        assert_eq!(seqs(&export.tasks), vec![1, 5, 8, 10, 12, 16]);
+        assert_eq!(seqs(&export.projects), vec![2, 17]);
+        let completed = &export.tasks[5];
+        assert!(completed["completedAt"].is_string());
+        assert!(export.projects[1]["archivedAt"].is_string());
+    }
+
+    #[test]
+    fn 書き出した行は_改行と全角の空白と絵文字を含むメモを読み戻すと同じ文字() {
+        let memo = "一行目\n二行目\u{3000}全角の空白\n🙂👨‍👩‍👧 \"引用\" \\ \t末尾\r\n";
+        let mut db = DeviceDb::open_in_memory();
+        db.mutate(
+            &batch(
+                1,
+                vec![create_with(1, Bucket::Inbox, "a0", |task| {
+                    task.memo = memo.to_string();
+                })],
+            ),
+            at(NOW),
+        )
+        .unwrap();
+
+        let export = db.export().unwrap();
+        let text = serde_json::to_string_pretty(&export.tasks).unwrap();
+        let read_back: Vec<serde_json::Value> = serde_json::from_str(&text).unwrap();
+
+        assert_eq!(read_back[0]["memo"].as_str(), Some(memo));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn 新しく作るデータのファイルは_自分だけが読める権限() {
+        use std::os::unix::fs::PermissionsExt;
+        let scratch = Scratch::new();
+        let path = scratch.db();
+
+        let mut db = DeviceDb::open(&path).unwrap();
+        db.mutate(&batch(1, vec![create(1, Bucket::Inbox, "a0")]), at(NOW))
+            .unwrap();
+
+        let mode = |path: &Path| std::fs::metadata(path).unwrap().permissions().mode() & 0o777;
+        assert_eq!(mode(&path), 0o600);
+        let mut wal = path.clone().into_os_string();
+        wal.push("-wal");
+        assert_eq!(mode(Path::new(&wal)), 0o600);
     }
 
     #[test]

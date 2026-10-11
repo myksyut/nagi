@@ -311,6 +311,17 @@ impl Mutation {
             base_checklist: None,
         }
     }
+
+    /// 記録に残す短い形（操作の種類と行の ID。タイトル・メモ・チェックリストの文字は入れない）
+    pub fn summary(&self) -> String {
+        let kind = match self {
+            Mutation::TaskCreate { .. } => "task.create",
+            Mutation::TaskUpdate { .. } => "task.update",
+            Mutation::ProjectCreate { .. } => "project.create",
+            Mutation::ProjectUpdate { .. } => "project.update",
+        };
+        format!("{kind} {}", self.target().1)
+    }
 }
 
 /// 操作のまとまり。id（UUIDv7）で再送を見分ける
@@ -406,6 +417,38 @@ mod tests {
                 "task": { "id": "t1", "title": "見積もり", "memo": "", "bucket": "inbox", "projectId": null, "rank": "a0" }
             })
         );
+    }
+
+    #[test]
+    fn 記録用の要約に_タイトルとメモの文字は入らない() {
+        let create = Mutation::TaskCreate {
+            task: NewTask {
+                id: "t1".into(),
+                title: "SECRET-TITLE".into(),
+                memo: "SECRET-MEMO".into(),
+                bucket: Bucket::Inbox,
+                scheduled_on: None,
+                project_id: None,
+                rank: "a0".into(),
+            },
+        };
+        let update = Mutation::update_task(
+            "t2",
+            TaskChanges {
+                title: Some("SECRET-TITLE".into()),
+                memo: Some("SECRET-MEMO".into()),
+                ..Default::default()
+            },
+        );
+        let project = Mutation::ProjectCreate {
+            project: NewProject {
+                id: "p1".into(),
+                name: "SECRET-NAME".into(),
+            },
+        };
+        assert_eq!(create.summary(), "task.create t1");
+        assert_eq!(update.summary(), "task.update t2");
+        assert_eq!(project.summary(), "project.create p1");
     }
 
     #[test]
