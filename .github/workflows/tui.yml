@@ -34,7 +34,7 @@ jobs:
             target: x86_64-unknown-linux-musl
     # PR では、新しい push が来たら古いビルドをやめる。main のビルドは最後まで動かす（Release に出すため）
     concurrency:
-      group: tui-build-${{ github.ref }}-${{ matrix.target }}
+      group: tui-build-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.target }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
