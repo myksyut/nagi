@@ -225,6 +225,10 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
     UnsentKept => "送っていない変更 {0} 件は残してあります",
     UnsentNotSaved => "送っていない変更 {0} 件を保存できていません。閉じると消えます",
 
+    // data/mod.rs
+    LogLocalDbOpenFailed => "手元の控えを開けないため、保存せずに動きます: {0}",
+    LogPendingMoveFailed => "Worker ごとの控えに残した変更を、利用者の控えへ移せませんでした: {0}",
+
     // data/net.rs
     NetResetRepeated => "reset が続きました",
 

@@ -23,6 +23,7 @@ use self::net::{ApiClient, NetEvent, NetTransport};
 use self::store::StoreOptions;
 use crate::config::Config;
 use crate::dates::{APP_TIME_ZONE, device_time_zone};
+use crate::i18n::{Msg, fill};
 use crate::log;
 
 pub use actions::{AddTask, Destination, Placement};
@@ -82,9 +83,7 @@ fn open_local(config: &Config, user_id: Option<&str>, owner: &PendingOwner) -> O
     let local = match LocalDb::open(&path) {
         Ok(local) => local,
         Err(error) => {
-            log::error(&format!(
-                "手元の控えを開けないため、保存せずに動きます: {error}"
-            ));
+            log::error(&fill(Msg::LogLocalDbOpenFailed, &[&error]));
             return None;
         }
     };
@@ -92,9 +91,7 @@ fn open_local(config: &Config, user_id: Option<&str>, owner: &PendingOwner) -> O
     if path != shared
         && let Err(error) = local.take_pending_from(&shared, owner)
     {
-        log::error(&format!(
-            "Worker ごとの控えに残した変更を、利用者の控えへ移せませんでした: {error}"
-        ));
+        log::error(&fill(Msg::LogPendingMoveFailed, &[&error]));
     }
     Some(local)
 }

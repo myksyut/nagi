@@ -148,16 +148,40 @@ mod tests {
         line: usize,
         column: usize,
         text: String,
-        raw: bool,
     }
 
-    /// ソースの文字列リテラルを集める。コメントと、`mod tests` から後ろは見ない
-    fn string_literals(source: &str) -> Vec<Literal> {
+    /// 本文のあるテスト用の `mod` だけを空行にして行番号を保つ。`mod tests;` の宣言は
+    /// 本文を持たないので、その後ろの製品コードも読む
+    fn without_inline_test_modules(source: &str) -> String {
         let lines: Vec<&str> = source.lines().collect();
-        let end = (0..lines.len().saturating_sub(1))
-            .find(|&i| lines[i].trim() == "#[cfg(test)]" && lines[i + 1].starts_with("mod "))
-            .unwrap_or(lines.len());
-        let chars: Vec<char> = lines[..end].join("\n").chars().collect();
+        let mut kept = Vec::with_capacity(lines.len());
+        let mut i = 0;
+        while i < lines.len() {
+            let inline_test_mod = lines[i].trim() == "#[cfg(test)]"
+                && lines.get(i + 1).is_some_and(|next| {
+                    let next = next.trim_start();
+                    (next.starts_with("mod ") || next.starts_with("pub mod "))
+                        && next.trim_end().ends_with('{')
+                });
+            if !inline_test_mod {
+                kept.push(lines[i]);
+                i += 1;
+                continue;
+            }
+            let indent = lines[i].len() - lines[i].trim_start().len();
+            let closer = format!("{}}}", " ".repeat(indent));
+            let end = (i + 2..lines.len())
+                .find(|&j| lines[j] == closer)
+                .unwrap_or(lines.len() - 1);
+            kept.extend(std::iter::repeat_n("", end + 1 - i));
+            i = end + 1;
+        }
+        kept.join("\n")
+    }
+
+    /// ソースの文字列リテラルを集める。コメントと、本文のあるテスト用の `mod` は見ない
+    fn string_literals(source: &str) -> Vec<Literal> {
+        let chars: Vec<char> = without_inline_test_modules(source).chars().collect();
         let is_ident = |c: char| c.is_alphanumeric() || c == '_';
         let (mut i, mut line, mut line_start) = (0, 1, 0);
         let mut found = Vec::new();
@@ -219,7 +243,6 @@ mod tests {
                         line: start_line,
                         column,
                         text: chars[body..close].iter().collect(),
-                        raw: true,
                     });
                     i = close + 1 + hashes;
                 }
@@ -241,7 +264,6 @@ mod tests {
                         line: start_line,
                         column,
                         text: chars[body..close.min(chars.len())].iter().collect(),
-                        raw: false,
                     });
                     i = close + 1;
                 }
@@ -266,8 +288,27 @@ mod tests {
         }
     }
 
-    /// 入力を読むための語の場所（表に移さず、今の場所に残す）：`match` の腕の左側の語、
-    /// 日付の入力を読む正規表現（raw string）、曜日の入力の表
+    /// 日付の入力を読む正規表現（ファイルと、リテラルそのもの）。これだけは表に移さない
+    const DATE_INPUT_PATTERNS: [(&str, &str); 7] = [
+        ("dates.rs", r"(までに|まで|に)$"),
+        ("dates.rs", r"\([日月火水木金土]\)$"),
+        (
+            "dates.rs",
+            r"^(今週|来週|再来週)?の?([日月火水木金土])(?:曜日?)?$",
+        ),
+        ("dates.rs", r"^([0-9]+)(日|週間|週)後$"),
+        (
+            "dates.rs",
+            r"^([0-9]{4})(?:[-/.]([0-9]{1,2})[-/.]([0-9]{1,2})|年([0-9]{1,2})月([0-9]{1,2})日?)$",
+        ),
+        (
+            "dates.rs",
+            r"^(?:([0-9]{1,2})/([0-9]{1,2})|([0-9]{1,2})月([0-9]{1,2})日?)$",
+        ),
+        ("dates.rs", r"^([0-9]{1,2})日$"),
+    ];
+
+    /// 入力を読むための語の場所（表に移さず、今の場所に残す）：曜日の入力の表
     const INPUT_WORDS: [(&str, &str); 2] = [
         ("dates.rs", "const WEEKDAYS:"),
         ("dates.rs", "found[2] == "),
@@ -291,7 +332,11 @@ mod tests {
             let source = std::fs::read_to_string(&file).unwrap();
             let lines: Vec<&str> = source.lines().collect();
             for literal in string_literals(&source) {
-                if literal.raw || !literal.text.chars().any(is_japanese) {
+                if !literal.text.chars().any(is_japanese)
+                    || DATE_INPUT_PATTERNS
+                        .iter()
+                        .any(|(name, text)| relative == *name && literal.text == *text)
+                {
                     continue;
                 }
                 let line = lines[literal.line - 1];
