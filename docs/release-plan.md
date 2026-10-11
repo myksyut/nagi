@@ -1543,7 +1543,8 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 **Build.**
 
-- [ ] Stop until the operator が、secret の `TAURI_SIGNING_PRIVATE_KEY` と変数（variable）の `TAURI_UPDATER_PUBKEY` の削除を認め、`main` の secret scanning、push protection、branch protection を有効にする。
+- [x] secret の `TAURI_SIGNING_PRIVATE_KEY` と変数（variable）の `TAURI_UPDATER_PUBKEY` を消す。運用者の指示で 2026-10-11 に消し、`gh secret list` と `gh variable list` に残っていないことを確かめた。
+- [ ] Stop until the operator が、`main` の secret scanning、push protection、branch protection を有効にする。
 - [ ] 第三者の action は、すべて完全な SHA に固定したままにする。
 - [ ] 直し方のある新しい advisory は CI を落とす。直し方のないものは、理由と日付つきで `tui/deny.toml` に載せる。
 
