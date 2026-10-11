@@ -111,7 +111,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] Lane 3. タスク `牛乳を買う` を足して撮る。Save `wide-chars.png`. Pass when PNG で 5 文字がちょうど 10 セルに収まり、隣のセルに字形がはみ出さない.
 - [ ] Lane 4. タスクを一つ足し、カーソルをその行に置いて撮る。Save `cursor-row.png`. Pass when カーソルの行の地の画素が `#2e4670` で、`tui/src/ui/theme.rs` の `CURSOR_BG` と一致する.
 - [ ] Lane 5. `--size 120x100` で `key ?` を押し、ショートカットのページを開いて撮る（閉じるときは `key Esc; sleep 0.3; key q`）。Save `shortcuts.png`. Pass when 左のサイドバーの地の画素が `#181c28`（`SURFACE`）で、`shortcuts.txt` に「終了」の行がある（ショートカットはポップアップではなく右の欄のページで、120x80 でも「終了」は画面の外に出る）.
-- [ ] Lane 6. `--size 40x12` で起動し、`shot small; resize 100x30; sleep 0.5; shot resize; key q` で撮る。Save `resize.png`. Pass when `resize.png` が 100x30 セルの大きさで描かれ、`small.png` が 40x12 セルで、終了コードが 0.
+- [ ] Lane 6. `--size 40x12` で起動し、`sleep 1; shot small; resize 100x30; sleep 0.5; shot resize; key q` で撮る（最初の `sleep 1` がないと、描く前の空の画面を撮る）。Save `resize.png`. Pass when `resize.png` が 100x30 セルの大きさで描かれ、`small.png` が 40x12 セルで、終了コードが 0.
 - [ ] Lane 7. `--cmd` で、一つの PTY の中で三つのコマンドを続けて動かす。`tui/target/release/nagi add 資料を送る && tui/target/release/nagi list --json && sqlite3 "$XDG_DATA_HOME/nagi/local.db" 'SELECT COUNT(*) FROM tasks' && curl -s -o /dev/null -w '%{http_code}' https://nagi.wizard1026miya.workers.dev/api/session`。Save `cmd.png`. Pass when `cmd.txt` に `資料を送る` を含む JSON、件数の `1`、`401` が出て、`sqlite3` が開いたファイルが一時的な HOME の下にある.
 - [ ] Lane 8. lane 2 から 7 の前と後で `sha256sum ~/.local/share/nagi/local.db` を `--cmd` で撮る（なければ `ls` の結果を撮る）。Save `isolation.png`. Pass when 前と後の sha256 が同じで（なければ、後もない）、`/tmp` に道具の一時的な HOME が残っていない.
 - [ ] Lane 9. 何も押さずに 10 秒待つ台本 `sleep 10; shot idle; key q` を、`--bin strace -- -qq -f -e trace=write -o /tmp/swarm-R00/worker-9/strace.log tui/target/release/nagi` で動かす。Save `idle.png`. Pass when `writes_per_sec` に 10 個以上の値があり、合計が 1 以上で、`strace.log` の `write(1,` の行の数を超えない.
@@ -218,12 +218,12 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `cd tui && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` が通る。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `fast mechanical model (setup default)` at the PR head, per the boot recipe. trunk の nagi は `/tmp/trunk/tui/target/release/nagi`、head の nagi は `tui/target/release/nagi`。撮るのは `scripts/tui-shot.py`、ファイルを調べるのは `--cmd` の `sqlite3` と `sha256sum`。
-- [ ] Lane 1. Regression lane against trunk. `--home /tmp/swarm-R02/home-a` で、trunk の CLI で 30 件を `nagi add` する。trunk と head の画面を同じ台本 `sleep 1; key 1; shot inbox; key q` で撮る。Save `inbox.png`. Pass when 二つの `inbox.txt` が同じで、head で開いたあとも `PRAGMA user_version` が 1.
+- [ ] Lane 1. Regression lane against trunk. `--home /tmp/swarm-R02/home-a` で、trunk の CLI で 30 件を `nagi add` する。trunk と head の画面を同じ台本 `sleep 1; key 1; sleep 1; shot inbox; key q` で撮る（`key 1` のあとに待たないと、描き直す前の「今日」を撮る）。Save `inbox.png`. Pass when 二つの `inbox.txt` が同じで、head で開いたあとも `PRAGMA user_version` が 1.
 - [ ] Lane 2. `sqlite3 local.db "PRAGMA user_version = 2; INSERT OR REPLACE INTO meta VALUES ('written_by', '0.9.0');"` のあと、head を起動して撮る。Save `newer-refused.png`. Pass when 画面ではなく文言が出て、文言に `0.9.0` が入り、終了コードが 1 で、`local.db` の sha256 が前と同じ.
 - [ ] Lane 3. head の CLI で `nagi add 後から足した` を打ち、trunk の画面で開く。Save `trunk-reads-head.png`. Pass when trunk の画面に `後から足した` が出る（形を変えていないので、古い nagi に戻しても開ける）.
 - [ ] Lane 4. head で一回開いたあと、`--cmd` で `sqlite3 "$XDG_DATA_HOME/nagi/local.db" "SELECT value FROM meta WHERE key = 'written_by'"` を撮る。Save `written-by.png`. Pass when head の `nagi --version` と同じ版が出る.
 - [ ] Lane 5. head で `nagi list --json` を二回打つ。二回目の前と後で `local.db` の sha256 を撮る。Save `no-write.png`. Pass when 二回目の前後で sha256 が同じ.
-- [ ] Lane 6. 空の HOME で head を初めて起動する。Save `fresh.png`. Pass when 空の受信箱が出て、`PRAGMA user_version` が 1 で、`written_by` が head の版.
+- [ ] Lane 6. 空の HOME で head を初めて起動し、`key 1` で受信箱に移ってから撮る（最初の画面は「今日」）。Save `fresh.png`. Pass when 空の受信箱が出て、`PRAGMA user_version` が 1 で、`written_by` が head の版.
 - [ ] Lane 7. `head -c 4096 /dev/urandom > local.db` のあと、head を起動する。Save `corrupt.png`. Pass when 「開けませんでした」の文言が出て終了コードが 1、`local.db.v*.bak` ができず、`local.db` の sha256 が前と同じ.
 - [ ] Lane 8. head の画面を開いたまま、`run seq 20 | xargs -P 20 -I{} tui/target/release/nagi add 同時{}` を流し、`key ctrl+r` のあとに撮る。Save `concurrent.png`. Pass when 画面に `同時1` から `同時20` の 20 件が出て、`nagi.log` に `database is locked` がない.
 - [ ] Lane 9. 空の HOME の `local.db` に `sqlite3 local.db < tui/src/testdata/device-v1.sql` で fixture を入れ、head で開いて受信箱を撮る。Save `fixture-inbox.png`. Pass when `nagi list --json | jq length` が fixture の未完了で未削除のタスクの数と同じで、受信箱に fixture のタイトルが出る.
@@ -1195,7 +1195,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 - [ ] Lane 1. Regression lane against trunk. `time_zone` が NULL の利用者に、日本の今日に予定したタスクを入れ、`TZ=Asia/Tokyo` で trunk と head の nagi を開く。Save `r16-lane1-tokyo.png`. Pass when 両方でタスクが「今日」にあり、見出しの日付が同じ.
 - [ ] Lane 2. 西の利用者。日本の今日に予定したタスクを入れ、`TZ=Pacific/Pago_Pago` で head を開く。Save `r16-lane2-pago.png`. Pass when タスクは「予定」に残り、見出しが Pago Pago の論理日付で、`SELECT time_zone FROM users` が `Pacific/Pago_Pago`。trunk なら今日へ移ることを記録する.
-- [ ] Lane 3. 西の利用者の今日。Pago Pago の今日に予定したタスクを足し、45 秒の同期を待つ。Save `r16-lane3-pago-today.png`. Pass when タスクが「今日」に移り、`arrivedOn` が Pago Pago の論理日付.
+- [ ] Lane 3. 西の利用者の今日。日付の切り替えは論理日付ごとに一度だけなので、その利用者の `meta` の `last_rollover_on` を Pago Pago の前の日にしておく。画面を開いたまま Pago Pago の今日に予定したタスクを足し、45 秒の同期を待つ。Save `r16-lane3-pago-today.png`. Pass when タスクが「今日」に移り、`arrivedOn` が Pago Pago の論理日付.
 - [ ] Lane 4. 端末のゾーンが変わる。lane 2 の HOME で `TZ=Europe/Berlin` を付けて head を開き直す。Save `r16-lane4-berlin.png`. Pass when 「タイムゾーンを Europe/Berlin にしました」と出て、D1 の列とセッションのファイルの `time_zone` が `Europe/Berlin`.
 - [ ] Lane 5. 二台の端末。同じ利用者の二つの HOME を、A は `Asia/Tokyo`、B は `Pacific/Pago_Pago` で保存済みにする。A を最後にログインした端末として列を `Asia/Tokyo` にし、B を開く。Save `r16-lane5-two-devices.png`. Pass when B は日本の論理日付を見出しに出し、D1 の列は `Asia/Tokyo` のまま変わらない.
 - [ ] Lane 6. 自動の実行。`TZ=Europe/London` と `NAGI_TOKEN` を付けて `scripts/tui-shot.py --cmd 'nagi list today --json'` を動かす。Save `r16-lane6-cli-token.png`. Pass when D1 の列が変わらず、JSON の今日は列のゾーンの論理日付で決まっている.
