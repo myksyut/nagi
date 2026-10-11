@@ -443,12 +443,31 @@ fn back_up(path: &Path, backup: &Path) -> Result<(), String> {
                 .open(&partial)
                 .and_then(|file| file.sync_all())
                 .and_then(|()| std::fs::rename(&partial, backup))
+                .and_then(|()| sync_parent_dir(backup))
                 .map_err(|error| error.to_string())
         });
     if written.is_err() {
         let _ = std::fs::remove_file(&partial);
     }
     written
+}
+
+/// rename をディレクトリごと fsync して、クラッシュで置き換えが消えないようにする。
+/// Windows ではディレクトリを File として開けないので省く（この用途では rename だけで足りる）
+fn sync_parent_dir(file: &Path) -> io::Result<()> {
+    #[cfg(unix)]
+    {
+        let dir = match file.parent() {
+            Some(dir) if !dir.as_os_str().is_empty() => dir,
+            _ => Path::new("."),
+        };
+        std::fs::File::open(dir)?.sync_all()
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = file;
+        Ok(())
+    }
 }
 
 /// 最後に開いた nagi の版を meta の written_by に残す（新しい形のファイルを古い nagi が断るとき、上げる先の版を示すため）。
