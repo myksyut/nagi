@@ -9,6 +9,7 @@ use serde::de::DeserializeOwned;
 use serde::{Deserialize, Serialize};
 
 use super::store::{ApiFailure, SyncFlow, Transport};
+use crate::i18n::{Msg, t};
 use crate::model::{
     API_VERSION, API_VERSION_HEADER, ApiErrorBody, MutateResponse, MutationBatch, SyncRequest,
     SyncResponse, SyncRow,
@@ -124,7 +125,7 @@ impl ApiClient {
                 if reset {
                     return Err(ApiFailure::Rejected {
                         status: 200,
-                        reason: Some("reset が続きました".to_string()),
+                        reason: Some(t(Msg::NetResetRepeated).to_string()),
                         mutation_index: None,
                     });
                 }

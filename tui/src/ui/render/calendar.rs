@@ -8,20 +8,20 @@ use ratatui::widgets::Paragraph;
 
 use super::list::task_meta;
 use super::status_glyph;
-use crate::dates::{format_day_heading, month_start};
+use crate::dates::{format_day_heading, month_start, weekday_name};
+use crate::i18n::{Msg, fill, t};
 use crate::ui::app::App;
 use crate::ui::text::{pad, truncate};
 use crate::ui::theme;
 use crate::ui::views::{CalendarEntry, ProjectFilter, calendar_entries, month_weeks};
 
-const WEEKDAYS: [&str; 7] = ["日", "月", "火", "水", "木", "金", "土"];
 /// 選んでいる日の一覧に使う行数（見出しを含む）
 const DAY_PANEL_HEIGHT: u16 = 8;
 
 pub fn filter_label(app: &App, filter: &ProjectFilter) -> String {
     match filter {
-        ProjectFilter::All => "すべて".to_string(),
-        ProjectFilter::None => "プロジェクトなし".to_string(),
+        ProjectFilter::All => t(Msg::FilterAll).to_string(),
+        ProjectFilter::None => t(Msg::ProjectNone).to_string(),
         ProjectFilter::Project(id) => app.project_name(id).unwrap_or_default().to_string(),
     }
 }
@@ -74,9 +74,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let month_number: u32 = month[5..7].parse().unwrap_or(1);
     frame.render_widget(
         Paragraph::new(vec![Line::from(vec![
-            Span::styled(format!("{year}年{month_number}月"), theme::bold()),
             Span::styled(
-                format!("    絞り込み：{}", filter_label(app, &app.calendar.filter)),
+                fill(Msg::CalendarMonthTitle, &[&year, &month_number]),
+                theme::bold(),
+            ),
+            Span::styled(
+                fill(
+                    Msg::FilterLabel,
+                    &[&filter_label(app, &app.calendar.filter)],
+                ),
                 if app.calendar.filter == ProjectFilter::All {
                     theme::faint()
                 } else {
@@ -93,9 +99,13 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let capacity = cell_height - 1;
     let mut lines: Vec<Line<'static>> = Vec::new();
     lines.push(Line::from(
-        WEEKDAYS
-            .iter()
-            .map(|day| Span::styled(pad(&format!(" {day}"), cell_width), theme::faint()))
+        (0..7)
+            .map(|index| {
+                Span::styled(
+                    pad(&format!(" {}", weekday_name(index)), cell_width),
+                    theme::faint(),
+                )
+            })
             .collect::<Vec<_>>(),
     ));
     for week in &weeks {
@@ -124,7 +134,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         theme::faint()
                     };
                     let label = if *day == today {
-                        format!("{number} 今日")
+                        fill(Msg::CalendarTodayCell, &[&number])
                     } else {
                         number.to_string()
                     };
@@ -154,7 +164,10 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                         spans.extend(entry_spans(app, entry, inner - 1, style));
                     } else if index == shown && day_entries.len() > shown {
                         spans.push(Span::styled(
-                            pad(&format!(" ほか {} 件", day_entries.len() - shown), inner),
+                            pad(
+                                &fill(Msg::CalendarMoreEntries, &[&(day_entries.len() - shown)]),
+                                inner,
+                            ),
                             bg(theme::faint()),
                         ));
                     } else {
@@ -178,11 +191,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             format_day_heading(&app.calendar.day, &today),
             theme::muted().add_modifier(Modifier::BOLD),
         ),
-        Span::styled(format!("  {} 件", day_entries.len()), theme::faint()),
+        Span::styled(
+            fill(Msg::CalendarEntryCount, &[&day_entries.len()]),
+            theme::faint(),
+        ),
     ])];
     if day_entries.is_empty() {
         panel.push(Line::from(Span::styled(
-            "  この日のタスクはありません（n で追加）",
+            t(Msg::CalendarDayEmpty),
             theme::faint(),
         )));
     }
@@ -204,7 +220,11 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             .iter()
             .map(|span| crate::ui::text::width(&span.content))
             .sum();
-        let kind = if entry.deadline { "◆ 締切 " } else { "" };
+        let kind = if entry.deadline {
+            t(Msg::KindDeadline)
+        } else {
+            ""
+        };
         let title_width = total.saturating_sub(6 + meta_width + crate::ui::text::width(kind));
         let glyph = status_glyph(task);
         let mut spans = vec![

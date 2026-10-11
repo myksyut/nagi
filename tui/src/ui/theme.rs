@@ -1,6 +1,7 @@
 //! 色。色は意味のあるところにだけ使う：選択は青、目を向けてほしい印（今日来たタスク・優先度「高」）は琥珀、
 //! 赤は締切を過ぎたときだけ。地の色は端末に任せる
 
+use crate::i18n::{Msg, t};
 use ratatui::style::{Color, Modifier, Style};
 
 /// 選択の青
@@ -57,13 +58,13 @@ pub fn project_color(name: Option<&str>) -> Color {
 /// パレットの色の表示名
 pub fn project_color_label(name: &str) -> &'static str {
     match name {
-        "violet" => "すみれ",
-        "sky" => "空",
-        "pink" => "桃",
-        "amber" => "琥珀",
-        "emerald" => "若葉",
-        "orange" => "橙",
-        "teal" => "青緑",
-        _ => "灰",
+        "violet" => t(Msg::ColorViolet),
+        "sky" => t(Msg::ColorSky),
+        "pink" => t(Msg::ColorPink),
+        "amber" => t(Msg::ColorAmber),
+        "emerald" => t(Msg::ColorEmerald),
+        "orange" => t(Msg::ColorOrange),
+        "teal" => t(Msg::ColorTeal),
+        _ => t(Msg::ColorGray),
     }
 }

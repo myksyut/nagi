@@ -6,6 +6,7 @@
 //! どれも、同じ値の中は渡された並び（手動の順）のまま
 
 use super::replica::Replica;
+use crate::i18n::{Msg, t};
 use crate::model::Priority;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -27,10 +28,10 @@ impl TaskSort {
 
     pub fn label(self) -> &'static str {
         match self {
-            TaskSort::Manual => "手動",
-            TaskSort::Priority => "優先度",
-            TaskSort::PointsAsc => "工数が少ない順",
-            TaskSort::PointsDesc => "工数が多い順",
+            TaskSort::Manual => t(Msg::SortManual),
+            TaskSort::Priority => t(Msg::SortPriority),
+            TaskSort::PointsAsc => t(Msg::SortPointsAsc),
+            TaskSort::PointsDesc => t(Msg::SortPointsDesc),
         }
     }
 

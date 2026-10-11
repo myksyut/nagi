@@ -12,6 +12,7 @@ use super::{AppEvent, build_store};
 use crate::auth::{self, DevicePoll, DeviceStart};
 use crate::data::local_db::unsent_count_at;
 use crate::data::net::ApiClient;
+use crate::i18n::{Msg, fill, t};
 
 pub enum LoginStep {
     /// まだ始めていない（Enter で始める）
@@ -113,7 +114,7 @@ impl App {
             }
             Err(message) => {
                 crate::log::error(&message);
-                self.toast_error("データを開けませんでした", Some(&message));
+                self.toast_error(t(Msg::DataOpenFailed), Some(&message));
                 false
             }
         }
@@ -193,7 +194,7 @@ impl App {
                     // この端末だけで使っていたなら、そのデータはそのまま残る（クラウドへは移さない）
                     let left_on_device = !self.config.is_cloud();
                     if let Err(error) = self.config.save_session(&token, user_id.as_deref()) {
-                        crate::log::error(&format!("トークンを保存できませんでした: {error}"));
+                        crate::log::error(&fill(Msg::LogSaveTokenFailed, &[&error]));
                     }
                     self.login = None;
                     // 新しいログインで、ストアと通信を作り直す。手元の控えは、ログインした利用者のものを開く
@@ -204,24 +205,17 @@ impl App {
                         self.reconcile();
                     }
                     if left_on_device {
-                        self.toast_info(
-                            "クラウドと同期します。この端末のタスクはそのまま残り、ログアウトすると戻ります",
-                        );
+                        self.toast_info(t(Msg::LoginSyncStartedKeepLocal));
                     }
                 }
                 DevicePoll::Expired => {
-                    login.step = LoginStep::Failed(
-                        "コードの期限が切れました。もう一度やり直してください".to_string(),
-                    );
+                    login.step = LoginStep::Failed(t(Msg::LoginCodeExpired).to_string());
                 }
                 DevicePoll::Denied => {
-                    login.step = LoginStep::Failed("GitHub で承認されませんでした".to_string());
+                    login.step = LoginStep::Failed(t(Msg::LoginDenied).to_string());
                 }
                 DevicePoll::Forbidden => {
-                    login.step = LoginStep::Failed(
-                        "この GitHub アカウントは、まだクラウドとの同期に招待されていません"
-                            .to_string(),
-                    );
+                    login.step = LoginStep::Failed(t(Msg::LoginNotInvited).to_string());
                 }
                 DevicePoll::Pending | DevicePoll::SlowDown(_) => {}
             },
@@ -236,25 +230,17 @@ impl App {
         if !self.logout_warned {
             let message = match unsent_count_at(&self.config.db_path(self.user_id.as_deref())) {
                 Ok(0) => None,
-                Ok(count) => Some(format!(
-                    "送っていない変更が {count} 件あります。ログアウトすると消えます"
-                )),
-                Err(_) => Some(
-                    "送っていない変更があるかを確かめられません。ログアウトすると消えます"
-                        .to_string(),
-                ),
+                Ok(count) => Some(fill(Msg::UnsentCountLogoutWarning, &[&count])),
+                Err(_) => Some(t(Msg::UnsentUnknownLogoutWarning).to_string()),
             };
             if let Some(message) = message {
                 self.logout_warned = true;
-                self.toast_error(
-                    &message,
-                    Some("もう一度ログアウトを選ぶと、消してログアウトします"),
-                );
+                self.toast_error(&message, Some(t(Msg::LogoutAgainHint)));
                 return;
             }
         }
         if self.config.is_dev_server() && self.config.saved_token().is_none() {
-            self.toast_info("手元の開発サーバーでは、ログインなしで使っています");
+            self.toast_info(t(Msg::DevServerNoLogin));
             return;
         }
         if let Some(token) = self.config.saved_token() {
@@ -269,11 +255,11 @@ impl App {
         let rebuilt = self.rebuild_store(None);
         if self.config.is_cloud() {
             // Worker を名指しして使っている：空のストアのまま、ログインの画面へ（通信はしない）
-            self.show_login(Some("ログアウトしました"));
+            self.show_login(Some(t(Msg::LoggedOutNotice)));
         } else if rebuilt {
             self.sync_now();
             self.reconcile();
-            self.toast_info("ログアウトしました。この端末のデータに戻りました");
+            self.toast_info(t(Msg::LoggedOutLocalToast));
         }
     }
 }

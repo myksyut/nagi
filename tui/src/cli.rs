@@ -22,6 +22,7 @@ use crate::data::{
 use crate::dates::{
     add_days, deadline_status, format_day_heading, format_short_date_with_weekday, parse_date_input,
 };
+use crate::i18n::{Msg, fill, t};
 use crate::model::{Bucket, ChecklistItem, POINTS, Priority, Task, TaskChanges};
 use crate::ui::text::fold;
 use crate::upgrade::{upgrade_message, waiting_message};
@@ -34,64 +35,6 @@ const EXPORT_FORMAT_VERSION: u32 = 1;
 const WAIT: Duration = Duration::from_secs(60);
 /// 完了の一覧に出す日数（今日を含む）の既定
 const DEFAULT_COMPLETED_DAYS: i64 = 14;
-
-pub const HELP: &str = "\
-nagi — ターミナルで使う TODO アプリ
-
-ログインしなければ、データはこの端末だけに置く（ローカル）。ログインすると、クラウドと同期して使う。
-
-使い方：
-  nagi                       画面（TUI）を開く
-  nagi add <タイトル> [...]  タスクを追加する（既定は受信箱）
-  nagi list [リスト] [...]   タスクの一覧を出す
-  nagi show <ID>             タスクを1件、詳しく出す
-  nagi update <ID> [...]     既存のタスクに足す・属性を付ける
-  nagi done <ID>             タスクを完了にする
-  nagi projects              プロジェクトの一覧を出す
-  nagi login                 ログインして、クラウドと同期する（GitHub のデバイスフロー。いまは招待した人だけ）
-  nagi logout                ログアウトして、この端末のデータに戻る（送っていない変更があれば、消さずに止まる）
-  nagi logout --discard-unsent
-                             送っていない変更を消して、ログアウトする
-  nagi export [--out <ファイル>]
-                             この端末のデータを JSON で書き出す（控えを取る。ログイン中でも、この端末のデータ）
-
-add の指定：
-  --memo <文字>              メモ
-  --memo-file <ファイル>     メモをファイルから読む（外から拾った文章は、引数に入れずにこちらで渡す）
-  --to <行き先>              inbox（既定）・today・later か、日付（予定へ。今日以前の日付なら今日へ）
-  --project <名前>           プロジェクト（名前で指す。なければ失敗する）
-  --deadline <日付>          締切
-  --priority <high|medium|low>
-  --points <1|2|3|5|8|13>
-  --add-check <項目>         チェックリストの項目（何度でも書ける）
-
-list の指定：
-  リスト                     inbox・today・upcoming・later・completed・all（省くと未完了のすべて）
-  --days <N>                 completed・all に出す完了の日数（今日を含む。既定は 14）
-
-update の指定（足すものと属性だけ。タイトルの書き換え・メモの置き換え・チェックを外す・削除はできない）：
-  --append-memo <文字>       メモの後ろに足す（同じ文字がすでにあれば足さない）
-  --append-memo-file <ファイル>
-                             足す文字をファイルから読む
-  --add-check <項目>         チェックリストに項目を足す（同じ名前があれば足さない。何度でも書ける）
-  --check <項目>             項目にチェックを付ける（名前か id。何度でも書ける）
-  --to・--project・--deadline・--priority・--points
-                             add と同じ。--project・--deadline・--priority・--points は none で外す
-  --keep-existing            すでに値がある締切・優先度・工数・プロジェクトは変えない
-  --if-unchanged-since <updatedAt>
-                             読んだときの updatedAt と今が違えば、何も変えずに失敗する（done でも使える）
-
-共通：
-  --json                     結果を JSON で出す（add・list・show・update・done・projects）
-  --out <ファイル>           export の書き出し先（省くと標準出力）
-  --server <URL>             接続する Worker（省くと環境変数 NAGI_SERVER。どちらもなければ、ログインしていれば本番、
-                             していなければこの端末のデータ）
-  -h, --help                 この説明（nagi help、nagi add --help でも同じ）
-  -V, --version              版
-
-日付は「2026-10-09」「明日」「金曜」「来週月曜」「3日後」「10/3」などで書ける。
-ログインのトークンは、環境変数 NAGI_TOKEN でも渡せる。
-画面のキーの一覧は、起動してから ? で見られる";
 
 #[derive(Debug, Default, PartialEq, Eq)]
 pub struct AddArgs {
@@ -198,9 +141,36 @@ pub struct Invocation {
     pub command: Command,
 }
 
+/// `--lang` の値。言語は引数を読む前に決める（引数の誤りの文も表を通す）ので、`parse` とは別に先に拾う。
+/// 同じ指定が重なっていたら、最後のものを使う
+pub fn lang_flag(args: &[String]) -> Option<String> {
+    let mut found = None;
+    let mut rest = args.iter();
+    while let Some(arg) = rest.next() {
+        if arg == "--" {
+            break;
+        }
+        let Some(flag) = arg.strip_prefix("--") else {
+            continue;
+        };
+        match flag.split_once('=') {
+            Some(("lang", value)) => found = Some(value.to_string()),
+            Some(_) => {}
+            None if flag == "lang" => found = rest.next().cloned(),
+            // 値を取る指定の値は、`--lang` に見えても指定ではない
+            None if VALUE_FLAGS.contains(&flag) => {
+                rest.next();
+            }
+            None => {}
+        }
+    }
+    found
+}
+
 /// 値を取る指定
-const VALUE_FLAGS: [&str; 15] = [
+const VALUE_FLAGS: [&str; 16] = [
     "server",
+    "lang",
     "memo",
     "to",
     "project",
@@ -240,7 +210,7 @@ fn take_all(values: &mut Vec<(&str, String)>, name: &str) -> Vec<String> {
 fn single_id(command: &str, ids: &[&str]) -> Result<String, String> {
     match ids {
         [id] if !id.trim().is_empty() => Ok(id.trim().to_string()),
-        _ => Err(format!("{command} には、タスクの id を1つ渡します")),
+        _ => Err(fill(Msg::CliSingleId, &[&command])),
     }
 }
 
@@ -269,13 +239,13 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
                     None => rest
                         .next()
                         .cloned()
-                        .ok_or(format!("--{name} には値が要ります"))?,
+                        .ok_or(fill(Msg::CliFlagNeedsValue, &[&name]))?,
                 };
                 values.push((name, value));
             } else if SWITCHES.contains(&name) && inline.is_none() {
                 switches.push(name);
             } else {
-                return Err(format!("知らない指定です：{arg}"));
+                return Err(fill(Msg::CliUnknownFlag, &[&arg]));
             }
         } else {
             positionals.push(arg);
@@ -296,6 +266,8 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
 
     let values = &mut values;
     let server = take(values, "server");
+    // --lang は、引数を読む前に main が拾って使っている（lang_flag）
+    take_all(values, "lang");
     let json = switches.contains(&"json");
     let keep_existing = switches.contains(&"keep-existing");
     let discard_unsent = switches.contains(&"discard-unsent");
@@ -304,12 +276,10 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         Some((&"help", _)) => Command::Help,
         Some((&"add", titles)) => {
             let [title] = titles else {
-                return Err(
-                    "add には、タイトルを1つ渡します（空白を含むときは引用符で囲む）".to_string(),
-                );
+                return Err(t(Msg::CliAddNeedsOneTitle).to_string());
             };
             if title.trim().is_empty() {
-                return Err("タイトルが空です".to_string());
+                return Err(t(Msg::CliTitleEmpty).to_string());
             }
             Command::Add(AddArgs {
                 title: title.trim().to_string(),
@@ -327,10 +297,8 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         Some((&"list", names)) => {
             let list = match names {
                 [] => ListName::Open,
-                [name] => list_name(name).ok_or(format!(
-                    "知らないリストです：{name}（inbox・today・upcoming・later・completed・all）"
-                ))?,
-                _ => return Err("list に渡せるリストは1つです".to_string()),
+                [name] => list_name(name).ok_or(fill(Msg::CliUnknownList, &[&name]))?,
+                _ => return Err(t(Msg::CliListTakesOne).to_string()),
             };
             let days = match take(values, "days") {
                 None => DEFAULT_COMPLETED_DAYS,
@@ -338,7 +306,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
                     .parse::<i64>()
                     .ok()
                     .filter(|days| (1..=3660).contains(days))
-                    .ok_or(format!("--days は 1 以上の数で渡します：{text}"))?,
+                    .ok_or(fill(Msg::CliDaysInvalid, &[&text]))?,
             };
             Command::List(ListArgs { list, days, json })
         }
@@ -373,13 +341,13 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             out: take(values, "out"),
         }),
         Some((&("projects" | "login" | "logout" | "export"), _)) => {
-            return Err("projects・login・logout・export には、ほかの引数を渡せません".to_string());
+            return Err(t(Msg::CliNoExtraArgs).to_string());
         }
-        Some((other, _)) => return Err(format!("知らないコマンドです：{other}")),
+        Some((other, _)) => return Err(fill(Msg::CliUnknownCommand, &[&other])),
     };
     // そのコマンドで使わない指定が残っていたら、黙って捨てずに断る
     if let Some((name, _)) = values.first() {
-        return Err(format!("ここでは使えない指定です：--{name}"));
+        return Err(fill(Msg::CliFlagNotHere, &[&name]));
     }
     if json
         && matches!(
@@ -387,13 +355,13 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
             Command::Tui | Command::Login | Command::Logout { .. } | Command::Export(_)
         )
     {
-        return Err("--json は、ここでは使えません".to_string());
+        return Err(t(Msg::CliJsonNotHere).to_string());
     }
     if keep_existing && !matches!(command, Command::Update(_)) {
-        return Err("--keep-existing は update で使えます".to_string());
+        return Err(t(Msg::CliKeepExistingOnlyUpdate).to_string());
     }
     if discard_unsent && !matches!(command, Command::Logout { .. }) {
-        return Err("--discard-unsent は logout で使えます".to_string());
+        return Err(t(Msg::CliDiscardUnsentOnlyLogout).to_string());
     }
     Ok(Invocation { server, command })
 }
@@ -440,7 +408,7 @@ impl Session {
         let login = auth::current_login(config);
         // Worker を名指ししたのにログインがない（この端末だけで使うときは、ログインは要らない）
         if config.is_cloud() && login.token.is_none() && !config.is_dev_server() {
-            return Err("ログインしていません。先に `nagi login` を実行してください".to_string());
+            return Err(t(Msg::CliNotLoggedIn).to_string());
         }
         let (sender, events) = channel();
         let store = open_store(
@@ -457,7 +425,7 @@ impl Session {
             server: if config.is_cloud() {
                 config.server.clone()
             } else {
-                "この端末のデータ".to_string()
+                t(Msg::ThisDeviceData).to_string()
             },
         })
     }
@@ -466,28 +434,20 @@ impl Session {
     /// 書き込みは手元で受け付けて pending の表に残し、flush で知らせる）
     fn check(&mut self) -> Result<(), String> {
         if self.store.stopped_by == Some(StopReason::Unauthorized) {
-            return Err(
-                "ログインが切れています。`nagi login` でログインし直してください".to_string(),
-            );
+            return Err(t(Msg::CliLoginExpiredRelogin).to_string());
         }
         for notice in self.store.take_notices() {
             match notice {
                 Notice::SaveFailed { reason, .. } => {
                     return Err(match reason {
-                        SaveFailure::Network => {
-                            format!("保存できませんでした（{} に接続できません）", self.server)
-                        }
-                        SaveFailure::Conflict => {
-                            "ほかの画面で先に変更されていたため、保存できませんでした".to_string()
-                        }
+                        SaveFailure::Network => fill(Msg::CliSaveNetwork, &[&self.server]),
+                        SaveFailure::Conflict => t(Msg::SaveFailedConflict).to_string(),
                         SaveFailure::Quota(quota) => quota.message(),
-                        SaveFailure::Rejected => {
-                            "保存できませんでした（Worker に受け付けられませんでした）".to_string()
-                        }
+                        SaveFailure::Rejected => t(Msg::CliSaveRejectedByWorker).to_string(),
                     });
                 }
                 Notice::OfflineBlocked { .. } => {
-                    return Err(format!("{} に接続できません", self.server));
+                    return Err(fill(Msg::CliCannotReach, &[&self.server]));
                 }
                 Notice::Unauthorized { .. } | Notice::UpgradeRequired => {}
             }
@@ -503,7 +463,7 @@ impl Session {
                     self.store.on_mutate_done(&batch_id, result);
                 }
                 Ok(NetEvent::SyncDone(result)) => self.store.on_sync_done(result),
-                Err(_) => return Err(format!("{} からの応答がありません", self.server)),
+                Err(_) => return Err(fill(Msg::CliNoResponse, &[&self.server])),
             }
             self.check()?;
         }
@@ -531,7 +491,7 @@ impl Session {
         }
         self.waiting_for_server()?;
         if !self.store.synced {
-            return Err(format!("{} に接続できませんでした", self.server));
+            return Err(fill(Msg::CliCouldNotConnect, &[&self.server]));
         }
         self.flush()
     }
@@ -566,15 +526,15 @@ impl Session {
 fn accepted(result: OpResult) -> Result<(), String> {
     match result {
         Ok(_) | Err(Failure::Noop) => Ok(()),
-        Err(Failure::Offline) => Err("Worker に接続できません".to_string()),
-        Err(Failure::Stopped) => Err("ログインが切れていて、送れません".to_string()),
+        Err(Failure::Offline) => Err(t(Msg::CliWorkerUnreachable).to_string()),
+        Err(Failure::Stopped) => Err(t(Msg::CliLoginExpiredCannotSend).to_string()),
         Err(Failure::TooLong(limit)) => Err(limit.message()),
-        Err(_) => Err("受け付けられない内容です".to_string()),
+        Err(_) => Err(t(Msg::CliContentRejected).to_string()),
     }
 }
 
 fn parse_date(text: &str, today: &str, what: &str) -> Result<String, String> {
-    parse_date_input(text, today).ok_or(format!("{what}を日付として読めません：{text}"))
+    parse_date_input(text, today).ok_or(fill(Msg::CliDateUnreadable, &[&what, &text]))
 }
 
 fn parse_destination(text: &str, today: &str) -> Result<Destination, String> {
@@ -582,7 +542,7 @@ fn parse_destination(text: &str, today: &str) -> Result<Destination, String> {
         "inbox" | "受信箱" => Destination::Inbox,
         "today" | "今日" => Destination::Today,
         "later" | "あとで" => Destination::Later,
-        date => Destination::Scheduled(parse_date(date, today, "行き先")?),
+        date => Destination::Scheduled(parse_date(date, today, t(Msg::CliWhatDestination))?),
     })
 }
 
@@ -591,7 +551,7 @@ fn parse_priority(text: &str) -> Result<Priority, String> {
         "high" | "高" => Priority::High,
         "medium" | "中" => Priority::Medium,
         "low" | "低" => Priority::Low,
-        _ => return Err(format!("優先度は high・medium・low で渡します：{text}")),
+        _ => return Err(fill(Msg::CliPriorityInvalid, &[&text])),
     })
 }
 
@@ -599,9 +559,7 @@ fn parse_points(text: &str) -> Result<u8, String> {
     text.parse::<u8>()
         .ok()
         .filter(|points| POINTS.contains(points))
-        .ok_or(format!(
-            "工数は 1・2・3・5・8・13 のどれかで渡します：{text}"
-        ))
+        .ok_or(fill(Msg::CliPointsInvalid, &[&text]))
 }
 
 /// 名前でプロジェクトを探す（全角・半角と大文字・小文字の違いは吸収する。アーカイブ済みは対象にしない）
@@ -617,31 +575,31 @@ fn find_project(store: &Store, name: &str) -> Result<String, String> {
         .find(|(_, other)| fold(other) == fold(name.trim()))
     {
         Some((id, _)) => Ok((*id).clone()),
-        None => Err(format!(
-            "プロジェクト「{name}」がありません（今あるもの：{}）",
-            if names.is_empty() {
-                "なし".to_string()
+        None => {
+            let existing = if names.is_empty() {
+                t(Msg::NoneLabel).to_string()
             } else {
                 names
                     .iter()
                     .map(|(_, name)| *name)
                     .collect::<Vec<_>>()
-                    .join("・")
-            }
-        )),
+                    .join(t(Msg::ListSeparator))
+            };
+            Err(fill(Msg::CliUnknownProject, &[&name, &existing]))
+        }
     }
 }
 
 /// タスクが今あるリストの名前（JSON 用、表示用）
 fn list_of(task: &Task) -> (&'static str, &'static str) {
     if task.is_completed() {
-        return ("completed", "完了");
+        return ("completed", t(Msg::ListCompleted));
     }
     match task.bucket {
-        Bucket::Inbox => ("inbox", "受信箱"),
-        Bucket::Today => ("today", "今日"),
-        Bucket::Scheduled => ("upcoming", "予定"),
-        Bucket::Later => ("later", "あとで"),
+        Bucket::Inbox => ("inbox", t(Msg::ListInbox)),
+        Bucket::Today => ("today", t(Msg::ListToday)),
+        Bucket::Scheduled => ("upcoming", t(Msg::ListScheduled)),
+        Bucket::Later => ("later", t(Msg::ListLater)),
     }
 }
 
@@ -698,7 +656,7 @@ fn task_line(store: &Store, task: &Task) -> String {
         meta.push(project.name.clone());
     }
     if let Some(priority) = task.priority {
-        meta.push(format!("優先度 {}", priority.label()));
+        meta.push(fill(Msg::CliMetaPriority, &[&priority.label()]));
     }
     if let Some(points) = task.points {
         meta.push(format!("{points}pt"));
@@ -706,7 +664,11 @@ fn task_line(store: &Store, task: &Task) -> String {
     if meta.is_empty() {
         format!("  {glyph} {}", task.title)
     } else {
-        format!("  {glyph} {}  （{}）", task.title, meta.join("・"))
+        format!(
+            "  {glyph} {}  （{}）",
+            task.title,
+            meta.join(t(Msg::ListSeparator))
+        )
     }
 }
 
@@ -762,7 +724,7 @@ fn with_checked(
             .iter()
             .position(|item| matches(item) && !item.done)
             .or_else(|| next.iter().position(matches))
-            .ok_or(format!("チェックリストに、その項目がありません：{key}"))?;
+            .ok_or(fill(Msg::CliNoChecklistItem, &[&key]))?;
         next[index].done = true;
     }
     Ok(next)
@@ -776,13 +738,11 @@ fn text_or_file(
     flag: &str,
 ) -> Result<Option<String>, String> {
     match (text, file) {
-        (Some(_), Some(_)) => Err(format!(
-            "--{flag} と --{flag}-file は、どちらか一方だけ渡します"
-        )),
+        (Some(_), Some(_)) => Err(fill(Msg::CliFlagOrFile, &[&flag])),
         (Some(text), None) => Ok(Some(text.to_string())),
         (None, Some(path)) => std::fs::read_to_string(path)
             .map(|text| Some(text.trim_end().to_string()))
-            .map_err(|error| format!("ファイルを読めません：{path}（{error}）")),
+            .map_err(|error| fill(Msg::CliFileUnreadable, &[&path, &error])),
         (None, None) => Ok(None),
     }
 }
@@ -805,16 +765,15 @@ fn find_task(store: &Store, id: &str) -> Result<Task, String> {
         .task(id)
         .filter(|task| task.deleted_at.is_none())
         .cloned()
-        .ok_or(format!("タスクが見つかりません：{id}"))
+        .ok_or(fill(Msg::CliTaskNotFound, &[&id]))
 }
 
 /// 読んだときから変わっていないかを確かめる（ほかの画面での手動の変更を、上書きしないため）
 fn ensure_unchanged(task: &Task, expected: Option<&str>) -> Result<(), String> {
     match expected {
-        Some(expected) if expected != task.updated_at => Err(format!(
-            "ほかで変更されています（今の updatedAt は {}）。読み直してから、もう一度実行してください",
-            task.updated_at
-        )),
+        Some(expected) if expected != task.updated_at => {
+            Err(fill(Msg::CliChangedElsewhere, &[&task.updated_at]))
+        }
         _ => Ok(()),
     }
 }
@@ -824,22 +783,24 @@ fn task_detail(store: &Store, task: &Task) -> String {
     let today = &store.today;
     let mut lines = vec![task.title.clone()];
     let state = if task.is_in_progress() {
-        "（進行中）"
+        t(Msg::CliInProgressSuffix)
     } else {
         ""
     };
-    lines.push(format!("  リスト：{}{state}", list_of(task).1));
+    lines.push(fill(Msg::CliDetailList, &[&list_of(task).1, &state]));
     if let Some(on) = &task.scheduled_on {
-        lines.push(format!(
-            "  予定：{}",
-            format_short_date_with_weekday(on, today)
+        lines.push(fill(
+            Msg::CliDetailScheduled,
+            &[&format_short_date_with_weekday(on, today)],
         ));
     }
     if let Some(on) = &task.deadline_on {
-        lines.push(format!(
-            "  締切：{}（{}）",
-            format_short_date_with_weekday(on, today),
-            deadline_status(on, today).1
+        lines.push(fill(
+            Msg::CliDetailDeadline,
+            &[
+                &format_short_date_with_weekday(on, today),
+                &deadline_status(on, today).1,
+            ],
         ));
     }
     if let Some(project) = task
@@ -848,22 +809,22 @@ fn task_detail(store: &Store, task: &Task) -> String {
         .and_then(|id| store.replica.project(id))
         .filter(|project| project.deleted_at.is_none())
     {
-        lines.push(format!("  プロジェクト：{}", project.name));
+        lines.push(fill(Msg::CliDetailProject, &[&project.name]));
     }
     if let Some(priority) = task.priority {
-        lines.push(format!("  優先度：{}", priority.label()));
+        lines.push(fill(Msg::CliDetailPriority, &[&priority.label()]));
     }
     if let Some(points) = task.points {
-        lines.push(format!("  工数：{points}"));
+        lines.push(fill(Msg::CliDetailPoints, &[&points]));
     }
     lines.push(format!("  id：{}", task.id));
-    lines.push(format!("  更新：{}", task.updated_at));
+    lines.push(fill(Msg::CliDetailUpdated, &[&task.updated_at]));
     if !task.memo.trim().is_empty() {
-        lines.push("メモ：".to_string());
+        lines.push(t(Msg::CliMemoHeading).to_string());
         lines.extend(task.memo.lines().map(|line| format!("  {line}")));
     }
     if !task.checklist.is_empty() {
-        lines.push("チェックリスト：".to_string());
+        lines.push(t(Msg::CliChecklistHeading).to_string());
         lines.extend(
             task.checklist
                 .iter()
@@ -890,7 +851,7 @@ fn add(config: &Config, args: AddArgs) -> Result<(), String> {
     };
     let deadline = match &args.deadline {
         None => None,
-        Some(text) => Some(parse_date(text, &today, "締切")?),
+        Some(text) => Some(parse_date(text, &today, t(Msg::CliWhatDeadline))?),
     };
     let priority = args.priority.as_deref().map(parse_priority).transpose()?;
     let points = args.points.as_deref().map(parse_points).transpose()?;
@@ -911,7 +872,7 @@ fn add(config: &Config, args: AddArgs) -> Result<(), String> {
         Ok(done) => done.ids[0].clone(),
         Err(failure) => {
             accepted(Err(failure))?;
-            return Err("追加できませんでした".to_string());
+            return Err(t(Msg::CliAddFailed).to_string());
         }
     };
     let ids = [id.clone()];
@@ -942,11 +903,11 @@ fn add(config: &Config, args: AddArgs) -> Result<(), String> {
     let task = store
         .replica
         .task(&id)
-        .ok_or("追加したタスクが見つかりません")?;
+        .ok_or(t(Msg::CliAddedTaskNotFound))?;
     if args.json {
         emit!("{}", task_json(store, task));
     } else {
-        emit!("{}に追加しました：{}", list_of(task).1, task.title);
+        emit(&fill(Msg::CliAddedTo, &[&list_of(task).1, &task.title]));
     }
     Ok(())
 }
@@ -959,10 +920,10 @@ fn list(config: &Config, args: ListArgs) -> Result<(), String> {
     // 見出しと、その中のタスク（上から出す順）
     let mut groups: Vec<(String, Vec<&String>)> = Vec::new();
     for (name, label, ids) in [
-        (ListName::Inbox, "受信箱", &lists.inbox),
-        (ListName::Today, "今日", &lists.today),
-        (ListName::Upcoming, "予定", &lists.scheduled),
-        (ListName::Later, "あとで", &lists.later),
+        (ListName::Inbox, t(Msg::ListInbox), &lists.inbox),
+        (ListName::Today, t(Msg::ListToday), &lists.today),
+        (ListName::Upcoming, t(Msg::ListScheduled), &lists.scheduled),
+        (ListName::Later, t(Msg::ListLater), &lists.later),
     ] {
         if matches!(args.list, ListName::Open | ListName::All) || args.list == name {
             groups.push((label.to_string(), ids.iter().collect()));
@@ -972,7 +933,10 @@ fn list(config: &Config, args: ListArgs) -> Result<(), String> {
         // 今日を含む days 日ぶん（論理日付）
         let since = add_days(&store.today, -(args.days - 1));
         groups.push((
-            format!("{}（今日）", format_day_heading(&store.today, &store.today)),
+            fill(
+                Msg::CliTodayHeading,
+                &[&format_day_heading(&store.today, &store.today)],
+            ),
             lists.completed_today.iter().collect(),
         ));
         for day in lists.logbook.iter().filter(|day| day.date >= since) {
@@ -1007,7 +971,7 @@ fn list(config: &Config, args: ListArgs) -> Result<(), String> {
         }
     }
     if !any {
-        emit!("タスクはありません");
+        emit(t(Msg::CliNoTasks));
     }
     Ok(())
 }
@@ -1063,9 +1027,9 @@ fn update(config: &Config, args: UpdateArgs) -> Result<(), String> {
         changes.project_id = Some(optional(name, |name| find_project(store, name))?);
     }
     let deadline = match &args.deadline {
-        Some(text) if !(keep && task.deadline_on.is_some()) => {
-            Some(optional(text, |text| parse_date(text, &today, "締切"))?)
-        }
+        Some(text) if !(keep && task.deadline_on.is_some()) => Some(optional(text, |text| {
+            parse_date(text, &today, t(Msg::CliWhatDeadline))
+        })?),
         _ => None,
     };
     let to = args
@@ -1092,9 +1056,9 @@ fn update(config: &Config, args: UpdateArgs) -> Result<(), String> {
     if args.json {
         emit!("{}", task_json(store, &after));
     } else if changed {
-        emit!("更新しました：{}", after.title);
+        emit(&fill(Msg::CliUpdated, &[&after.title]));
     } else {
-        emit!("変更はありません：{}", after.title);
+        emit(&fill(Msg::CliNoChange, &[&after.title]));
     }
     Ok(())
 }
@@ -1114,9 +1078,9 @@ fn done(config: &Config, args: DoneArgs) -> Result<(), String> {
     if args.json {
         emit!("{}", task_json(store, &after));
     } else if already {
-        emit!("すでに完了しています：{}", after.title);
+        emit(&fill(Msg::CliAlreadyCompleted, &[&after.title]));
     } else {
-        emit!("完了にしました：{}", after.title);
+        emit(&fill(Msg::CliCompleted, &[&after.title]));
     }
     Ok(())
 }
@@ -1142,10 +1106,10 @@ fn projects(config: &Config, json: bool) -> Result<(), String> {
             .collect();
         emit!("{}", Value::Array(values));
     } else if rows.is_empty() {
-        emit!("プロジェクトはありません");
+        emit(t(Msg::CliNoProjects));
     } else {
         for (_, name, open) in rows {
-            emit!("{name}（未完了 {open}）");
+            emit(&fill(Msg::CliProjectLine, &[&name, &open]));
         }
     }
     Ok(())
@@ -1155,15 +1119,15 @@ fn projects(config: &Config, json: bool) -> Result<(), String> {
 fn login(config: &Config) -> Result<(), String> {
     let client = ApiClient::new(&config.server, None);
     let start = auth::start(&client)?;
-    emit!("1. ブラウザでこの URL を開く：{}", start.verification_uri);
-    emit!("2. このコードを入力して、承認する：{}", start.user_code);
-    emit!("承認を待っています…（ここに出たコード以外は、承認しないでください）");
+    emit(&fill(Msg::CliLoginStepOpen, &[&start.verification_uri]));
+    emit(&fill(Msg::CliLoginStepCode, &[&start.user_code]));
+    emit(t(Msg::CliLoginWaiting));
     let deadline = Instant::now() + Duration::from_secs(start.expires_in);
     let mut interval = start.interval.max(1);
     loop {
         thread::sleep(Duration::from_secs(interval));
         if Instant::now() >= deadline {
-            return Err("コードの期限が切れました。もう一度やり直してください".to_string());
+            return Err(t(Msg::LoginCodeExpired).to_string());
         }
         match auth::poll(&client, &start.device_code) {
             // 通信のつまずきは、次の回でもう一度確かめる
@@ -1172,29 +1136,24 @@ fn login(config: &Config) -> Result<(), String> {
             Ok(DevicePoll::Ok { token, user_id }) => {
                 config
                     .save_session(&token, user_id.as_deref())
-                    .map_err(|error| format!("トークンを保存できませんでした：{error}"))?;
-                emit!("ログインしました。クラウドと同期します");
+                    .map_err(|error| fill(Msg::CliSaveTokenFailed, &[&error]))?;
+                emit(t(Msg::CliLoggedIn));
                 // この端末だけで使っていたときのデータは、そのまま残る（クラウドへは移さない）
                 let left = DeviceDb::open(&config.device_db_path())
                     .ok()
                     .and_then(|db| db.count().ok())
                     .unwrap_or(0);
                 if left > 0 {
-                    emit!(
-                        "この端末のタスクとプロジェクト（{left} 件）はそのまま残り、`nagi logout` で戻ります"
-                    );
+                    emit(&fill(Msg::CliLocalDataKept, &[&left]));
                 }
                 return Ok(());
             }
             Ok(DevicePoll::Expired) => {
-                return Err("コードの期限が切れました。もう一度やり直してください".to_string());
+                return Err(t(Msg::LoginCodeExpired).to_string());
             }
-            Ok(DevicePoll::Denied) => return Err("GitHub で承認されませんでした".to_string()),
+            Ok(DevicePoll::Denied) => return Err(t(Msg::LoginDenied).to_string()),
             Ok(DevicePoll::Forbidden) => {
-                return Err(
-                    "この GitHub アカウントは、まだクラウドとの同期に招待されていません"
-                        .to_string(),
-                );
+                return Err(t(Msg::LoginNotInvited).to_string());
             }
         }
     }
@@ -1213,28 +1172,23 @@ fn logout(config: &Config, discard_unsent: bool) -> Result<(), String> {
             if !discard_unsent {
                 let found = match unsent_count_at(&config.db_path(user_id.as_deref())) {
                     Ok(0) => None,
-                    Ok(count) => Some(format!("送っていない変更が {count} 件あります")),
-                    Err(error) => Some(format!(
-                        "送っていない変更があるかを確かめられません（{error}）"
-                    )),
+                    Ok(count) => Some(fill(Msg::UnsentCountFound, &[&count])),
+                    Err(error) => Some(fill(Msg::UnsentCountUnknown, &[&error])),
                 };
                 if let Some(found) = found {
-                    return Err(format!(
-                        "{found}。ログアウトすると消えるため、ログアウトしていません。\
-                         消してよければ `nagi logout --discard-unsent` を実行してください"
-                    ));
+                    return Err(fill(Msg::CliLogoutRefused, &[&found]));
                 }
             }
             auth::logout(&ApiClient::new(&config.server, Some(session.token)));
             config.clear_token();
             config.remove_db(user_id.as_deref());
             if config.is_cloud() {
-                emit!("ログアウトしました");
+                emit(t(Msg::CliLoggedOut));
             } else {
-                emit!("ログアウトしました。このあとは、この端末のデータを使います");
+                emit(t(Msg::CliLoggedOutLocal));
             }
         }
-        None => emit!("ログインしていません"),
+        None => emit(t(Msg::CliNotLoggedInShort)),
     }
     Ok(())
 }
@@ -1243,13 +1197,10 @@ fn logout(config: &Config, discard_unsent: bool) -> Result<(), String> {
 fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
     let path = config.device_db_path();
     if !path.exists() {
-        return Err("書き出すデータがありません".to_string());
+        return Err(t(Msg::CliNothingToExport).to_string());
     }
     if config.saved_session().is_some() || Config::has_env_token() {
-        eprintln!(
-            "ログイン中ですが、この端末のデータ（{}）を書き出します（クラウドのデータは含みません）",
-            path.display()
-        );
+        eprintln!("{}", fill(Msg::CliExportWhileLoggedIn, &[&path.display()]));
     }
     let rows = DeviceDb::open(&path)?.export()?;
     let document = json!({
@@ -1263,7 +1214,7 @@ fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
     let text = serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?;
     match args.out {
         Some(out) => write_replacing(Path::new(&out), &text)
-            .map_err(|error| format!("{out} に書き出せませんでした：{error}")),
+            .map_err(|error| fill(Msg::CliExportWriteFailed, &[&out, &error])),
         None => {
             emit(&text);
             Ok(())
@@ -1281,7 +1232,7 @@ fn write_replacing(path: &Path, text: &str) -> std::io::Result<()> {
         _ => Path::new("."),
     };
     let name = path.file_name().ok_or_else(|| {
-        std::io::Error::new(std::io::ErrorKind::InvalidInput, "ファイル名がありません")
+        std::io::Error::new(std::io::ErrorKind::InvalidInput, t(Msg::CliFileNameMissing))
     })?;
     let mut options = std::fs::OpenOptions::new();
     options.write(true).create_new(true);

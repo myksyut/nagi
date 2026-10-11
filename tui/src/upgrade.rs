@@ -4,6 +4,7 @@ use std::path::Path;
 use std::sync::LazyLock;
 
 use crate::data::{StopReason, Store};
+use crate::i18n::{Msg, fill, t};
 
 const BREW_UPGRADE: &str = "brew upgrade nagi";
 const RELEASES_URL: &str = "https://github.com/myksyut/nagi/releases/latest";
@@ -32,18 +33,18 @@ fn command_for(exe: &Path) -> &'static str {
 
 /// nagi の更新を求める文（数の変わらない知らせ。送っていない変更の数は下の欄に出す）
 pub fn upgrade_hint() -> String {
-    format!("nagi を更新してください。`{}`", upgrade_command())
+    fill(Msg::UpgradeHint, &[&upgrade_command()])
 }
 
 /// nagi の更新を待って止まっているときの文。下の欄と CLI で同じ文にする
 pub fn upgrade_message(store: &Store) -> String {
     let hint = upgrade_hint();
     let message = match unsent_note(store) {
-        Some(note) => format!("{hint}。{note}"),
+        Some(note) => fill(Msg::UpgradeHintWithNote, &[&hint, &note]),
         None => hint,
     };
     if store.stopped_by == Some(StopReason::UnreadablePending) {
-        format!("送っていない変更に、この nagi で読めないものがあります。{message}")
+        fill(Msg::UpgradeUnreadablePending, &[&message])
     } else {
         message
     }
@@ -52,8 +53,8 @@ pub fn upgrade_message(store: &Store) -> String {
 /// Worker の更新を待っているときの文（この nagi のほうが新しい）
 pub fn waiting_message(store: &Store) -> String {
     match unsent_note(store) {
-        Some(note) => format!("Worker の更新を待っています。{note}"),
-        None => "Worker の更新を待っています".to_string(),
+        Some(note) => fill(Msg::WaitingForWorkerWithNote, &[&note]),
+        None => t(Msg::WaitingForWorker).to_string(),
     }
 }
 
@@ -61,12 +62,8 @@ pub fn waiting_message(store: &Store) -> String {
 fn unsent_note(store: &Store) -> Option<String> {
     match store.pending_count() {
         0 => None,
-        count if store.unsent_kept() => {
-            Some(format!("送っていない変更 {count} 件は残してあります"))
-        }
-        count => Some(format!(
-            "送っていない変更 {count} 件を保存できていません。閉じると消えます"
-        )),
+        count if store.unsent_kept() => Some(fill(Msg::UnsentKept, &[&count])),
+        count => Some(fill(Msg::UnsentNotSaved, &[&count])),
     }
 }
 

@@ -13,6 +13,7 @@ use super::logo::{LOGO_HEIGHT, TERMINAL_GROUND, logo_lines};
 use super::{centered, clear_for_popup};
 use crate::data::sort::TaskSort;
 use crate::dates::{format_long_date, parse_date_input};
+use crate::i18n::{Msg, fill, t};
 use crate::model::{POINTS, PROJECT_COLORS, Priority};
 use crate::ui::app::{App, DateKind, Overlay, QuickTarget, ValueKind};
 use crate::ui::input::{PaletteItem, ProjectChoice};
@@ -86,7 +87,7 @@ fn choice_line(label: Vec<Span<'static>>, chosen: bool, total: usize) -> Line<'s
 /// 件数を添えた名前（複数のタスクにかけるとき）
 fn counted(label: &str, ids: &[String]) -> String {
     if ids.len() > 1 {
-        format!("{}件の{label}", ids.len())
+        fill(Msg::CountedLabel, &[&ids.len(), &label])
     } else {
         label.to_string()
     }
@@ -102,16 +103,16 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
     match overlay {
         Overlay::Date { kind, ids, input } => {
             let title = match kind {
-                DateKind::Schedule => counted("やる日（日付を決めて予定へ）", ids),
-                DateKind::Deadline => counted("締切", ids),
+                DateKind::Schedule => counted(t(Msg::DateScheduleLabel), ids),
+                DateKind::Deadline => counted(t(Msg::LabelDeadline), ids),
             };
-            let (line, at) = input_line(input, inner, "明日・金曜・来週月曜・3日後・10/3");
+            let (line, at) = input_line(input, inner, t(Msg::DatePlaceholder));
             let text = input.text();
             let preview = if text.trim().is_empty() {
                 Span::styled(
                     match kind {
-                        DateKind::Schedule => "   今日以前の日付なら今日へ入ります".to_string(),
-                        DateKind::Deadline => "   空のまま Enter で締切を外します".to_string(),
+                        DateKind::Schedule => t(Msg::DateHintSchedule).to_string(),
+                        DateKind::Deadline => t(Msg::DateHintDeadline).to_string(),
                     },
                     theme::faint(),
                 )
@@ -121,9 +122,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                         format!("   → {}", format_long_date(&on, today)),
                         theme::accent(),
                     ),
-                    None => {
-                        Span::styled("   日付として読めません", Style::new().fg(theme::ATTENTION))
-                    }
+                    None => Span::styled(t(Msg::DateUnreadable), Style::new().fg(theme::ATTENTION)),
                 }
             };
             popup(
@@ -138,7 +137,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
         Overlay::Project { ids, input, index } => {
             let choices = app.project_choices(&input.text());
             let lists = app.store.lists();
-            let (line, at) = input_line(input, inner, "名前で探す・作る");
+            let (line, at) = input_line(input, inner, t(Msg::ProjectPlaceholder));
             let mut lines = vec![line];
             let chosen = (*index).min(choices.len().saturating_sub(1));
             let room = (area.height as usize).saturating_sub(8).max(3);
@@ -146,7 +145,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             for (i, choice) in choices.iter().enumerate().skip(skip).take(room) {
                 let label = match choice {
                     ProjectChoice::None => {
-                        vec![Span::styled("プロジェクトなし", theme::muted())]
+                        vec![Span::styled(t(Msg::ProjectNone), theme::muted())]
                     }
                     ProjectChoice::Existing(id) => vec![
                         Span::styled(
@@ -159,7 +158,10 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                         )),
                     ],
                     ProjectChoice::Create(name) => vec![Span::styled(
-                        format!("「{}」を作成", truncate(name, inner.saturating_sub(14))),
+                        fill(
+                            Msg::CreateProjectNamed,
+                            &[&truncate(name, inner.saturating_sub(14))],
+                        ),
                         theme::accent(),
                     )],
                 };
@@ -168,7 +170,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             popup(
                 frame,
                 area,
-                &counted("プロジェクト", ids),
+                &counted(t(Msg::LabelProject), ids),
                 lines,
                 popup_width,
                 Some((0, at)),
@@ -192,7 +194,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     lines.push(choice_line(
                         vec![
                             Span::styled("0  ", theme::faint()),
-                            Span::styled("     なし", theme::muted()),
+                            Span::styled(t(Msg::NoneIndented), theme::muted()),
                         ],
                         *index == Priority::ALL.len(),
                         inner,
@@ -207,7 +209,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                         ));
                     }
                     lines.push(choice_line(
-                        vec![Span::styled("なし（0）", theme::muted())],
+                        vec![Span::styled(t(Msg::NoneZero), theme::muted())],
                         *index == POINTS.len(),
                         inner,
                     ));
@@ -241,13 +243,20 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     )
                 })
                 .collect();
-            popup(frame, area, "並び方", lines, 40.min(popup_width), None);
+            popup(
+                frame,
+                area,
+                t(Msg::LabelSortBy),
+                lines,
+                40.min(popup_width),
+                None,
+            );
         }
         Overlay::Palette { input, index } => {
             let palette_width: u16 = 72.min(area.width.saturating_sub(4));
             let inner = palette_width.saturating_sub(2) as usize;
             let items = app.palette_items(&input.text());
-            let (line, at) = input_line(input, inner, "コマンド・プロジェクト・タスクを探す");
+            let (line, at) = input_line(input, inner, t(Msg::PalettePlaceholder));
             let mut lines = vec![line];
             let chosen = (*index).min(items.len().saturating_sub(1));
             let room = (area.height as usize).saturating_sub(8).clamp(3, 16);
@@ -273,7 +282,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                             ),
                             Span::raw(name.clone()),
                         ],
-                        "プロジェクト".to_string(),
+                        t(Msg::LabelProject).to_string(),
                         theme::faint(),
                     ),
                     PaletteItem::Task {
@@ -303,14 +312,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             }
             if items.is_empty() {
                 lines.push(Line::from(Span::styled(
-                    "   見つかりません",
+                    t(Msg::NotFoundIndented),
                     theme::faint(),
                 )));
             }
             popup(
                 frame,
                 area,
-                "検索とコマンド",
+                t(Msg::KeyPalette),
                 lines,
                 palette_width,
                 Some((0, at)),
@@ -330,11 +339,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             popup(
                 frame,
                 area,
-                "プロジェクトの色",
+                t(Msg::ProjectColorTitle),
                 vec![
                     Line::from(spans),
                     Line::from(Span::styled(
-                        format!("  {name}　←→ で選び、Enter で決める"),
+                        fill(Msg::ColorPickHint, &[&name]),
                         theme::faint(),
                     )),
                 ],
@@ -343,14 +352,14 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             );
         }
         Overlay::Name { input, rename } => {
-            let (line, at) = input_line(input, inner, "プロジェクトの名前");
+            let (line, at) = input_line(input, inner, t(Msg::ProjectNamePlaceholder));
             popup(
                 frame,
                 area,
                 if rename.is_some() {
-                    "プロジェクトの名前を変更"
+                    t(Msg::ProjectRenameTitle)
                 } else {
-                    "プロジェクトを作成"
+                    t(Msg::ProjectCreateTitle)
                 },
                 vec![line],
                 popup_width,
@@ -362,16 +371,18 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             targets,
             index,
         } => {
-            let (line, at) = input_line(input, inner, "タスクの名前");
-            let mut spans = vec![Span::styled("   行き先：", theme::faint())];
+            let (line, at) = input_line(input, inner, t(Msg::TaskNamePlaceholder));
+            let mut spans = vec![Span::styled(t(Msg::QuickTargetLabel), theme::faint())];
             for (i, target) in targets.iter().enumerate() {
                 if i > 0 {
                     spans.push(Span::styled("｜", theme::faint()));
                 }
                 let label = match target {
-                    QuickTarget::Inbox => "受信箱".to_string(),
-                    QuickTarget::Today => "今日".to_string(),
-                    QuickTarget::Date(on) if on.as_str() <= today.as_str() => "今日".to_string(),
+                    QuickTarget::Inbox => t(Msg::ListInbox).to_string(),
+                    QuickTarget::Today => t(Msg::ListToday).to_string(),
+                    QuickTarget::Date(on) if on.as_str() <= today.as_str() => {
+                        t(Msg::ListToday).to_string()
+                    }
                     QuickTarget::Date(on) => format_long_date(on, today),
                 };
                 spans.push(Span::styled(
@@ -383,11 +394,11 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                     },
                 ));
             }
-            spans.push(Span::styled("  （Tab で切り替え）", theme::faint()));
+            spans.push(Span::styled(t(Msg::QuickSwitchHint), theme::faint()));
             popup(
                 frame,
                 area,
-                "追加",
+                t(Msg::QuickAddTitle),
                 vec![line, Line::from(spans)],
                 popup_width,
                 Some((0, at)),
@@ -413,7 +424,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             popup(
                 frame,
                 area,
-                "プロジェクトで絞り込む",
+                t(Msg::KeyFilterProject),
                 lines,
                 44.min(popup_width),
                 None,
@@ -429,7 +440,7 @@ pub fn draw_shortcuts(frame: &mut Frame, app: &mut App, area: Rect) {
     let label_width = (total * 3 / 5).clamp(20, 48);
     let keys_text = |keys: &[&str]| {
         if keys.is_empty() {
-            "キーなし（Ctrl+K から）".to_string()
+            t(Msg::NoKey).to_string()
         } else {
             keys.iter()
                 .map(|spec| key_label(spec))
@@ -494,17 +505,14 @@ pub fn draw_shortcuts(frame: &mut Frame, app: &mut App, area: Rect) {
         lines.extend(rows);
     }
     if lines.is_empty() {
-        lines.push(Line::from(Span::styled("  見つかりません", theme::faint())));
+        lines.push(Line::from(Span::styled(t(Msg::NotFound), theme::faint())));
     }
 
     let filter = if query.is_empty() {
-        Line::from(Span::styled(
-            "絞り込み：文字を打つと絞り込めます",
-            theme::faint(),
-        ))
+        Line::from(Span::styled(t(Msg::FilterEmptyHint), theme::faint()))
     } else {
         Line::from(vec![
-            Span::styled("絞り込み：", theme::faint()),
+            Span::styled(t(Msg::FilterPrefix), theme::faint()),
             Span::raw(query.clone()),
         ])
     };
@@ -522,9 +530,9 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> 
     };
     // この端末だけで使っているときは、やめて戻れる
     let leave = if app.config.is_cloud() {
-        "q で終了"
+        t(Msg::ShortcutsQuit)
     } else {
-        "Esc で戻る"
+        t(Msg::ShortcutsBack)
     };
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled(
@@ -540,29 +548,27 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> 
     match &login.step {
         LoginStep::Idle => {
             if app.config.is_cloud() {
-                lines.push(Line::from("GitHub でログインします"));
+                lines.push(Line::from(t(Msg::LoginPanelDevice)));
             } else {
-                lines.push(Line::from(
-                    "GitHub でログインすると、クラウドと同期して使えます",
-                ));
+                lines.push(Line::from(t(Msg::LoginPanelCloud)));
                 lines.push(Line::from(Span::styled(
-                    "クラウドとの同期は、いまは招待した人だけが使えます",
+                    t(Msg::LoginPanelInviteOnly),
                     theme::muted(),
                 )));
                 lines.push(Line::from(Span::styled(
-                    "この端末のタスクはそのまま残り、ログアウトすると戻ります",
+                    t(Msg::LoginPanelKeepLocal),
                     theme::muted(),
                 )));
             }
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
-                format!("Enter で始める　{leave}"),
+                fill(Msg::LoginEnterStart, &[&leave]),
                 theme::faint(),
             )));
         }
         LoginStep::Starting => {
             lines.push(Line::from(Span::styled(
-                "コードを用意しています…",
+                t(Msg::LoginPreparingCode),
                 theme::muted(),
             )));
         }
@@ -574,28 +580,24 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> 
             let left = expires_at
                 .saturating_duration_since(Instant::now())
                 .as_secs();
-            lines.push(Line::from("1. ブラウザでこの URL を開く"));
+            lines.push(Line::from(t(Msg::LoginStepOpenPanel)));
             lines.push(Line::from(Span::styled(
                 format!("   {verification_uri}"),
                 theme::accent(),
             )));
             lines.push(Line::default());
-            lines.push(Line::from("2. このコードを入力して、承認する"));
+            lines.push(Line::from(t(Msg::LoginStepCodePanel)));
             lines.push(Line::from(Span::styled(
                 format!("   {user_code}"),
                 theme::accent().add_modifier(Modifier::BOLD),
             )));
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
-                format!(
-                    "承認を待っています…（あと {} 分 {} 秒）",
-                    left / 60,
-                    left % 60
-                ),
+                fill(Msg::LoginWaitingRemaining, &[&(left / 60), &(left % 60)]),
                 theme::muted(),
             )));
             lines.push(Line::from(Span::styled(
-                "この画面に出たコード以外は、承認しないでください",
+                t(Msg::LoginWarnCode),
                 theme::faint(),
             )));
             lines.push(Line::default());
@@ -610,14 +612,14 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> 
             }
             lines.push(Line::default());
             lines.push(Line::from(Span::styled(
-                format!("Enter でやり直す　{leave}"),
+                fill(Msg::LoginEnterRetry, &[&leave]),
                 theme::faint(),
             )));
         }
     }
     lines.push(Line::default());
     lines.push(Line::from(Span::styled(
-        format!("接続先：{}", app.config.server),
+        fill(Msg::ServerLabel, &[&app.config.server]),
         theme::faint(),
     )));
     let fits_logo = area.height >= lines.len() as u16 + LOGO_HEIGHT + 1 + 2;

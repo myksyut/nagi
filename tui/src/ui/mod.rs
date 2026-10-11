@@ -27,6 +27,7 @@ use self::login::LoginEvent;
 use crate::config::Config;
 use crate::data::net::NetEvent;
 use crate::data::{StopReason, Store, open_store};
+use crate::i18n::{Msg, t};
 
 /// 画面のスレッドへ届くもの。通信とログインの知らせには、作ったときの世代を付ける
 /// （ログインし直してストアを作り直したあとに届いた、古い通信の結果を捨てるため）
@@ -125,7 +126,7 @@ fn main_loop(
         }
         app.tick();
         if app.login.is_none() && app.store.stopped_by == Some(StopReason::Unauthorized) {
-            app.show_login(Some("ログインが切れました。もう一度ログインしてください"));
+            app.show_login(Some(t(Msg::LoginExpiredRelogin)));
         }
         if app.should_quit {
             // 送信中の操作があれば、保存されるのを少し待ってから終わる

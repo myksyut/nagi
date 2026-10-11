@@ -13,6 +13,7 @@ use super::views::ProjectFilter;
 use crate::data::sort::TaskSort;
 use crate::data::{Destination, PerformOptions};
 use crate::dates::parse_date_input;
+use crate::i18n::{Msg, fill, t};
 use crate::model::{Bucket, ChecklistItem, POINTS, PROJECT_COLORS, Priority, Task, TaskChanges};
 
 /// 検索で出すタスクの上限
@@ -588,9 +589,9 @@ impl App {
             Err(failure) => {
                 let message = match failure {
                     crate::data::Failure::TooLong(limit) => limit.message(),
-                    _ => "保存できませんでした".to_string(),
+                    _ => t(Msg::SaveFailed).to_string(),
                 };
-                self.toast_error(&message, Some("打った文字は欄に残してあります"));
+                self.toast_error(&message, Some(t(Msg::InputKeptInField)));
                 if let Some(detail) = &mut self.detail {
                     detail.edit = Some(edit);
                 }
@@ -609,7 +610,7 @@ impl App {
             options,
         );
         match result {
-            Err(crate::data::Failure::Invalid) => self.toast_error("保存できませんでした", None),
+            Err(crate::data::Failure::Invalid) => self.toast_error(t(Msg::SaveFailed), None),
             Err(crate::data::Failure::TooLong(limit)) => self.toast_error(&limit.message(), None),
             _ => {}
         }
@@ -941,13 +942,13 @@ impl App {
     /// タスクが今ある場所の名前
     fn location_of(&self, task: &Task) -> String {
         if task.is_completed() {
-            return "完了".to_string();
+            return t(Msg::ListCompleted).to_string();
         }
         match task.bucket {
-            Bucket::Inbox => "受信箱",
-            Bucket::Today => "今日",
-            Bucket::Scheduled => "予定",
-            Bucket::Later => "あとで",
+            Bucket::Inbox => t(Msg::ListInbox),
+            Bucket::Today => t(Msg::ListToday),
+            Bucket::Scheduled => t(Msg::ListScheduled),
+            Bucket::Later => t(Msg::ListLater),
         }
         .to_string()
     }
@@ -1008,7 +1009,7 @@ impl App {
                     id: task.id.clone(),
                     title: task.title.clone(),
                     location: match project {
-                        Some(name) => format!("{location}・{name}"),
+                        Some(name) => fill(Msg::LocationWithProject, &[&location, &name]),
                         None => location,
                     },
                 });

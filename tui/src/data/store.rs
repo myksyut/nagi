@@ -18,6 +18,7 @@ use super::local_db::{LocalDb, PendingOwner};
 use super::replica::{OperationKind, PendingBatch, Replica};
 use super::undo::{UndoEntry, UndoStack};
 use crate::dates::{iso, logical_date};
+use crate::i18n::{Msg, fill, t};
 use crate::log;
 use crate::model::{
     API_VERSION, Bucket, ChecklistItem, MAX_CHECKLIST_ITEM_LENGTH, MAX_CHECKLIST_ITEMS,
@@ -121,13 +122,11 @@ pub enum Limit {
 impl Limit {
     pub fn message(self) -> String {
         match self {
-            Limit::Title => format!("タイトルは {MAX_TITLE_LENGTH} 文字まで"),
-            Limit::Memo => format!("メモは {MAX_MEMO_LENGTH} 文字まで"),
-            Limit::ChecklistItems => format!("チェックリストは {MAX_CHECKLIST_ITEMS} 項目まで"),
-            Limit::ChecklistItem => {
-                format!("チェックリストの項目は {MAX_CHECKLIST_ITEM_LENGTH} 文字まで")
-            }
-            Limit::ProjectName => format!("プロジェクト名は {MAX_PROJECT_NAME_LENGTH} 文字まで"),
+            Limit::Title => fill(Msg::LimitTitle, &[&MAX_TITLE_LENGTH]),
+            Limit::Memo => fill(Msg::LimitMemo, &[&MAX_MEMO_LENGTH]),
+            Limit::ChecklistItems => fill(Msg::LimitChecklistItems, &[&MAX_CHECKLIST_ITEMS]),
+            Limit::ChecklistItem => fill(Msg::LimitChecklistItem, &[&MAX_CHECKLIST_ITEM_LENGTH]),
+            Limit::ProjectName => fill(Msg::LimitProjectName, &[&MAX_PROJECT_NAME_LENGTH]),
         }
     }
 }
@@ -142,8 +141,8 @@ pub enum Quota {
 impl Quota {
     pub fn message(self) -> String {
         match self {
-            Quota::Tasks => format!("タスクは {MAX_TASKS_PER_USER} 件まで"),
-            Quota::Projects => format!("プロジェクトは {MAX_PROJECTS_PER_USER} 件まで"),
+            Quota::Tasks => fill(Msg::QuotaTasks, &[&MAX_TASKS_PER_USER]),
+            Quota::Projects => fill(Msg::QuotaProjects, &[&MAX_PROJECTS_PER_USER]),
         }
     }
 }
@@ -336,11 +335,11 @@ impl Store {
                     store.replica.replace_confirmed(rows);
                     store.cursor = snapshot.cursor;
                     if let Err(error) = local.purge_deleted(&cutoff) {
-                        log::error(&format!("手元の控えを片付けられませんでした: {error}"));
+                        log::error(&fill(Msg::LogLocalCopyCleanFailed, &[&error]));
                     }
                 }
                 // 読めなければ、手元が空のときと同じくカーソル 0 から取る
-                Err(error) => log::error(&format!("手元の控えを読めませんでした: {error}")),
+                Err(error) => log::error(&fill(Msg::LogLocalCopyReadFailed, &[&error])),
             }
             // 前に送れなかった、同じ持ち主のまとまりを列に戻す。送るのは最初の差分の取得が通ったあと。
             // 読めないまとまりがあれば（読めなければ）、それより前のまとまりも送らずに止める
@@ -351,14 +350,12 @@ impl Store {
                         store.replica.add_pending(batch);
                     }
                     if load.unreadable {
-                        log::error("送っていない変更に、この nagi で読めないものがあります");
+                        log::error(t(Msg::LogUnreadablePending));
                         store.stopped_by = Some(StopReason::UnreadablePending);
                     }
                 }
                 Err(error) => {
-                    log::error(&format!(
-                        "送っていない変更を手元の控えから読めませんでした: {error}"
-                    ));
+                    log::error(&fill(Msg::LogPendingReadFailed, &[&error]));
                     store.stopped_by = Some(StopReason::UnreadablePending);
                 }
             }
@@ -559,7 +556,7 @@ impl Store {
             }
             ApiFailure::ServerBehind => self.wait_for_server(),
             ApiFailure::Rejected { .. } => {
-                log::error(&format!("差分を取得できませんでした: {error:?}"));
+                log::error(&fill(Msg::LogSyncFailed, &[&format_args!("{error:?}")]));
             }
             // 次のきっかけで取り直す
             ApiFailure::Network => self.is_online = false,
@@ -576,8 +573,9 @@ impl Store {
     /// この nagi が古い。送信と同期を止め、送っていないまとまりは表示に残したまま pending の表に書く
     /// （更新した nagi が、次に開いたときに送る）
     fn require_upgrade(&mut self, min_api_version: u32) {
-        log::error(&format!(
-            "Worker は API の版 {min_api_version} 以上を求めています（この nagi は {API_VERSION}）"
+        log::error(&fill(
+            Msg::LogApiVersionRequired,
+            &[&min_api_version, &API_VERSION],
         ));
         self.keep_pending();
         if self.stopped_by.is_none() {
@@ -663,9 +661,9 @@ impl Store {
             return Err(Failure::TooLong(limit));
         }
         if !mutations.iter().all(is_well_formed) {
-            log::error(&format!(
-                "操作の形が正しくありません: {}",
-                summarize(mutations.iter())
+            log::error(&fill(
+                Msg::LogMalformedMutations,
+                &[&summarize(mutations.iter())],
             ));
             return Err(Failure::Invalid);
         }
@@ -802,9 +800,12 @@ impl Store {
                     self.sync();
                 } else {
                     // 検証エラーはほぼ不具合なので、記録を残す
-                    log::error(&format!(
-                        "保存を受け付けられませんでした: {error:?} {}",
-                        summarize(discarded.iter().flat_map(|batch| &batch.mutations))
+                    log::error(&fill(
+                        Msg::LogMutationRejected,
+                        &[
+                            &format_args!("{error:?}"),
+                            &summarize(discarded.iter().flat_map(|batch| &batch.mutations)),
+                        ],
                     ));
                     save_failed(self, SaveFailure::Rejected);
                 }
@@ -838,7 +839,7 @@ impl Store {
         match write(local) {
             Ok(()) => true,
             Err(error) => {
-                log::error(&format!("手元の控えに保存できませんでした: {error}"));
+                log::error(&fill(Msg::LogLocalSaveFailed, &[&error]));
                 false
             }
         }
@@ -865,19 +866,14 @@ impl Store {
     /// 読めなければ区別せずに探し直す。それでも読めなければ、前のゾーンのまま（どちらも記録に残す）
     fn set_time_zone(&mut self, name: &str) {
         let tz = name.parse::<Tz>().ok().or_else(|| {
-            log::error(&format!(
-                "Worker が返したタイムゾーン {name} を、そのままでは読めません"
-            ));
+            log::error(&fill(Msg::LogTimeZoneUnreadable, &[&name]));
             TZ_VARIANTS
                 .iter()
                 .copied()
                 .find(|tz| tz.name().eq_ignore_ascii_case(name))
         });
         let Some(tz) = tz else {
-            log::error(&format!(
-                "Worker が返したタイムゾーン {name} を読めないため、{} のままにします",
-                self.tz.name()
-            ));
+            log::error(&fill(Msg::LogTimeZoneUnusable, &[&name, &self.tz.name()]));
             return;
         };
         if tz == self.tz {

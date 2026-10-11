@@ -1,6 +1,7 @@
 //! タスクとプロジェクトの形と、Worker とやり取りする形（src/shared の model.ts・mutations.ts・api.ts と同じ約束）。
 //! 日付は YYYY-MM-DD（論理日付）、時刻は ISO 8601 の UTC（ミリ秒まで）。空は None
 
+use crate::i18n::{Msg, t};
 use serde::{Deserialize, Deserializer, Serialize};
 
 /// API の版。すべての呼び出しで X-Api-Version に付ける。Worker の受ける範囲（src/shared/api.ts の
@@ -54,9 +55,9 @@ impl Priority {
 
     pub fn label(self) -> &'static str {
         match self {
-            Priority::High => "高",
-            Priority::Medium => "中",
-            Priority::Low => "低",
+            Priority::High => t(Msg::PriorityHigh),
+            Priority::Medium => t(Msg::PriorityMedium),
+            Priority::Low => t(Msg::PriorityLow),
         }
     }
 

@@ -1,5 +1,6 @@
 //! 設定と置き場。Worker の URL、ログイン（トークンと利用者の ID）、手元の控え、画面の覚え書き（リスト｜ボード・並び方）
 
+use crate::i18n::{Msg, fill};
 use std::collections::{BTreeMap, BTreeSet};
 use std::ffi::OsString;
 use std::fs;
@@ -9,6 +10,8 @@ use serde::{Deserialize, Serialize};
 
 /// 本番の Worker
 pub const DEFAULT_SERVER: &str = "https://nagi.wizard1026miya.workers.dev";
+
+const PREFS_FILE: &str = "prefs.json";
 
 pub struct Config {
     /// Worker の URL（末尾の / なし）
@@ -36,11 +39,7 @@ pub fn resolve_dirs(env: impl Fn(&str) -> Option<OsString>) -> Result<Dirs, Stri
             Some(dir) => PathBuf::from(dir),
             None => non_empty("HOME")
                 .map(|home| PathBuf::from(home).join(fallback))
-                .ok_or_else(|| {
-                    format!(
-                        "データの置き場を決められません。環境変数 HOME（か {variable}）が設定されていません"
-                    )
-                })?,
+                .ok_or_else(|| fill(Msg::ConfigHomeMissing, &[&variable]))?,
         };
         Ok(root.join("nagi"))
     };
@@ -108,7 +107,7 @@ impl Config {
             .into_iter()
             .try_for_each(|dir| {
                 create_private_dir(dir)
-                    .map_err(|error| format!("{} を作れませんでした：{error}", dir.display()))
+                    .map_err(|error| fill(Msg::ConfigCreateDirFailed, &[&dir.display(), &error]))
             });
         match created {
             Ok(()) => Ok(None),
@@ -205,11 +204,13 @@ impl Config {
 
     /// `nagi --help` の最後に出す、データ・ログイン・記録の置き場
     pub fn locations(&self) -> String {
-        format!(
-            "置き場：\n  データ    {}\n  ログイン  {}\n  記録      {}",
-            self.device_db_path().display(),
-            self.session_path().display(),
-            self.log_path().display()
+        fill(
+            Msg::ConfigLocations,
+            &[
+                &self.device_db_path().display(),
+                &self.session_path().display(),
+                &self.log_path().display(),
+            ],
         )
     }
 
@@ -219,7 +220,7 @@ impl Config {
     }
 
     fn prefs_path(&self) -> PathBuf {
-        self.config_dir.join("prefs.json")
+        self.config_dir.join(PREFS_FILE)
     }
 
     /// 保存してあるログインのトークン（環境変数は見ない。ログアウトで消す対象）
@@ -324,6 +325,16 @@ pub struct Prefs {
     /// サイドバーを畳んでいるか（印だけの細い帯）
     #[serde(default)]
     pub sidebar_rail: bool,
+    /// 画面の言語（`ja`）。`--lang` の次、環境変数より前に見る
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lang: Option<String>,
+}
+
+/// 覚え書きの言語。言語は引数を読む前に決めるので、置き場が決まらなくても、読めなくても、ないものとして扱う
+pub fn saved_lang(env: impl Fn(&str) -> Option<OsString>) -> Option<String> {
+    let dirs = resolve_dirs(env).ok()?;
+    let text = fs::read_to_string(dirs.config.join(PREFS_FILE)).ok()?;
+    serde_json::from_str::<Prefs>(&text).ok()?.lang
 }
 
 #[cfg(test)]

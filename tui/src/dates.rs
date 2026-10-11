@@ -4,6 +4,7 @@
 
 use std::sync::LazyLock;
 
+use crate::i18n::{Msg, fill, t};
 use chrono::{DateTime, Datelike, Duration, NaiveDate, SecondsFormat, TimeZone, Timelike, Utc};
 use chrono_tz::Tz;
 use regex::Regex;
@@ -24,7 +25,17 @@ pub fn device_time_zone() -> Tz {
 /// この時刻（時）に論理日付が切り替わる
 pub const DAY_START_HOUR: u32 = 4;
 
+/// 入力を読むための曜日（表示は weekday_name）
 const WEEKDAYS: [&str; 7] = ["日", "月", "火", "水", "木", "金", "土"];
+const WEEKDAY_NAMES: [Msg; 7] = [
+    Msg::WeekdaySun,
+    Msg::WeekdayMon,
+    Msg::WeekdayTue,
+    Msg::WeekdayWed,
+    Msg::WeekdayThu,
+    Msg::WeekdayFri,
+    Msg::WeekdaySat,
+];
 
 /// 時刻を ISO 8601 の UTC（ミリ秒まで。JS の toISOString と同じ形）にする
 pub fn iso(time: DateTime<Utc>) -> String {
@@ -89,8 +100,13 @@ pub fn weekday_index(date: &str) -> usize {
     to_naive(date).map_or(0, |d| d.weekday().num_days_from_sunday() as usize)
 }
 
+/// 日曜を 0 とした曜日の名前
+pub fn weekday_name(index: usize) -> &'static str {
+    t(WEEKDAY_NAMES[index])
+}
+
 pub fn weekday_label(date: &str) -> &'static str {
-    WEEKDAYS[weekday_index(date)]
+    weekday_name(weekday_index(date))
 }
 
 /// その月の1日（YYYY-MM-01）
@@ -267,23 +283,23 @@ pub fn format_short_date_with_weekday(date: &str, today: &str) -> String {
 /// 「10月5日(月)」（年が違えば「2027年1月4日(月)」）
 pub fn format_long_date(date: &str, today: &str) -> String {
     let (year, month, day) = ymd(date);
-    let prefix = if same_year(date, today) {
-        String::new()
+    let weekday = weekday_label(date);
+    if same_year(date, today) {
+        fill(Msg::DateLong, &[&month, &day, &weekday])
     } else {
-        format!("{year}年")
-    };
-    format!("{prefix}{month}月{day}日({})", weekday_label(date))
+        fill(Msg::DateLongWithYear, &[&year, &month, &day, &weekday])
+    }
 }
 
 /// 見出しの日付：「9月28日 月曜日」（年が違えば年を付ける）
 pub fn format_day_heading(date: &str, today: &str) -> String {
     let (year, month, day) = ymd(date);
-    let prefix = if same_year(date, today) {
-        String::new()
+    let weekday = weekday_label(date);
+    if same_year(date, today) {
+        fill(Msg::DateHeading, &[&month, &day, &weekday])
     } else {
-        format!("{year}年")
-    };
-    format!("{prefix}{month}月{day}日 {}曜日", weekday_label(date))
+        fill(Msg::DateHeadingWithYear, &[&year, &month, &day, &weekday])
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -300,23 +316,23 @@ pub fn deadline_status(deadline_on: &str, today: &str) -> (DeadlineTone, String)
     if days >= 4 {
         (
             DeadlineTone::Plain,
-            format!("締切 {}", format_short_date(deadline_on, today)),
+            fill(Msg::DeadlineFar, &[&format_short_date(deadline_on, today)]),
         )
     } else if days >= 1 {
-        (DeadlineTone::Soon, format!("あと{days}日"))
+        (DeadlineTone::Soon, fill(Msg::DeadlineSoon, &[&days]))
     } else if days == 0 {
-        (DeadlineTone::Today, "今日まで".to_string())
+        (DeadlineTone::Today, t(Msg::DeadlineToday).to_string())
     } else {
-        (DeadlineTone::Overdue, format!("{}日超過", -days))
+        (DeadlineTone::Overdue, fill(Msg::DeadlineOverdue, &[&-days]))
     }
 }
 
 /// 予定のまとまりの見出し：「今日」「明日」「10/2(金)」
 pub fn schedule_heading(date: &str, today: &str) -> String {
     if date == today {
-        "今日".to_string()
+        t(Msg::ListToday).to_string()
     } else if date == add_days(today, 1) {
-        "明日".to_string()
+        t(Msg::DateTomorrow).to_string()
     } else {
         format_short_date_with_weekday(date, today)
     }
