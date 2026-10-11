@@ -406,7 +406,7 @@ pnpm release
 
 **前の版に戻すとき**：`migrations/0004`（利用者）より前の版の Worker は、いまの D1 では動かない。セッションの表の名前を `user_sessions` に変えてあり、古い版はセッションを読めずに、どの口も 500 になる（古い版は利用者を区別しないので、動いてしまうと全員の行が全員に見える。それを防ぐため）。0004 より前の版へ戻すなら、D1 も Time Travel で 0004 を当てる前へ戻す（そのあとに書いたデータは消える）。0004 を当ててから新しい Worker が出るまでの数秒も、同じ理由で 500 になる。
 
-**TUI**：`tui/` を変えて main にマージすると、GitHub Actions が Mac（Apple シリコン）と Linux（x86_64）でビルドして、GitHub の Releases に出す（`.github/workflows/tui.yml`）。タグは `tui-v0.1.<実行の番号>` で、ファイルは `nagi-aarch64-apple-darwin.tar.gz` と `nagi-x86_64-unknown-linux-musl.tar.gz`（中身はバイナリ `nagi`。Linux は musl で静的に組む）。そのあと、Homebrew の tap の formula を更新する（上の「入れ方」）。PR では、`tui/` を変えたときにビルドできるかだけを確かめる。
+**TUI**：`tui/Cargo.toml` の版と `CHANGELOG.md` を上げた PR をマージし、`v<版>` のタグを push すると、GitHub Actions が検査とビルドと動作確認を通してから、Mac（Apple シリコン）と Linux（x86_64、musl で静的に組む）のファイルを GitHub の Releases に出し、Homebrew の tap を更新する（`.github/workflows/tui.yml`）。main へのマージだけでは出さない。PR では、`tui/` を変えたときにビルドできるかだけを確かめる。手順は `docs/releasing.md`。
 
 ## ライセンス
 
