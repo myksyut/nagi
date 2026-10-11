@@ -110,7 +110,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] Lane 2. 空の HOME で head の nagi を起動し、1 秒待って撮る。Save `first-launch.png`. Pass when 画面の一番下に「ローカル」が出て、`first-launch.txt` にも「ローカル」がある.
 - [ ] Lane 3. タスク `牛乳を買う` を足して撮る。Save `wide-chars.png`. Pass when PNG で 5 文字がちょうど 10 セルに収まり、隣のセルに字形がはみ出さない.
 - [ ] Lane 4. タスクを一つ足し、カーソルをその行に置いて撮る。Save `cursor-row.png`. Pass when カーソルの行の地の画素が `#2e4670` で、`tui/src/ui/theme.rs` の `CURSOR_BG` と一致する.
-- [ ] Lane 5. `--size 120x80` で `key ?` を押し、ショートカットのページを開いて撮る。Save `shortcuts.png`. Pass when 左のサイドバーの地の画素が `#181c28`（`SURFACE`）で、`shortcuts.txt` に「終了」の行がある（ショートカットはポップアップではなく右の欄のページで、120x36 では「終了」が画面の外に出る）.
+- [ ] Lane 5. `--size 120x100` で `key ?` を押し、ショートカットのページを開いて撮る（閉じるときは `key Esc; sleep 0.3; key q`）。Save `shortcuts.png`. Pass when 左のサイドバーの地の画素が `#181c28`（`SURFACE`）で、`shortcuts.txt` に「終了」の行がある（ショートカットはポップアップではなく右の欄のページで、120x80 でも「終了」は画面の外に出る）.
 - [ ] Lane 6. `--size 40x12` で起動し、`shot small; resize 100x30; sleep 0.5; shot resize; key q` で撮る。Save `resize.png`. Pass when `resize.png` が 100x30 セルの大きさで描かれ、`small.png` が 40x12 セルで、終了コードが 0.
 - [ ] Lane 7. `--cmd` で、一つの PTY の中で三つのコマンドを続けて動かす。`tui/target/release/nagi add 資料を送る && tui/target/release/nagi list --json && sqlite3 "$XDG_DATA_HOME/nagi/local.db" 'SELECT COUNT(*) FROM tasks' && curl -s -o /dev/null -w '%{http_code}' https://nagi.wizard1026miya.workers.dev/api/session`。Save `cmd.png`. Pass when `cmd.txt` に `資料を送る` を含む JSON、件数の `1`、`401` が出て、`sqlite3` が開いたファイルが一時的な HOME の下にある.
 - [ ] Lane 8. lane 2 から 7 の前と後で `sha256sum ~/.local/share/nagi/local.db` を `--cmd` で撮る（なければ `ls` の結果を撮る）。Save `isolation.png`. Pass when 前と後の sha256 が同じで（なければ、後もない）、`/tmp` に道具の一時的な HOME が残っていない.
