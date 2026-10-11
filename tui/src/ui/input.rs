@@ -127,7 +127,8 @@ impl App {
                 | Overlay::Project { input, .. }
                 | Overlay::Palette { input, .. }
                 | Overlay::Name { input, .. }
-                | Overlay::QuickAdd { input, .. } => input.insert_str(&single_line),
+                | Overlay::QuickAdd { input, .. }
+                | Overlay::DeleteAccount { input, .. } => input.insert_str(&single_line),
                 _ => {}
             }
         } else if let Some(input) = &mut self.adding {
@@ -655,9 +656,12 @@ impl App {
             return;
         };
         if key.code == KeyCode::Esc {
-            if let Overlay::QuickAdd { input, .. } = &overlay {
+            match overlay {
                 // 打った文字は、追加欄と同じ下書きに残る
-                self.add_draft = input.text();
+                Overlay::QuickAdd { input, .. } => self.add_draft = input.text(),
+                // Worker の返事を待つあいだは、閉じない（返事で手元を片付けるため）
+                Overlay::DeleteAccount { deleting: true, .. } => self.overlay = Some(overlay),
+                _ => {}
             }
             return;
         }
@@ -676,6 +680,12 @@ impl App {
                 index,
             } => self.quick_add_key(key, input, targets, index),
             Overlay::Filter { index } => self.filter_key(key, index),
+            Overlay::DeleteAccount {
+                input,
+                tasks,
+                projects,
+                deleting,
+            } => self.delete_account_key(key, input, tasks, projects, deleting),
         };
     }
 

@@ -430,6 +430,49 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
                 None,
             );
         }
+        Overlay::DeleteAccount {
+            input,
+            tasks,
+            projects,
+            deleting,
+        } => {
+            let danger = Style::new().fg(theme::DANGER).add_modifier(Modifier::BOLD);
+            let mut lines = vec![
+                Line::from(Span::styled(t(Msg::AccountDeleteHeading), danger)),
+                Line::from(fill(Msg::AccountDeleteCounts, &[tasks, projects])),
+            ];
+            lines.extend(
+                wrap(t(Msg::AccountDeleteNotice), inner.saturating_sub(2))
+                    .into_iter()
+                    .map(|line| Line::from(Span::styled(format!(" {line}"), theme::faint()))),
+            );
+            let input_row = lines.len();
+            if *deleting {
+                lines.push(Line::from(Span::styled(
+                    t(Msg::AccountDeleting),
+                    theme::muted(),
+                )));
+                popup(
+                    frame,
+                    area,
+                    t(Msg::AccountDeleteTitle),
+                    lines,
+                    popup_width,
+                    None,
+                );
+            } else {
+                let (line, at) = input_line(input, inner, t(Msg::AccountDeletePlaceholder));
+                lines.push(line);
+                popup(
+                    frame,
+                    area,
+                    t(Msg::AccountDeleteTitle),
+                    lines,
+                    popup_width,
+                    Some((input_row, at)),
+                );
+            }
+        }
     }
 }
 

@@ -23,18 +23,19 @@ use crossterm::event::{
 use crossterm::execute;
 
 use self::app::App;
-use self::login::LoginEvent;
+use self::login::{AccountDeleted, LoginEvent};
 use crate::config::Config;
 use crate::data::net::NetEvent;
-use crate::data::{StopReason, Store, open_store};
-use crate::i18n::{Msg, t};
+use crate::data::{Store, open_store};
 
 /// 画面のスレッドへ届くもの。通信とログインの知らせには、作ったときの世代を付ける
-/// （ログインし直してストアを作り直したあとに届いた、古い通信の結果を捨てるため）
+/// （ログインし直してストアを作り直したあとに届いた、古い通信の結果を捨てるため）。
+/// アカウントを消した結果は、世代にかかわらず必ず片付けるので、付けない
 pub enum AppEvent {
     Term(Event),
     Net(u64, NetEvent),
     Login(u64, LoginEvent),
+    AccountDeleted(AccountDeleted),
 }
 
 /// 何も起きないあいだの、描き直しの間隔（トーストを片付ける・午前4時を確かめる）
@@ -122,12 +123,11 @@ fn main_loop(
                     app.on_login_event(event);
                 }
                 AppEvent::Net(..) | AppEvent::Login(..) => {}
+                AppEvent::AccountDeleted(deleted) => app.on_account_deleted(deleted),
             }
         }
         app.tick();
-        if app.login.is_none() && app.store.stopped_by == Some(StopReason::Unauthorized) {
-            app.show_login(Some(t(Msg::LoginExpiredRelogin)));
-        }
+        app.show_login_if_unauthorized();
         if app.should_quit {
             // 送信中の操作があれば、保存されるのを少し待ってから終わる
             let deadline = *quit_deadline.get_or_insert_with(|| Instant::now() + QUIT_GRACE);

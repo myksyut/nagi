@@ -1,7 +1,7 @@
 //! 画面なしの使い方（CLI）。エージェントや定期の実行から、タスクを追加したり一覧を読んだりする。
 //! データの決まり（置き場・並び順キー・締切で今日へ移すなど）は、画面と同じデータ層（Store）に任せる
 
-use std::io::Write;
+use std::io::{Read, Write};
 use std::path::Path;
 use std::process::ExitCode;
 use std::sync::mpsc::{Receiver, channel};
@@ -133,6 +133,10 @@ pub enum Command {
         discard_unsent: bool,
     },
     Export(ExportArgs),
+    AccountDelete {
+        /// 確かめを聞かずに消す
+        yes: bool,
+    },
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -168,7 +172,7 @@ pub fn lang_flag(args: &[String]) -> Option<String> {
 }
 
 /// 値を取る指定
-const VALUE_FLAGS: [&str; 16] = [
+const VALUE_FLAGS: [&str; 17] = [
     "server",
     "lang",
     "memo",
@@ -185,9 +189,17 @@ const VALUE_FLAGS: [&str; 16] = [
     "check",
     "if-unchanged-since",
     "out",
+    "output",
 ];
 /// 値を取らない指定
-const SWITCHES: [&str; 5] = ["json", "help", "version", "keep-existing", "discard-unsent"];
+const SWITCHES: [&str; 6] = [
+    "json",
+    "help",
+    "version",
+    "keep-existing",
+    "discard-unsent",
+    "yes",
+];
 
 /// 指定の値を1つ取り出す（同じ指定が重なっていたら、最後のものを使う）
 fn take(values: &mut Vec<(&str, String)>, name: &str) -> Option<String> {
@@ -271,6 +283,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let json = switches.contains(&"json");
     let keep_existing = switches.contains(&"keep-existing");
     let discard_unsent = switches.contains(&"discard-unsent");
+    let yes = switches.contains(&"yes");
     let command = match positionals.split_first() {
         None => Command::Tui,
         Some((&"help", _)) => Command::Help,
@@ -337,9 +350,17 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         Some((&"projects", [])) => Command::Projects { json },
         Some((&"login", [])) => Command::Login,
         Some((&"logout", [])) => Command::Logout { discard_unsent },
-        Some((&"export", [])) => Command::Export(ExportArgs {
-            out: take(values, "out"),
-        }),
+        Some((&"export", [])) => {
+            let out = take(values, "out");
+            let output = take(values, "output");
+            Command::Export(ExportArgs {
+                out: output.or(out),
+            })
+        }
+        Some((&"account", ["delete"])) => Command::AccountDelete { yes },
+        Some((&"account", _)) => {
+            return Err(t(Msg::CliAccountUsage).to_string());
+        }
         Some((&("projects" | "login" | "logout" | "export"), _)) => {
             return Err(t(Msg::CliNoExtraArgs).to_string());
         }
@@ -352,7 +373,11 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     if json
         && matches!(
             command,
-            Command::Tui | Command::Login | Command::Logout { .. } | Command::Export(_)
+            Command::Tui
+                | Command::Login
+                | Command::Logout { .. }
+                | Command::Export(_)
+                | Command::AccountDelete { .. }
         )
     {
         return Err(t(Msg::CliJsonNotHere).to_string());
@@ -362,6 +387,9 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     }
     if discard_unsent && !matches!(command, Command::Logout { .. }) {
         return Err(t(Msg::CliDiscardUnsentOnlyLogout).to_string());
+    }
+    if yes && !matches!(command, Command::AccountDelete { .. }) {
+        return Err(t(Msg::CliYesOnlyAccountDelete).to_string());
     }
     Ok(Invocation { server, command })
 }
@@ -1193,14 +1221,31 @@ fn logout(config: &Config, discard_unsent: bool) -> Result<(), String> {
     Ok(())
 }
 
-/// この端末のデータを書き出す。ログインしているかにかかわらず `local.db` を読む
+/// データを書き出す。クラウドのとき（ログイン中）は Worker のデータ（GET /api/export）、そうでなければ
+/// この端末のデータ（`local.db`）。どちらも同じ形（src/shared/export.ts の exportSchema）
 fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
+    if config.is_cloud() {
+        let login = auth::current_login(config);
+        if login.token.is_none() && !config.is_dev_server() {
+            return Err(t(Msg::CliNotLoggedIn).to_string());
+        }
+        // Worker は、端末のデータの書き出しと同じ整形（2 文字の字下げ）で流すので、そのまま写す
+        let mut body = ApiClient::new(&config.server, login.token).export_account()?;
+        return match args.out {
+            Some(out) => write_replacing(Path::new(&out), |file| copy_document(&mut body, file))
+                .map_err(|error| fill(Msg::CliExportWriteFailed, &[&out, &error])),
+            None => match copy_document(&mut body, std::io::stdout().lock()) {
+                // 読む側が先に閉じた（`| head` など）。emit と同じく、そこで終える
+                Err(error) if error.kind() == std::io::ErrorKind::BrokenPipe => {
+                    std::process::exit(0)
+                }
+                result => result.map_err(|error| fill(Msg::CliExportReadFailed, &[&error])),
+            },
+        };
+    }
     let path = config.device_db_path();
     if !path.exists() {
         return Err(t(Msg::CliNothingToExport).to_string());
-    }
-    if config.saved_session().is_some() || Config::has_env_token() {
-        eprintln!("{}", fill(Msg::CliExportWhileLoggedIn, &[&path.display()]));
     }
     let rows = DeviceDb::open(&path)?.export()?;
     let document = json!({
@@ -1213,7 +1258,7 @@ fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
     });
     let text = serde_json::to_string_pretty(&document).map_err(|error| error.to_string())?;
     match args.out {
-        Some(out) => write_replacing(Path::new(&out), &text)
+        Some(out) => write_replacing(Path::new(&out), |file| writeln!(file, "{text}"))
             .map_err(|error| fill(Msg::CliExportWriteFailed, &[&out, &error])),
         None => {
             emit(&text);
@@ -1222,11 +1267,78 @@ fn export(config: &Config, args: ExportArgs) -> Result<(), String> {
     }
 }
 
-/// 同じフォルダの一時ファイルに（unix では 0600 で）書いてから、`rename` で置き換える
+/// 応答の本文を、読みながら書き先へ写す（全部を手元に持たない）。端末のデータの書き出しと同じく、最後に改行を足す
+fn copy_document(body: &mut impl Read, out: impl Write) -> std::io::Result<()> {
+    let mut out = std::io::BufWriter::new(out);
+    std::io::copy(body, &mut out)?;
+    writeln!(out)?;
+    out.flush()
+}
+
+/// クラウドのアカウントとデータを消す。先に件数と書き出しの案内を出し、`delete` と打たせる（yes なら聞かない）。
+/// Worker が 204 を返してから、手元のログインと控えを消す。この端末のデータ（local.db）には触れない
+fn account_delete(config: &Config, yes: bool) -> Result<(), String> {
+    let login = auth::current_login(config);
+    let (Some(token), Some(user_id)) = (login.token, login.user_id) else {
+        return Err(t(Msg::CliAccountDeleteNoOwner).to_string());
+    };
+    if !yes {
+        let (tasks, projects) = {
+            let mut session = Session::open(config)?;
+            session.sync()?;
+            let replica = &session.store.replica;
+            (
+                replica
+                    .tasks()
+                    .filter(|task| task.deleted_at.is_none())
+                    .count(),
+                replica
+                    .projects()
+                    .filter(|project| project.deleted_at.is_none())
+                    .count(),
+            )
+        };
+        emit(&fill(
+            Msg::CliAccountDeleteWarning,
+            &[&config.server, &tasks, &projects],
+        ));
+        emit(t(Msg::CliAccountDeleteExportHint));
+        eprint!("{}", t(Msg::CliAccountDeletePrompt));
+        let _ = std::io::stderr().flush();
+        let mut answer = String::new();
+        std::io::stdin()
+            .read_line(&mut answer)
+            .map_err(|error| fill(Msg::CliReadInputFailed, &[&error]))?;
+        if answer.trim() != "delete" {
+            return Err(t(Msg::CliAccountDeleteDeclined).to_string());
+        }
+    }
+    ApiClient::new(&config.server, Some(token.clone())).delete_account(&user_id)?;
+    forget_deleted_login(config, &user_id, &token);
+    config.remove_db(Some(&user_id));
+    emit(t(Msg::CliAccountDeleted));
+    Ok(())
+}
+
+/// 保存してあるログインが、消したアカウントのもの（同じトークンか、同じ利用者）なら消す。
+/// NAGI_TOKEN で別の利用者を消したときや、確かめているあいだに別のログインに替わったときは、残す
+pub fn forget_deleted_login(config: &Config, user_id: &str, token: &str) {
+    if config
+        .saved_session()
+        .is_some_and(|saved| saved.token == token || saved.user_id.as_deref() == Some(user_id))
+    {
+        config.clear_token();
+    }
+}
+
+/// 同じフォルダの一時ファイルに（unix では 0600 で）write で書いてから、`rename` で置き換える
 /// （書き出しの途中で止まっても、前のファイルは壊れない）。
 /// 一時ファイルは、この呼び出しが新しく作れた名前だけを使い、消すのも自分が作ったものだけ
 /// （同じ名前が先にあれば、他の書き出しや前回の残りなので、触らずに別の名前にする）
-fn write_replacing(path: &Path, text: &str) -> std::io::Result<()> {
+fn write_replacing(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> std::io::Result<()>,
+) -> std::io::Result<()> {
     let dir = match path.parent() {
         Some(dir) if !dir.as_os_str().is_empty() => dir,
         _ => Path::new("."),
@@ -1257,7 +1369,7 @@ fn write_replacing(path: &Path, text: &str) -> std::io::Result<()> {
         }
     };
 
-    let written = writeln!(file, "{text}")
+    let written = write(&mut file)
         .and_then(|()| file.sync_all())
         .and_then(|()| std::fs::rename(&temp, path));
     if written.is_err() {
@@ -1278,6 +1390,7 @@ pub fn run(config: &Config, command: Command) -> ExitCode {
         Command::Login => login(config),
         Command::Logout { discard_unsent } => logout(config, discard_unsent),
         Command::Export(args) => export(config, args),
+        Command::AccountDelete { yes } => account_delete(config, yes),
         Command::Tui | Command::Help | Command::Version => Ok(()),
     };
     match result {
@@ -1657,6 +1770,37 @@ mod tests {
     }
 
     #[test]
+    fn exportは_output_でも書き出し先を読む() {
+        assert_eq!(
+            command(&["export", "--output", "nagi.json"]),
+            Command::Export(ExportArgs {
+                out: Some("nagi.json".into())
+            })
+        );
+    }
+
+    #[test]
+    fn account_delete_は_確かめを聞くか_yes_で省く() {
+        assert_eq!(
+            command(&["account", "delete"]),
+            Command::AccountDelete { yes: false }
+        );
+        assert_eq!(
+            command(&["account", "delete", "--yes"]),
+            Command::AccountDelete { yes: true }
+        );
+    }
+
+    #[test]
+    fn account_の知らない続きは断る() {
+        assert!(parsed(&["account"]).is_err());
+        assert!(parsed(&["account", "remove"]).is_err());
+        assert!(parsed(&["account", "delete", "now"]).is_err());
+        assert!(parsed(&["account", "delete", "--json"]).is_err());
+        assert!(parsed(&["list", "--yes"]).is_err());
+    }
+
+    #[test]
     fn 書き出しは_前のファイルを置き換え_一時ファイルを残さない() {
         let dir = std::env::temp_dir().join(format!(
             "nagi-cli-test-{}-{}",
@@ -1667,7 +1811,7 @@ mod tests {
         let out = dir.join("out.json");
         std::fs::write(&out, "old").unwrap();
 
-        write_replacing(&out, "{}").unwrap();
+        write_replacing(&out, |file| writeln!(file, "{{}}")).unwrap();
 
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "{}\n");
         let names: Vec<_> = std::fs::read_dir(&dir)
@@ -1695,11 +1839,148 @@ mod tests {
         let other = dir.join(format!(".out.json.{}.tmp", std::process::id()));
         std::fs::write(&other, "other").unwrap();
 
-        write_replacing(&out, "{}").unwrap();
+        write_replacing(&out, |file| writeln!(file, "{{}}")).unwrap();
 
         assert_eq!(std::fs::read_to_string(&out).unwrap(), "{}\n");
         assert_eq!(std::fs::read_to_string(&other).unwrap(), "other");
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    fn temp_dir(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join(format!(
+            "nagi-cli-test-{name}-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        std::fs::create_dir_all(&dir).unwrap();
+        dir
+    }
+
+    /// GET /api/export を 1 回だけ受けて、本文を chunked で返す Worker の代わり。
+    /// finish が false なら、終わりの印を送らずに切る（Worker が途中で止まったとき）
+    fn serve_export(chunks: Vec<String>, finish: bool) -> String {
+        let listener = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let server = format!("http://{}", listener.local_addr().unwrap());
+        thread::spawn(move || {
+            let (mut stream, _) = listener.accept().unwrap();
+            let mut request = Vec::new();
+            let mut buf = [0; 4096];
+            while !request.ends_with(b"\r\n\r\n") {
+                let read = stream.read(&mut buf).unwrap();
+                assert!(read > 0, "要求の途中で切れました");
+                request.extend_from_slice(&buf[..read]);
+            }
+            assert!(request.starts_with(b"GET /api/export "));
+            write!(
+                stream,
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ntransfer-encoding: chunked\r\nconnection: close\r\n\r\n"
+            )
+            .unwrap();
+            for chunk in chunks {
+                write!(stream, "{:x}\r\n{chunk}\r\n", chunk.len()).unwrap();
+            }
+            if finish {
+                stream.write_all(b"0\r\n\r\n").unwrap();
+            }
+        });
+        server
+    }
+
+    fn file_names(dir: &Path) -> Vec<std::ffi::OsString> {
+        std::fs::read_dir(dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect()
+    }
+
+    #[test]
+    fn クラウドの書き出しは_応答を読みながら_そのままファイルに書く() {
+        // ureq が本文を一度に読むときの既定の上限（10 MiB）より大きい
+        let chunks: Vec<String> = std::iter::once("{\n  \"tasks\": [".to_string())
+            .chain((0..12).map(|i| format!("\n    \"{i}{}\",", "あ".repeat(350_000))))
+            .chain(std::iter::once("\n    \"x\"\n  ]\n}".to_string()))
+            .collect();
+        let expected = format!("{}\n", chunks.concat());
+        let dir = temp_dir("cloud-export");
+        let config = Config::at(&serve_export(chunks, true), &dir);
+        config.save_session("token-a", Some("user-a")).unwrap();
+        let out_dir = dir.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let out = out_dir.join("out.json");
+        std::fs::write(&out, "old").unwrap();
+
+        export(
+            &config,
+            ExportArgs {
+                out: Some(out.to_string_lossy().into_owned()),
+            },
+        )
+        .unwrap();
+
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), expected);
+        assert_eq!(
+            file_names(&out_dir),
+            vec![std::ffi::OsString::from("out.json")]
+        );
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let mode = std::fs::metadata(&out).unwrap().permissions().mode();
+            assert_eq!(mode & 0o777, 0o600);
+        }
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn クラウドの書き出しが途中で切れたら_失敗し_前のファイルも一時ファイルもそのまま() {
+        let dir = temp_dir("cloud-export-cut");
+        let config = Config::at(
+            &serve_export(vec!["{\n  \"tasks\": [".to_string()], false),
+            &dir,
+        );
+        config.save_session("token-a", Some("user-a")).unwrap();
+        let out_dir = dir.join("out");
+        std::fs::create_dir_all(&out_dir).unwrap();
+        let out = out_dir.join("out.json");
+        std::fs::write(&out, "old").unwrap();
+
+        let result = export(
+            &config,
+            ExportArgs {
+                out: Some(out.to_string_lossy().into_owned()),
+            },
+        );
+
+        assert!(result.is_err(), "{result:?}");
+        assert_eq!(std::fs::read_to_string(&out).unwrap(), "old");
+        assert_eq!(
+            file_names(&out_dir),
+            vec![std::ffi::OsString::from("out.json")]
+        );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn アカウントを消したあと_保存してあるログインは_消したアカウントのものだけを消す() {
+        let config = Config::at("https://nagi.example.com", &temp_dir("forget"));
+
+        // NAGI_TOKEN で A を消した。保存してあるのは B のログイン
+        config.save_session("token-b", Some("user-b")).unwrap();
+        forget_deleted_login(&config, "user-a", "token-a");
+        assert_eq!(config.saved_token().as_deref(), Some("token-b"));
+        // 利用者の ID が分からない古いログインも、トークンが違えば残す
+        config.save_session("token-old", None).unwrap();
+        forget_deleted_login(&config, "user-a", "token-a");
+        assert_eq!(config.saved_token().as_deref(), Some("token-old"));
+
+        // 同じトークン
+        config.save_session("token-a", None).unwrap();
+        forget_deleted_login(&config, "user-a", "token-a");
+        assert_eq!(config.saved_session(), None);
+        // 同じ利用者の別のトークン（Worker では、利用者のセッションはすべて消えている）
+        config.save_session("token-a2", Some("user-a")).unwrap();
+        forget_deleted_login(&config, "user-a", "token-a");
+        assert_eq!(config.saved_session(), None);
     }
 
     #[test]

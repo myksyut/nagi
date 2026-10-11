@@ -174,6 +174,15 @@ pub enum Overlay {
     },
     /// カレンダー・タイムラインのプロジェクトの絞り込み
     Filter { index: usize },
+    /// クラウドのアカウントを消す確かめ（`delete` と打つまで消さない）
+    DeleteAccount {
+        input: TextInput,
+        /// 消す件数（確かめの画面に出す）
+        tasks: usize,
+        projects: usize,
+        /// Worker に送って、返事を待っている（そのあいだは閉じない）
+        deleting: bool,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -262,6 +271,9 @@ pub struct App {
     /// ログインの画面（出ているあいだ Some）
     pub login: Option<Login>,
     pub should_quit: bool,
+    /// クラウドのアカウントを消していて、Worker の返事を待っている。そのあいだは同期せず、ログインが切れても
+    /// ログインの画面を出さない（返事で手元を片付けるまで、消している流れを途中で替えない）
+    pub deleting_account: bool,
     /// 送っていない変更が消えることを、ログアウトの前に一度知らせた（もう一度選ぶとログアウトする）
     pub logout_warned: bool,
     /// 画面のスレッドへ知らせを送る口（通信とログインのスレッドに渡す）
@@ -321,6 +333,7 @@ impl App {
             shortcuts_scroll: 0,
             login: None,
             should_quit: false,
+            deleting_account: false,
             logout_warned: false,
             events,
             generation: 0,
@@ -906,6 +919,9 @@ impl App {
     }
 
     pub fn sync_now(&mut self) {
+        if self.deleting_account {
+            return;
+        }
         self.last_sync = Instant::now();
         self.report_time_zone();
         self.store.sync();

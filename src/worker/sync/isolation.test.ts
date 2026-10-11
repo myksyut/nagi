@@ -428,3 +428,35 @@ describe("タイムゾーン：相手の列は変わらない", () => {
     expect(row?.time_zone).toBeNull();
   });
 });
+
+describe("アカウントの削除と書き出し：相手の行は別", () => {
+  it("同じ id の行を持つ A と B で、B が消えても A の行は残り、A の書き出しは A の行だけ", async () => {
+    const id = crypto.randomUUID();
+    await insertRawTask(db, { userId: A, id, seq: 1, title: "A の行" });
+    await insertRawTask(db, { userId: B, id, seq: 1, title: "B の行" });
+    const { token: tokenB } = await createSession(db, B, new Date());
+    const { token: tokenA } = await createSession(db, A, new Date());
+    const app = createApp();
+    const call = (token: string, method: string, path: string, body?: unknown) =>
+      app.request(
+        `https://nagi.example.com${path}`,
+        {
+          method,
+          headers: {
+            Authorization: `Bearer ${token}`,
+            ...(body === undefined ? {} : { "Content-Type": "application/json" }),
+          },
+          body: body === undefined ? undefined : JSON.stringify(body),
+        },
+        { ...env, ALLOWED_GITHUB_USER_IDS: "2002" },
+      );
+
+    const deleted = await call(tokenB, "DELETE", "/api/account", { confirm: B });
+
+    expect(deleted.status).toBe(204);
+    const exported = (await (await call(tokenA, "GET", "/api/export")).json()) as {
+      tasks: { id: string; title: string }[];
+    };
+    expect(exported.tasks.map((task) => [task.id, task.title])).toEqual([[id, "A の行"]]);
+  });
+});
