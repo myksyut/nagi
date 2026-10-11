@@ -1719,10 +1719,11 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 調べて答えが出たことと、まだ出ていないこと。
 
 - ドメインの空き（2026-10-11）。RDAP（`https://data.iana.org/rdap/dns.json` の登録先）と、whois の 43 番ポートで調べた。取られている名前は nagi.dev、nagi.app、nagi.com、nagi.io、nagi.sh、nagi.jp、nagi.so、nagi.page、nagi.day、nagi.cloud、bagi.dev、bagi.app、bagi.com、bagi.io。空いている名前は nagi.run、nagi.tools、nagi.ink、usenagi.dev、usenagi.app、getnagi.dev、nagitodo.dev、nagitodo.app、nagitodo.com、nagi-todo.dev、bagi.sh、bagi.jp。値段（プレミアム扱いか）は登録先で確かめていない。
+- ドメインの値段（2026-10-11、Cloudflare Registrar、1 年あたり、cfdomainpricing.com の一覧）。nagi.run は 21.20 ドル。nagi.tools は 28.20 ドル。nagi.ink は 25.20 ドル。.dev は初年 8.20 ドル、更新 12.20 ドル。.app は初年 8.20 ドル、更新 14.20 ドル。.com は 10.46 ドル。.sh は 45.00 ドル。.jp は Cloudflare では扱っていない。名前ごとのプレミアム扱いは、登録の画面で確かめる。
 - ロゴとアニメーション。使い捨ての試作で、ロゴ 6 案、TUI での描き方 7 案、動き 4 案を比べ、運用者がロゴ B と動き 3 を選んだ。#37、#38、#39 でマージ済み。配色を一つにする問いは、まだ答えが出ていない。R07 が試作で答える。
 - ほかのプラットフォーム。GitHub の changelog（2026-02-05 と 2026-06-11）と runner-images の告知で、Linux arm64、macOS Intel、Windows x64、Windows arm64 の runner があることを確かめた。nagi を実際にそれらで組んだことはまだない。R04 と R05 が確かめる。
 - 翻訳の量。`tui/src` の Rust に、日本語を含む文字列リテラルが 775 個、38 ファイルある（grep で数えた）。英語の日付の入力が今の解析器に素直に乗るかは確かめていない。R10 が確かめる。
-- 決済の手数料。調べた範囲では、Lemon Squeezy、Paddle、Polar の基本は 5% と 50 セント。Stripe は 2.9% と 30 セントで、税は自分で納める。月 3 ドルなら Merchant of Record の手数料は約 0.65 ドルで、売上の約 22%。実際の契約条件は確かめていない。運用者が選ぶ。
+- 決済の手数料（2026-10-11、stripe.com/jp/pricing と Stripe のサポート記事）。Stripe の日本の口座は、カード 3.6%（固定費なし）、通貨換算が要れば 2% を足す、サブスクリプションの Billing が 0.7%。Stripe Managed Payments（Stripe の Merchant of Record）は 3.5% を足し、80 か国以上の消費税と VAT の計算、徴収、申告、納付を受け持つ。日本の事業者も対象で、Adaptive Pricing で通貨換算の手数料はかからない。合計は約 7.8% で、月 3 ドルなら約 0.23 ドル。Polar、Lemon Squeezy、Paddle は 5% と 50 セントで、月 3 ドルなら約 0.65 ドル（約 22%）。運用者は Stripe を選んだ（2026-10-11）。
 - 端末の色。macOS の「ターミナル」や明るい背景での見え方は、まだ実際に見ていない。R08 の lane が確かめる。
 
 ## Appendix B. Alternatives rejected
@@ -1730,7 +1731,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 - 手元に Intel の Mac や Windows を用意する案。運用者は持っておらず、GitHub の runner で組んで動かせるので、買わない。
 - 毎回の main へのマージで配る今のやり方を続ける案。ロゴの変更のような小さな変更まで全員に届き、版の番号が CI の実行回数で飛ぶ。タグで出す形に変える（R03）。
 - 招待制のまま、許可リストを手で増やし続ける案。人が増えるたびにデプロイが要り、お金の流れもない。有料の利用権に置き換える（R19）。
-- Stripe を直接使う案。手数料は安いが、各国の消費税や VAT を自分で扱うことになる。個人の運用には重い。Merchant of Record を勧める。決めるのは運用者。
+- Polar、Lemon Squeezy、Paddle を使う案。各国の税は引き受けてくれるが、1 回 50 セントの固定費があり、月 3 ドルでは手数料が約 22% になる。Stripe Managed Payments なら同じ税の引き受けが約 7.8% で済む。Stripe だけを使い税を自分で扱う案も、EU や英国への販売で登録と申告が要るので選ばない。
 - 本番に向けて侵入テストをする案。ほかの利用者のデータを壊すおそれがある。staging（R21）だけに向ける。
 - 翻訳に大きな枠組み（Fluent など）を入れる案。R09 で比べ、文字の数と複数形の要り方に見合うほうを選ぶ。
 
