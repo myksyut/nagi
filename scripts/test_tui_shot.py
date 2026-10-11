@@ -148,3 +148,11 @@ def test_resize_changes_screen_size_and_tty_answers_cursor_query(shot, tmp_path)
     assert (report["small"]["cols"], report["small"]["rows"]) == (40, 5)
     assert (report["big"]["cols"], report["big"]["rows"]) == (60, 8)
     assert "5 40" in (out / "small.txt").read_text()
+
+
+def test_bare_esc_is_read_as_a_key_not_alt_prefix(shot, tmp_path):
+    binary = shot.DEFAULT_BIN
+    if not binary.exists():
+        pytest.skip("tui/target/release/nagi が無い（cargo build --release）")
+    code, _ = run_tool(shot, tmp_path, "--keys", "sleep 1; key ?; sleep 0.3; key Esc; key q", "--timeout", "10")
+    assert code == 0  # Esc の直後の q が Alt+q と読まれると終わらず、124 になる

@@ -33,6 +33,9 @@ import pyte
 from PIL import Image, ImageDraw, ImageFont
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
+# 素の ESC を送ったあとに置く間（秒）。crossterm に時間切れはなく、読んだ時点で後続のバイトがあるかだけで決まる。
+# 1ms でも通ったが、混んだ CPU でも別のキーとして読まれるよう 50ms にしている
+ESC_SETTLE = 0.05
 DEFAULT_BIN = REPO_ROOT / "tui" / "target" / "release" / "nagi"
 SCRUBBED_ENV = ("NAGI_TOKEN", "NAGI_SERVER", "NO_COLOR")  # NO_COLOR は crossterm が色を落とすので、継いだ値で画面が変わらないようにする
 FIXED_ENV = {
@@ -517,7 +520,11 @@ def run(args: argparse.Namespace) -> int:
                 elif step.verb == "type":
                     session.send(step.arg.encode("utf-8"))
                 elif step.verb == "key":
-                    session.send(key_bytes(step.arg))
+                    data = key_bytes(step.arg)
+                    session.send(data)
+                    if data == b"\x1b":
+                        # crossterm は ESC の直後に入力が続いていると Alt+キーと読む。次を別のキーにするため少し待つ
+                        session.pump(ESC_SETTLE)
                 elif step.verb == "shot":
                     shot(step.arg)
                 elif step.verb == "resize":
