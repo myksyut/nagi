@@ -198,10 +198,9 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
         t(Msg::StatusNotStarted)
     };
     let deadline = task.deadline_on.as_deref().map(|on| {
-        format!(
-            "{}（{}）",
-            format_long_date(on, today),
-            deadline_status(on, today).1
+        fill(
+            Msg::Parenthesized,
+            &[&format_long_date(on, today), &deadline_status(on, today).1],
         )
     });
     let project = task

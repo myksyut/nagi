@@ -512,7 +512,7 @@ pub fn draw_shortcuts(frame: &mut Frame, app: &mut App, area: Rect) {
             .map(|binding| {
                 // 決まった画面だけで効くキーには、効く画面の名前を添える
                 let label = match binding.place {
-                    Some(place) => format!("{}（{place}）", binding.label),
+                    Some(place) => fill(Msg::Parenthesized, &[&binding.label, &place]),
                     None => binding.label.clone(),
                 };
                 row(&label, keys_text(binding.keys))

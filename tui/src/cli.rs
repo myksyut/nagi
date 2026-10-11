@@ -710,10 +710,9 @@ fn task_line(store: &Store, task: &Task) -> String {
     if meta.is_empty() {
         format!("  {glyph} {}", task.title)
     } else {
-        format!(
-            "  {glyph} {}  （{}）",
-            task.title,
-            meta.join(t(Msg::ListSeparator))
+        fill(
+            Msg::CliTaskMeta,
+            &[&glyph, &task.title, &meta.join(t(Msg::ListSeparator))],
         )
     }
 }
@@ -863,7 +862,7 @@ fn task_detail(store: &Store, task: &Task) -> String {
     if let Some(points) = task.points {
         lines.push(fill(Msg::CliDetailPoints, &[&points]));
     }
-    lines.push(format!("  id：{}", task.id));
+    lines.push(fill(Msg::CliIdLine, &[&task.id]));
     lines.push(fill(Msg::CliDetailUpdated, &[&task.updated_at]));
     if !task.memo.trim().is_empty() {
         lines.push(t(Msg::CliMemoHeading).to_string());
@@ -1011,7 +1010,7 @@ fn list(config: &Config, args: ListArgs) -> Result<(), String> {
             emit("");
         }
         any = true;
-        emit!("{label}（{}）", ids.len());
+        emit(&fill(Msg::Parenthesized, &[label, &ids.len()]));
         for task in ids.iter().filter_map(task) {
             emit!("{}", task_line(store, task));
         }
@@ -2352,6 +2351,74 @@ mod tests {
         config.save_session("token-a2", Some("user-a")).unwrap();
         forget_deleted_login(&config, "user-a", "token-a");
         assert_eq!(config.saved_session(), None);
+    }
+
+    #[test]
+    fn json_は_言語で変わらない() {
+        use crate::i18n::{Lang, with_lang};
+
+        let dir = std::env::temp_dir().join(format!(
+            "nagi-cli-json-{}-{}",
+            std::process::id(),
+            uuid::Uuid::now_v7()
+        ));
+        let config = Config::at("https://nagi.example.com", &dir);
+        let mut session = Session::open(&config).unwrap();
+        let done = session
+            .store
+            .add_task(AddTask {
+                title: "報告書".into(),
+                memo: String::new(),
+                project_id: None,
+                to: Destination::Today,
+            })
+            .unwrap();
+        let ids = [done.ids[0].clone()];
+        accepted(session.store.set_priority(&ids, Some(Priority::High))).unwrap();
+        let today = session.store.today.clone();
+        accepted(session.store.set_deadline(&ids, Some(&add_days(&today, 2)))).unwrap();
+
+        let store = &session.store;
+        let task = store.replica.task(&ids[0]).unwrap();
+        let ja = with_lang(Lang::Ja, || task_json(store, task).to_string());
+        let en = with_lang(Lang::En, || task_json(store, task).to_string());
+        assert_eq!(ja, en);
+        assert_eq!(task_json(store, task)["list"], "today");
+        assert_eq!(task_json(store, task)["priority"], "high");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn help_lists_every_flag() {
+        use crate::i18n::{Lang, with_lang};
+
+        for lang in [Lang::Ja, Lang::En] {
+            with_lang(lang, || {
+                let help = t(Msg::CliHelp);
+                for name in VALUE_FLAGS.iter().chain(SWITCHES.iter()) {
+                    assert!(
+                        help.contains(&format!("--{name}")),
+                        "{lang:?} の HELP に --{name} がありません"
+                    );
+                }
+            });
+        }
+    }
+
+    #[test]
+    fn 英語の_help_は_100桁に収まり_かなと漢字がない() {
+        use crate::i18n::{Lang, with_lang};
+
+        with_lang(Lang::En, || {
+            for line in t(Msg::CliHelp).lines() {
+                assert!(
+                    line.chars().count() <= 100,
+                    "{} 桁：{line}",
+                    line.chars().count()
+                );
+                assert!(!line.chars().any(|c| ('\u{3040}'..='\u{9fff}').contains(&c)));
+            }
+        });
     }
 
     #[test]

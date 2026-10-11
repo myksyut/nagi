@@ -36,6 +36,53 @@ const WEEKDAY_NAMES: [Msg; 7] = [
     Msg::WeekdayFri,
     Msg::WeekdaySat,
 ];
+const WEEKDAY_LONG_NAMES: [Msg; 7] = [
+    Msg::WeekdayLongSun,
+    Msg::WeekdayLongMon,
+    Msg::WeekdayLongTue,
+    Msg::WeekdayLongWed,
+    Msg::WeekdayLongThu,
+    Msg::WeekdayLongFri,
+    Msg::WeekdayLongSat,
+];
+const MONTH_SHORT_NAMES: [Msg; 12] = [
+    Msg::MonthShort1,
+    Msg::MonthShort2,
+    Msg::MonthShort3,
+    Msg::MonthShort4,
+    Msg::MonthShort5,
+    Msg::MonthShort6,
+    Msg::MonthShort7,
+    Msg::MonthShort8,
+    Msg::MonthShort9,
+    Msg::MonthShort10,
+    Msg::MonthShort11,
+    Msg::MonthShort12,
+];
+const MONTH_FULL_NAMES: [Msg; 12] = [
+    Msg::MonthFull1,
+    Msg::MonthFull2,
+    Msg::MonthFull3,
+    Msg::MonthFull4,
+    Msg::MonthFull5,
+    Msg::MonthFull6,
+    Msg::MonthFull7,
+    Msg::MonthFull8,
+    Msg::MonthFull9,
+    Msg::MonthFull10,
+    Msg::MonthFull11,
+    Msg::MonthFull12,
+];
+/// 入力を読むための英語の曜日（短い形と長い形。表示は weekday_name）。日曜を 0 とする
+const ENGLISH_WEEKDAYS: [[&str; 2]; 7] = [
+    ["sun", "sunday"],
+    ["mon", "monday"],
+    ["tue", "tuesday"],
+    ["wed", "wednesday"],
+    ["thu", "thursday"],
+    ["fri", "friday"],
+    ["sat", "saturday"],
+];
 
 /// 時刻を ISO 8601 の UTC（ミリ秒まで。JS の toISOString と同じ形）にする
 pub fn iso(time: DateTime<Utc>) -> String {
@@ -107,6 +154,21 @@ pub fn weekday_name(index: usize) -> &'static str {
 
 pub fn weekday_label(date: &str) -> &'static str {
     weekday_name(weekday_index(date))
+}
+
+/// 日曜を 0 とした曜日の長い名前（見出し用。日本語は「月曜日」、英語は「Monday」）
+pub fn weekday_long_name(index: usize) -> &'static str {
+    t(WEEKDAY_LONG_NAMES[index])
+}
+
+/// 月の短い名前（1〜12。日本語は「10月」、英語は「Oct」）
+pub fn month_short(month: u32) -> &'static str {
+    t(MONTH_SHORT_NAMES[(month as usize).clamp(1, 12) - 1])
+}
+
+/// 月の名前（1〜12。日本語は「10月」、英語は「October」）
+pub fn month_full(month: u32) -> &'static str {
+    t(MONTH_FULL_NAMES[(month as usize).clamp(1, 12) - 1])
 }
 
 /// その月の1日（YYYY-MM-01）
@@ -252,7 +314,42 @@ pub fn parse_date_input(input: &str, today: &str) -> Option<String> {
             .find(|date| date.as_str() >= today);
     }
 
-    None
+    parse_english(input, today)
+}
+
+/// 英語の入力を読む。日本語の読みが外れたときだけ呼ぶ。小文字にして、空白を 1 つにまとめてから読む
+/// （日本語の `normalize` は空白を消すので、「in 3 days」が崩れる）。
+/// 読めるもの：today・tomorrow、曜日（mon〜sun・monday〜sunday。今日より後で一番近い日）、
+/// next ＋曜日（来週の同じ曜日。「来週月曜」と同じ日）、in N day(s)・in N week(s)
+fn parse_english(input: &str, today: &str) -> Option<String> {
+    let text = input.nfkc().collect::<String>().to_lowercase();
+    let words: Vec<&str> = text.split_whitespace().collect();
+    let weekday = |word: &str| {
+        ENGLISH_WEEKDAYS
+            .iter()
+            .position(|names| names.contains(&word))
+    };
+    match words.as_slice() {
+        ["today"] => Some(today.to_string()),
+        ["tomorrow"] => Some(add_days(today, 1)),
+        [word] => {
+            let ahead = (weekday(word)? + 7 - weekday_index(today)) % 7;
+            Some(add_days(today, if ahead == 0 { 7 } else { ahead as i64 }))
+        }
+        ["next", word] => {
+            let monday = add_days(today, -monday_index(weekday_index(today)));
+            Some(add_days(&monday, 7 + monday_index(weekday(word)?)))
+        }
+        ["in", count, unit @ ("day" | "days" | "week" | "weeks")] => {
+            if !count.chars().all(|c| c.is_ascii_digit()) {
+                return None;
+            }
+            let n: i64 = count.parse().ok()?;
+            let days = n.checked_mul(if unit.starts_with("day") { 1 } else { 7 })?;
+            (days <= MAX_OFFSET_DAYS).then(|| add_days(today, days))
+        }
+        _ => None,
+    }
 }
 
 // --- 表示の文言 -------------------------------------------------------------------------
@@ -261,29 +358,28 @@ fn same_year(date: &str, today: &str) -> bool {
     date.get(..4) == today.get(..4)
 }
 
-/// 「10/2」（年が違えば「2027/1/4」）
+/// 「10/2」（年が違えば、日本語は「2027/1/4」、英語は「1/4/2027」）
 pub fn format_short_date(date: &str, today: &str) -> String {
     let (year, month, day) = ymd(date);
     if same_year(date, today) {
-        format!("{month}/{day}")
+        fill(Msg::DateShort, &[&month, &day])
     } else {
-        format!("{year}/{month}/{day}")
+        fill(Msg::DateShortWithYear, &[&year, &month, &day])
     }
 }
 
-/// 「10/2(金)」
+/// 日本語は「10/2(金)」、英語は「Fri 10/2」
 pub fn format_short_date_with_weekday(date: &str, today: &str) -> String {
-    format!(
-        "{}({})",
-        format_short_date(date, today),
-        weekday_label(date)
+    fill(
+        Msg::DateShortWeekday,
+        &[&format_short_date(date, today), &weekday_label(date)],
     )
 }
 
-/// 「10月5日(月)」（年が違えば「2027年1月4日(月)」）
+/// 日本語は「10月5日(月)」、英語は「Mon, Oct 5」（年が違えば「2027年1月4日(月)」「Mon, Jan 4, 2027」）
 pub fn format_long_date(date: &str, today: &str) -> String {
     let (year, month, day) = ymd(date);
-    let weekday = weekday_label(date);
+    let (month, weekday) = (month_short(month), weekday_label(date));
     if same_year(date, today) {
         fill(Msg::DateLong, &[&month, &day, &weekday])
     } else {
@@ -291,10 +387,10 @@ pub fn format_long_date(date: &str, today: &str) -> String {
     }
 }
 
-/// 見出しの日付：「9月28日 月曜日」（年が違えば年を付ける）
+/// 見出しの日付：日本語は「9月28日 月曜日」、英語は「Monday, September 28」（年が違えば年を付ける）
 pub fn format_day_heading(date: &str, today: &str) -> String {
     let (year, month, day) = ymd(date);
-    let weekday = weekday_label(date);
+    let (month, weekday) = (month_full(month), weekday_long_name(weekday_index(date)));
     if same_year(date, today) {
         fill(Msg::DateHeading, &[&month, &day, &weekday])
     } else {
@@ -310,7 +406,8 @@ pub enum DeadlineTone {
     Overdue,
 }
 
-/// 行の右側の締切の表示。4日以上先は「締切 10/2」、3日以内は「あとN日」、当日は「今日まで」、過ぎたら「N日超過」
+/// 行の右側の締切の表示。4日以上先は「締切 10/2」（英語は「due 10/2」）、3日以内は「あとN日」（「N days left」）、
+/// 当日は「今日まで」（「due today」）、過ぎたら「N日超過」（「N days overdue」）
 pub fn deadline_status(deadline_on: &str, today: &str) -> (DeadlineTone, String) {
     let days = days_between(today, deadline_on);
     if days >= 4 {
@@ -319,15 +416,25 @@ pub fn deadline_status(deadline_on: &str, today: &str) -> (DeadlineTone, String)
             fill(Msg::DeadlineFar, &[&format_short_date(deadline_on, today)]),
         )
     } else if days >= 1 {
-        (DeadlineTone::Soon, fill(Msg::DeadlineSoon, &[&days]))
+        let msg = if days == 1 {
+            Msg::DaysLeftOne
+        } else {
+            Msg::DaysLeftMany
+        };
+        (DeadlineTone::Soon, fill(msg, &[&days]))
     } else if days == 0 {
         (DeadlineTone::Today, t(Msg::DeadlineToday).to_string())
     } else {
-        (DeadlineTone::Overdue, fill(Msg::DeadlineOverdue, &[&-days]))
+        let msg = if days == -1 {
+            Msg::DaysOverdueOne
+        } else {
+            Msg::DaysOverdueMany
+        };
+        (DeadlineTone::Overdue, fill(msg, &[&-days]))
     }
 }
 
-/// 予定のまとまりの見出し：「今日」「明日」「10/2(金)」
+/// 予定のまとまりの見出し：「今日」「明日」「10/2(金)」（英語は「Today」「Tomorrow」「Fri 10/2」）
 pub fn schedule_heading(date: &str, today: &str) -> String {
     if date == today {
         t(Msg::ListToday).to_string()
@@ -341,6 +448,7 @@ pub fn schedule_heading(date: &str, today: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::i18n::{Lang, with_lang};
 
     const SUNDAY: &str = "2026-09-27";
     const MONDAY: &str = "2026-09-28";
@@ -514,5 +622,126 @@ mod tests {
         assert_eq!(deadline_status("2026-09-30", SUNDAY).1, "あと3日");
         assert_eq!(deadline_status(SUNDAY, SUNDAY).1, "今日まで");
         assert_eq!(deadline_status("2026-09-25", SUNDAY).1, "2日超過");
+    }
+
+    /// 英語の入力のテストは、今日を 2026-10-12（月曜）にする
+    const ENGLISH_TODAY: &str = "2026-10-12";
+
+    #[test]
+    fn 英語の日付の入力() {
+        for (text, expected) in [
+            ("today", "2026-10-12"),
+            ("tomorrow", "2026-10-13"),
+            ("fri", "2026-10-16"),
+            ("Friday", "2026-10-16"),
+            ("monday", "2026-10-19"),
+            ("mon", "2026-10-19"),
+            ("next monday", "2026-10-19"),
+            ("next friday", "2026-10-23"),
+            ("next sunday", "2026-10-25"),
+            ("in 3 days", "2026-10-15"),
+            ("in 1 day", "2026-10-13"),
+            ("in 2 weeks", "2026-10-26"),
+            ("In  3   Days", "2026-10-15"),
+            ("  TOMORROW ", "2026-10-13"),
+            ("2026-12-24", "2026-12-24"),
+            ("10/3", "2027-10-03"),
+            ("10/30", "2026-10-30"),
+        ] {
+            assert_eq!(parse(text, ENGLISH_TODAY), some(expected), "{text}");
+        }
+    }
+
+    #[test]
+    fn 英語の次の曜日は_日本語の来週と同じ日() {
+        for (english, japanese) in [
+            ("next monday", "来週月曜"),
+            ("next friday", "来週金曜"),
+            ("next sunday", "来週日曜"),
+        ] {
+            for today in [ENGLISH_TODAY, SUNDAY, "2026-10-17"] {
+                assert_eq!(
+                    parse(english, today),
+                    parse(japanese, today),
+                    "{english} {today}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn 英語で読めないものは_none() {
+        for text in [
+            "in 3661 days",
+            "in 99999999999999999999999 days",
+            "in 600 weeks",
+            "next",
+            "nextday",
+            "next next monday",
+            "in 3",
+            "in days",
+            "in -3 days",
+            "funday",
+            "in 3 fortnights",
+        ] {
+            assert_eq!(parse(text, ENGLISH_TODAY), None, "{text}");
+        }
+        assert_eq!(parse("in 3660 days", ENGLISH_TODAY), some("2036-10-19"));
+    }
+
+    #[test]
+    fn 日本語の入力は_どちらの表示の言語でも読める() {
+        for lang in [Lang::Ja, Lang::En] {
+            with_lang(lang, || {
+                assert_eq!(parse("来週月曜", ENGLISH_TODAY), some("2026-10-19"));
+                assert_eq!(parse("3日後", ENGLISH_TODAY), some("2026-10-15"));
+                assert_eq!(parse("tomorrow", ENGLISH_TODAY), some("2026-10-13"));
+            });
+        }
+    }
+
+    #[test]
+    fn 英語の表示の文言() {
+        with_lang(Lang::En, || {
+            let today = ENGLISH_TODAY;
+            assert_eq!(format_short_date("2026-10-02", today), "10/2");
+            assert_eq!(format_short_date("2027-01-04", today), "1/4/2027");
+            assert_eq!(
+                format_short_date_with_weekday("2026-10-02", today),
+                "Fri 10/2"
+            );
+            assert_eq!(format_long_date("2026-10-05", today), "Mon, Oct 5");
+            assert_eq!(format_long_date("2027-01-04", today), "Mon, Jan 4, 2027");
+            assert_eq!(
+                format_day_heading("2026-09-28", today),
+                "Monday, September 28"
+            );
+            assert_eq!(
+                format_day_heading("2027-01-04", today),
+                "Monday, January 4, 2027"
+            );
+            assert_eq!(schedule_heading(today, today), "Today");
+            assert_eq!(schedule_heading("2026-10-13", today), "Tomorrow");
+            assert_eq!(schedule_heading("2026-10-16", today), "Fri 10/16");
+            for (deadline, expected) in [
+                ("2026-10-16", "due 10/16"),
+                ("2026-10-15", "3 days left"),
+                ("2026-10-14", "2 days left"),
+                ("2026-10-13", "1 day left"),
+                (today, "due today"),
+                ("2026-10-11", "1 day overdue"),
+                ("2026-10-10", "2 days overdue"),
+            ] {
+                assert_eq!(deadline_status(deadline, today).1, expected, "{deadline}");
+            }
+        });
+    }
+
+    #[test]
+    fn 日本語の締切は_1日でも同じ形() {
+        with_lang(Lang::Ja, || {
+            assert_eq!(deadline_status("2026-10-13", ENGLISH_TODAY).1, "あと1日");
+            assert_eq!(deadline_status("2026-10-11", ENGLISH_TODAY).1, "1日超過");
+        });
     }
 }

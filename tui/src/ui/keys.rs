@@ -12,7 +12,7 @@ use super::views::calendar_entries;
 use crate::data::Destination;
 use crate::data::sort::TaskSort;
 use crate::dates::{add_days, add_months, month_start};
-use crate::i18n::{Msg, fill, t};
+use crate::i18n::{self, Lang, Msg, fill, t};
 use crate::model::PROJECT_COLORS;
 
 /// ショートカットのページとコマンドの一覧でのまとまり
@@ -100,6 +100,7 @@ pub enum Action {
     Logout,
     DeleteAccount,
     ImportLocal,
+    Language(Lang),
     Quit,
 }
 
@@ -310,6 +311,15 @@ pub fn bindings() -> Vec<Binding> {
         binding(Msg::KeyImportLocal, G::Global, &[], A::ImportLocal),
         binding(Msg::KeyQuit, G::Global, &["q", "Ctrl+c"], A::Quit),
     ];
+    for lang in [Lang::Ja, Lang::En] {
+        list.push(Binding {
+            label: fill(Msg::KeyLanguage, &[&lang.name()]),
+            group: G::Global,
+            keys: &[],
+            place: None,
+            action: A::Language(lang),
+        });
+    }
     for sort in TaskSort::ALL {
         list.push(at(
             Msg::PlaceTodayLaterProject,
@@ -579,6 +589,8 @@ impl App {
             // この端末だけで使っているときはログイン、Worker と同期しているときはログアウト
             A::Login => !self.config.is_cloud(),
             A::Logout | A::DeleteAccount | A::ImportLocal => self.config.is_cloud(),
+            // 今の言語は選べない（コマンドの一覧には、切り替え先だけが並ぶ）
+            A::Language(lang) => i18n::current() != *lang,
         }
     }
 
@@ -835,6 +847,11 @@ impl App {
             A::Logout => self.logout(),
             A::DeleteAccount => self.open_delete_account(),
             A::ImportLocal => self.check_import(true),
+            A::Language(lang) => {
+                i18n::init(lang);
+                self.prefs.lang = Some(lang.code().to_string());
+                self.config.save_prefs(&self.prefs);
+            }
             A::Quit => self.should_quit = true,
         }
     }

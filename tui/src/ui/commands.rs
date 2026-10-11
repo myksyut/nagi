@@ -129,9 +129,9 @@ impl App {
         }
         match left {
             [] => None,
-            [id] => Some(format!(
-                "「{}」",
-                self.task(id).map_or("", |task| task.title.as_str())
+            [id] => Some(fill(
+                Msg::QuotedTitle,
+                &[&self.task(id).map_or("", |task| task.title.as_str())],
             )),
             _ => Some(fill(Msg::CountItems, &[&left.len()])),
         }
