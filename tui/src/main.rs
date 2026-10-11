@@ -17,12 +17,8 @@ use std::process::ExitCode;
 use cli::Command;
 use config::{Config, DEFAULT_SERVER};
 
-/// 版。Release のビルドでは、ワークフロー（tui.yml）が NAGI_VERSION に Release の版（0.1.<実行の番号>）を入れる。
-/// 手元のビルドでは Cargo.toml の版
-const VERSION: &str = match option_env!("NAGI_VERSION") {
-    Some(version) => version,
-    None => env!("CARGO_PKG_VERSION"),
-};
+/// 版の正本は Cargo.toml の `version`（Release のタグ `v<版>` と、ワークフロー（tui.yml）の check で突き合わせる）
+const VERSION: &str = env!("CARGO_PKG_VERSION");
 
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();

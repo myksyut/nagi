@@ -1,25 +1,65 @@
 name: tui
 
 # TUI（Rust。バイナリの名前は nagi）を、Mac（Apple シリコン）と Linux（x86_64。musl で静的に組むので、glibc の版を問わず動く）でビルドする。
-# - PR：tui/ を変えたときに、ビルドできるかだけを確かめる（公開しない）
-# - main：tui/ を変えたときに、ビルドして GitHub の Releases に出し、Homebrew の tap を更新する（手でも動かせる）
-# 整形・lint・テストは CI（ci.yml の tui）で回す
+# - PR：tui/ を変えたときに、ビルドして動かせるかだけを確かめる（公開しない）
+# - v<版> のタグの push：検査（check）と、各 target のビルドと動作確認（build）を通ったら、GitHub の Releases に出し、Homebrew の tap を更新する
+# - 手で動かす（tag を入れる）：そのタグで同じ流れを動かす。Release がもうあれば作り直さず、tap の更新だけをやり直す
+# 版の正本は tui/Cargo.toml の version。main への push では出さない。出し方は docs/releasing.md
 on:
   pull_request:
     paths:
       - "tui/**"
       - ".github/workflows/tui.yml"
   push:
-    branches: [main]
-    paths:
-      - "tui/**"
-      - ".github/workflows/tui.yml"
+    tags: ["v*.*.*"]
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 出す（または tap だけをやり直す）タグ。例：v0.2.0
+        required: true
+        type: string
 
 permissions:
   contents: read
 
+env:
+  # 出すタグ。タグの push ではその名前、手で動かすときは入力
+  TAG: ${{ inputs.tag || github.ref_name }}
+
 jobs:
+  check:
+    # 出すときだけ動く。build と並んで動く
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: tui
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - name: タグと Cargo.toml の版が同じか確かめる
+        working-directory: .
+        run: |
+          pkgid=$(cargo pkgid --manifest-path tui/Cargo.toml)
+          version=${pkgid##*@}
+          if [ "v$version" != "$TAG" ]; then
+            echo "::error::タグ $TAG と tui/Cargo.toml の版 $version が違う（版の正本は Cargo.toml）"
+            exit 1
+          fi
+      - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
+        with:
+          toolchain: stable
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+        with:
+          workspaces: tui
+      - run: cargo fmt --check
+      - run: cargo clippy --all-targets -- -D warnings
+      - run: cargo test
+
   build:
     name: build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
@@ -32,12 +72,15 @@ jobs:
             target: aarch64-apple-darwin
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
-    # PR では、新しい push が来たら古いビルドをやめる。main のビルドは最後まで動かす（Release に出すため）
+    # PR では、新しい push が来たら古いビルドをやめる。出すときのビルドは最後まで動かす
     concurrency:
       group: tui-build-${{ github.event_name }}-${{ github.event.pull_request.number || github.ref }}-${{ matrix.target }}
       cancel-in-progress: ${{ github.event_name == 'pull_request' }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.sha || format('refs/tags/{0}', env.TAG) }}
+          persist-credentials: false
       - uses: dtolnay/rust-toolchain@6bed0761d98439e5a578e2877258200ad565ba87 # stable
         with:
           toolchain: stable
@@ -50,17 +93,31 @@ jobs:
         if: runner.os == 'Linux'
         run: sudo apt-get update && sudo apt-get install -y musl-tools
       # --locked：Cargo.lock のとおりにビルドする（Cargo.lock が古ければ失敗させる）
-      # NAGI_VERSION：`nagi --version` に出す版。Release の版（release の job の VERSION）と同じにする
       - name: Build nagi
         working-directory: tui
-        env:
-          NAGI_VERSION: 0.1.${{ github.run_number }}
         run: cargo build --release --locked --target ${{ matrix.target }}
+      # 作ったバイナリを、その runner で動かす。一時的な HOME なので、手元のデータには触れない
+      - name: 動かして確かめる
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          pkgid=$(cargo pkgid --manifest-path tui/Cargo.toml)
+          version=${pkgid##*@}
+          nagi="$PWD/tui/target/$TARGET/release/nagi"
+          actual=$("$nagi" --version)
+          echo "$actual"
+          [ "$actual" = "nagi $version" ] || { echo "::error::nagi --version が 'nagi $version' でない"; exit 1; }
+          export HOME
+          HOME=$(mktemp -d)
+          "$nagi" add smoke
+          list=$("$nagi" list --json)
+          echo "$list"
+          echo "$list" | jq -e 'length == 1 and .[0].title == "smoke"' > /dev/null
       - name: tar.gz にまとめる
         run: tar -czf "nagi-${{ matrix.target }}.tar.gz" -C "tui/target/${{ matrix.target }}/release" nagi
       # Release に出すときだけ、次の job へ渡す
       - uses: actions/upload-artifact@v7
-        if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        if: github.event_name != 'pull_request'
         with:
           name: nagi-${{ matrix.target }}
           path: nagi-${{ matrix.target }}.tar.gz
@@ -68,83 +125,107 @@ jobs:
           retention-days: 7
 
   release:
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
-    needs: build
+    if: github.event_name != 'pull_request'
+    needs: [check, build]
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
       contents: write
+      id-token: write
+      attestations: write
     concurrency:
       group: tui-release
       cancel-in-progress: false
-    outputs:
-      version: ${{ steps.meta.outputs.version }}
-      sha_darwin: ${{ steps.meta.outputs.sha_darwin }}
-      sha_linux: ${{ steps.meta.outputs.sha_linux }}
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      GH_REPO: ${{ github.repository }}
     steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      # 手で動かしたときに、Release がもうあれば作り直さない（tap の更新のやり直し用）
+      - name: Release があるか見る
+        id: existing
+        run: |
+          if gh release view "$TAG" > /dev/null 2>&1; then
+            echo "exists=true" >> "$GITHUB_OUTPUT"
+            echo "::notice::Release $TAG はもうあるので、作り直さない"
+          else
+            echo "exists=false" >> "$GITHUB_OUTPUT"
+          fi
       - uses: actions/download-artifact@v8
+        if: steps.existing.outputs.exists != 'true'
         with:
           path: dist
           merge-multiple: true
-      - name: 版と、ファイルの sha256（Homebrew の formula に書く）
-        id: meta
+      - name: SHA256SUMS を作る
+        if: steps.existing.outputs.exists != 'true'
+        working-directory: dist
         run: |
-          echo "version=0.1.${{ github.run_number }}" >> "$GITHUB_OUTPUT"
-          echo "sha_darwin=$(sha256sum dist/nagi-aarch64-apple-darwin.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-          echo "sha_linux=$(sha256sum dist/nagi-x86_64-unknown-linux-musl.tar.gz | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
-      # 版は 0.1.<このワークフローの実行の番号>。出すたびに上がる
-      # （ワークフローの名前やファイル名を変えると番号が 1 に戻るので、変えない。Re-run では番号が増えないので、出し直すときは新しく手で動かす）。
-      # gh は、ファイルを全部載せ終えてから Release を公開する（releases/latest が、ファイルのそろっていない版を指さない）
-      - name: Release を作って latest にする
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          GH_REPO: ${{ github.repository }}
-          VERSION: 0.1.${{ github.run_number }}
-          NOTES: |
-            nagi の TUI（Mac の Apple シリコンと、Linux の x86_64）。
-            Homebrew なら `brew install myksyut/tap/nagi`（入れてあれば `brew upgrade nagi`）。
-            手で入れるなら、自分の環境の `nagi-<target>.tar.gz` を展開して、中の `nagi` をパスの通った場所に置く。
-            Mac でブラウザから落としたときは、`xattr -d com.apple.quarantine nagi` を実行してから開く。
+          sha256sum nagi-*.tar.gz > SHA256SUMS
+          cat SHA256SUMS
+      - uses: actions/attest-build-provenance@v4
+        if: steps.existing.outputs.exists != 'true'
+        with:
+          subject-path: dist/*
+      # 本文は、CHANGELOG のその版の節に、PR の一覧（.github/release.yml の分け方）を足す。節がなければ失敗する。
+      # gh は、ファイルを全部載せ終えてから Release を公開する（releases/latest が、ファイルのそろっていない版を指さない）。
+      # タグに - があれば（v0.3.0-rc.1 など）プレリリースにして、latest にしない
+      - name: Release を作る
+        if: steps.existing.outputs.exists != 'true'
         run: |
+          version=${TAG#v}
+          scripts/changelog-section.sh "$version" < CHANGELOG.md > notes.md
+          if [[ "$version" == *-* ]]; then
+            channel=(--prerelease)
+          else
+            channel=(--latest)
+          fi
           ls -l dist
-          gh release create "tui-v$VERSION" \
-            dist/nagi-aarch64-apple-darwin.tar.gz \
-            dist/nagi-x86_64-unknown-linux-musl.tar.gz \
-            --target "$GITHUB_SHA" \
-            --title "nagi TUI $VERSION" \
-            --notes "$NOTES" \
-            --latest
+          gh release create "$TAG" dist/* \
+            --verify-tag \
+            --title "nagi $version" \
+            --notes-file notes.md \
+            --generate-notes \
+            "${channel[@]}"
 
   tap:
-    # Homebrew の tap（myksyut/homebrew-tap）の formula を、出した版に更新する。
-    # 別のリポジトリへ push するので、secrets.TAP_GITHUB_TOKEN（homebrew-tap の contents を書ける fine-grained PAT）が要る。
-    # なければ飛ばす（そのときは、scripts/homebrew-formula.sh で手で更新する）
-    if: github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+    # Homebrew の tap（vars.TAP_REPOSITORY。なければ myksyut/homebrew-tap）の formula を、出した版に更新する。
+    # 別のリポジトリへ push するので、secrets.TAP_GITHUB_TOKEN（tap の contents を書ける fine-grained PAT）が要る。なければ失敗する。
+    # プレリリースでは動かさない
+    if: ${{ !contains(inputs.tag || github.ref_name, '-') }}
     needs: release
     runs-on: ubuntu-latest
     timeout-minutes: 10
     env:
-      HAS_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN != '' }}
+      TAP_REPOSITORY: ${{ vars.TAP_REPOSITORY || 'myksyut/homebrew-tap' }}
     steps:
-      - name: トークンがなければ飛ばす
-        if: env.HAS_TOKEN != 'true'
-        run: echo "::notice::TAP_GITHUB_TOKEN がないので、Homebrew の tap は更新しない（scripts/homebrew-formula.sh で手で更新する）"
+      - name: トークンがあるか見る
+        env:
+          TAP_GITHUB_TOKEN: ${{ secrets.TAP_GITHUB_TOKEN }}
+        run: |
+          if [ -z "$TAP_GITHUB_TOKEN" ]; then
+            echo "::error::secret TAP_GITHUB_TOKEN がない。入れてから gh workflow run tui.yml -f tag=$TAG でやり直す"
+            exit 1
+          fi
       - uses: actions/checkout@v7
-        if: env.HAS_TOKEN == 'true'
-      - uses: actions/checkout@v7
-        if: env.HAS_TOKEN == 'true'
         with:
-          repository: myksyut/homebrew-tap
+          ref: refs/tags/${{ env.TAG }}
+          persist-credentials: false
+      - uses: actions/checkout@v7
+        with:
+          repository: ${{ env.TAP_REPOSITORY }}
           token: ${{ secrets.TAP_GITHUB_TOKEN }}
           path: tap
       - name: formula を更新して push
-        if: env.HAS_TOKEN == 'true'
         env:
-          VERSION: ${{ needs.release.outputs.version }}
-          SHA_DARWIN: ${{ needs.release.outputs.sha_darwin }}
-          SHA_LINUX: ${{ needs.release.outputs.sha_linux }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          NAGI_REPOSITORY: ${{ github.repository }}
         run: |
-          scripts/homebrew-formula.sh "$VERSION" "$SHA_DARWIN" "$SHA_LINUX" > tap/Formula/nagi.rb
+          version=${TAG#v}
+          gh release download "$TAG" --repo "$GITHUB_REPOSITORY" --pattern SHA256SUMS
+          scripts/homebrew-formula.sh "$version" SHA256SUMS > tap/Formula/nagi.rb
           cd tap
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -153,5 +234,5 @@ jobs:
             echo "変わっていない"
             exit 0
           fi
-          git commit -m "nagi $VERSION"
+          git commit -m "nagi $version"
           git push
