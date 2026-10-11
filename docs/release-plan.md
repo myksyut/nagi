@@ -872,16 +872,16 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 **Depends on.** None. 運用者のドメイン購入を、Build の最初のボックスで待つ。
 
 **Files.**
-- [ ] `wrangler.jsonc` に `routes`（`api.<domain>` の custom domain）と `"workers_dev": true` を足す。
-- [ ] `tui/src/config.rs` の `DEFAULT_SERVER` を `https://api.<domain>` に変える。`LEGACY_DEFAULT_SERVER` と `Config::migrate_legacy_files` を足し、`mod tests` にテストを足す。
+- [ ] `wrangler.jsonc` に `routes`（`api.usenagi.dev` の custom domain）と `"workers_dev": true` を足す。
+- [ ] `tui/src/config.rs` の `DEFAULT_SERVER` を `https://api.usenagi.dev` に変える。`LEGACY_DEFAULT_SERVER` と `Config::migrate_legacy_files` を足し、`mod tests` にテストを足す。
 - [ ] `.github/workflows/deploy.yml` の `environment.url` と「本番の応答を確かめる」の `base` を新しい URL にし、古い URL にも同じ確かめを回す。
 - [ ] `README.md` の `## 事前準備` の 2 と 5、`### ログインと同期`、`## デプロイ` の URL を直し、古い URL を残す理由を書く。
 
 **Build.**
-- [ ] Stop until the operator picks `<domain>` and buys it. 買う先は Cloudflare Registrar を勧める。DNS と Workers が同じアカウントにあり、ゾーンを別に足す手間がない。
-- [ ] 運用者が Cloudflare のダッシュボードで、`api.<domain>` を今の Worker `nagi` の Custom Domain に足す。lane はこの URL を使う。マージ後の `wrangler deploy` は `wrangler.jsonc` の同じ設定でこれを保つ。
-- [ ] 運用者が GitHub の OAuth App「nagi」の Homepage URL を `https://<domain>` に変える。デバイスフローは callback を使わないので、ログインの流れは変わらない。
-- [ ] `wrangler.jsonc` に `"routes": [{ "pattern": "api.<domain>", "custom_domain": true }]` を書き、`"workers_dev": true` を明示する。更新していない nagi は `https://nagi.wizard1026miya.workers.dev` を見続けるので、この URL は止めない。
+- [x] Stop until the operator picks `usenagi.dev` and buys it. 運用者が 2026-10-11 に Cloudflare Registrar で買った。RDAP で登録日 2026-10-11T13:46:06Z、期限 2027-10-11、ネームサーバーが `cecelia.ns.cloudflare.com` と `conrad.ns.cloudflare.com` であることを確かめた。
+- [ ] 運用者が Cloudflare のダッシュボードで、`api.usenagi.dev` を今の Worker `nagi` の Custom Domain に足す。lane はこの URL を使う。マージ後の `wrangler deploy` は `wrangler.jsonc` の同じ設定でこれを保つ。
+- [ ] 運用者が GitHub の OAuth App「nagi」の Homepage URL を `https://usenagi.dev` に変える。デバイスフローは callback を使わないので、ログインの流れは変わらない。
+- [ ] `wrangler.jsonc` に `"routes": [{ "pattern": "api.usenagi.dev", "custom_domain": true }]` を書き、`"workers_dev": true` を明示する。更新していない nagi は `https://nagi.wizard1026miya.workers.dev` を見続けるので、この URL は止めない。
 - [ ] `pnpm exec wrangler deploy --dry-run` の出力に、custom domain と workers.dev の両方が出ることを確かめる。
 - [ ] `Config::new` は、`--server` も `NAGI_SERVER` もないときだけ `migrate_legacy_files` を呼ぶ。`slug(LEGACY_DEFAULT_SERVER)` のファイルがあり、`slug(DEFAULT_SERVER)` の同じ種類のファイルがないときだけ動く。
 - [ ] 移すのは `session-nagi.wizard1026miya.workers.dev.json`、`nagi.wizard1026miya.workers.dev.db` と `.db.owner`、`nagi.wizard1026miya.workers.dev--<user>.db`。`.db` は `-wal` と `-shm` も一緒に移す。
@@ -892,7 +892,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 
 **You see.**
 - [ ] 前の版でログインしていた人が更新して `nagi` を開くと、ログインの画面は出ず、前と同じ一覧がすぐ出る。
-- [ ] `nagi --help` の最後に `https://api.<domain>` が出る。
+- [ ] `nagi --help` の最後に `https://api.usenagi.dev` が出る。
 - [ ] 更新していない nagi は、今までどおり同期する。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
@@ -908,9 +908,9 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 運用者は Build のあと、trunk の nagi で `nagi login` を一度行い、その HOME を `/tmp/swarm-R12/seed-home` に残す。各 lane は、この HOME を `scripts/tui-shot.py` の一時 HOME に写してから動かす。画面は 120 x 36 で撮る。
 
 - [ ] Lane 1. Regression lane against trunk. 種の HOME で trunk の nagi と head の nagi を順に開き、今日の一覧を撮る。Save `r12-lane1-today.png`. Pass when 両方ともログインの画面を出さず、今日のタスクの件数と並びが同じ.
-- [ ] Lane 2. 移したあとの置き場。head で開いて `q` で閉じ、`scripts/tui-shot.py --cmd 'ls -l ~/.config/nagi ~/.local/share/nagi'` で撮る。Save `r12-lane2-files.png`. Pass when `session-api.<domain>.json` が `-rw-------` で、古い slug の控えが新しい slug の名前で残り、古い slug のファイルが一つもない.
+- [ ] Lane 2. 移したあとの置き場。head で開いて `q` で閉じ、`scripts/tui-shot.py --cmd 'ls -l ~/.config/nagi ~/.local/share/nagi'` で撮る。Save `r12-lane2-files.png`. Pass when `session-api.usenagi.dev.json` が `-rw-------` で、古い slug の控えが新しい slug の名前で残り、古い slug のファイルが一つもない.
 - [ ] Lane 3. 控えを使い直すこと。lane 2 のあと、ネットのない名前空間（`unshare -rn`）で head を開く。Save `r12-lane3-offline.png`. Pass when 移した控えからタスクが出て、下の欄がオフラインを示す.
-- [ ] Lane 4. 新しく入れた人。空の HOME で head の `nagi login` を動かす。Save `r12-lane4-login.png`. Pass when `https://github.com/login/device` とコードが出て（`api.<domain>/auth/device/start` が応えた印）、承認前にはセッションのファイルが作られない.
+- [ ] Lane 4. 新しく入れた人。空の HOME で head の `nagi login` を動かす。Save `r12-lane4-login.png`. Pass when `https://github.com/login/device` とコードが出て（`api.usenagi.dev/auth/device/start` が応えた印）、承認前にはセッションのファイルが作られない.
 - [ ] Lane 5. 古い URL の名指し。種の HOME で `NAGI_SERVER=https://nagi.wizard1026miya.workers.dev` を付けて head を開く。Save `r12-lane5-legacy-explicit.png`. Pass when 古い slug のセッションでそのまま一覧が出て、新しい slug のファイルが作られない.
 - [ ] Lane 6. 二つの URL が同じ Worker であること。`NAGI_TOKEN` に lane 2 のセッションのトークンを入れ、`scripts/tui-shot.py --cmd` で `nagi list today --json` を名指しなしと `--server https://nagi.wizard1026miya.workers.dev` で続けて動かす。Save `r12-lane6-both-hosts.png`. Pass when 二つの JSON が同じ.
 - [ ] Lane 7. ログアウト。lane 2 のあとの HOME で head を開き、Ctrl+K から「ログアウト」を選び、閉じてもう一度開く。Save `r12-lane7-logout.png`. Pass when 新旧どちらの slug のセッションも控えも残らず、二度目はこの端末のデータの一覧が出る.
@@ -937,7 +937,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 **Depends on.** R07, R10, R12.
 
 **Files.**
-- [ ] Create `site/wrangler.jsonc`。Worker の名前は `nagi-site`。`assets.directory` は `./public`、`assets.not_found_handling` は `404-page`、`routes` は `<domain>` の custom domain。
+- [ ] Create `site/wrangler.jsonc`。Worker の名前は `nagi-site`。`assets.directory` は `./public`、`assets.not_found_handling` は `404-page`、`routes` は `usenagi.dev` の custom domain。
 - [ ] Create `site/public/index.html`、`site/public/pricing/index.html`、`site/public/privacy/index.html`、`site/public/terms/index.html`、`site/public/legal/index.html`（英語）。
 - [ ] Create `site/public/ja/index.html`、`site/public/ja/pricing/index.html`、`site/public/ja/privacy/index.html`、`site/public/ja/terms/index.html`、`site/public/ja/tokushoho/index.html`（日本語）。
 - [ ] Create `site/public/404.html`、`site/public/style.css`、`site/public/_headers`。
@@ -945,11 +945,11 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] Create `.github/workflows/site.yml`。
 - [ ] `.github/workflows/ci.yml` の `check-and-test` に `node scripts/check-site.mjs` を足す。
 - [ ] `.gitignore` に `site/public/*.svg` を足す。
-- [ ] `README.md`、`tui/src/cli.rs` の `HELP`、`tui/src/ui/render/overlay.rs` のログインの案内に `https://<domain>` とプライバシーの URL を足す。文は R09 の翻訳の表に ja と en の両方で足す。
+- [ ] `README.md`、`tui/src/cli.rs` の `HELP`、`tui/src/ui/render/overlay.rs` のログインの案内に `https://usenagi.dev` とプライバシーの URL を足す。文は R09 の翻訳の表に ja と en の両方で足す。
 
 **Build.**
 - [ ] Stop until the operator approves the 特定商取引法に基づく表記 fields, the contact address, and the price text. 個人の販売者は、住所と電話番号を「請求があれば遅滞なく開示します」と書く形を選べる。運用者がどちらにするかを決める。
-- [ ] 置き場は Workers の static assets にする。API と同じ `wrangler` で出せる。静的なファイルの配信は無料で、回数の制限がない。R12 と同じ custom domain の仕組みで `<domain>` を付けられる。Cloudflare は新しい作りに Pages より Workers を勧めている。
+- [ ] 置き場は Workers の static assets にする。API と同じ `wrangler` で出せる。静的なファイルの配信は無料で、回数の制限がない。R12 と同じ custom domain の仕組みで `usenagi.dev` を付けられる。Cloudflare は新しい作りに Pages より Workers を勧めている。
 - [ ] API の Worker `nagi` とは別の Worker にする。`src/worker/index.test.ts` が確かめている「`/` は 404 の JSON」を崩さないため。
 - [ ] 英語を `/`、日本語を `/ja/` に置く。Homebrew と GitHub から来る人の多くが英語を読むため。各ページの `<head>` に `hreflang` の `alternate` を付け、右上に同じページの別の言語へのリンクを置く。自動の振り分けはしない。
 - [ ] ページは手で書いた HTML と一枚の CSS にする。JavaScript、外部のフォント、解析のタグは使わない。`_headers` で `Content-Security-Policy` に `default-src 'self'` を入れ、`Strict-Transport-Security` を付ける。
@@ -963,10 +963,10 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `site.yml` は `site/**` か `assets/**` が main に入ったら動く。`assets/*.svg` を写し、`pnpm exec wrangler deploy -c site/wrangler.jsonc` を動かし、`curl` で `/`、`/ja/`、`/ja/tokushoho/` が 200 を返すことを確かめる。秘密は `deploy.yml` と同じ `CLOUDFLARE_API_TOKEN` で、environment は `production`。
 
 **You see.**
-- [ ] `https://<domain>/` に、ロゴと一文と入れ方のコマンドが出る。
+- [ ] `https://usenagi.dev/` に、ロゴと一文と入れ方のコマンドが出る。
 - [ ] 右上のリンクで `/ja/` に移り、同じ中身が日本語で出る。
 - [ ] 足もとから料金、プライバシー、規約、特商法の表記に行ける。
-- [ ] `nagi --help` とログインの画面に `https://<domain>/privacy/` が出る。
+- [ ] `nagi --help` とログインの画面に `https://usenagi.dev/privacy/` が出る。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 - [ ] `node scripts/check-site.mjs` が 0 で終わる。
@@ -977,7 +977,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 
 ページは `pnpm exec wrangler dev -c site/wrangler.jsonc --port 5318` で配る。ブラウザの画面は `chromium --headless=new --window-size=1280,800 --screenshot=<path> <url>` で撮る。端末の出力は `scripts/tui-shot.py --cmd` で撮る。
 
-- [ ] Lane 1. Regression lane against trunk. trunk と head の nagi で `nagi --help` を `scripts/tui-shot.py --cmd 'nagi --help'` で撮る。trunk には `site/` がなく、ページがないことを記録する。Save `r13-lane1-help.png`. Pass when head の help にだけ `https://<domain>` の行が足され、ほかの行は trunk と同じ.
+- [ ] Lane 1. Regression lane against trunk. trunk と head の nagi で `nagi --help` を `scripts/tui-shot.py --cmd 'nagi --help'` で撮る。trunk には `site/` がなく、ページがないことを記録する。Save `r13-lane1-help.png`. Pass when head の help にだけ `https://usenagi.dev` の行が足され、ほかの行は trunk と同じ.
 - [ ] Lane 2. 英語のトップを明るい色で撮る。Save `r13-lane2-home-en.png`. Pass when ロゴ、一文、`brew install` のコマンドが最初の画面に収まり、`npx lighthouse http://localhost:5318/ --only-categories=accessibility` に色のコントラストの指摘がない.
 - [ ] Lane 3. 日本語のトップを `--force-dark-mode` で撮る。Save `r13-lane3-home-ja-dark.png`. Pass when 背景が暗く、ロゴが `logo-dark.svg` で、アクセントの CSS 変数が R07 の後の `tui/src/ui/theme.rs` のアクセントと同じ値.
 - [ ] Lane 4. 料金のページを英語と日本語で撮る。Save `r13-lane4-pricing.png`. Pass when ローカルは無料、クラウドは運用者が承認した額で、申し込みのボタンがなく「準備中」と出る.
@@ -1433,7 +1433,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 **Build.**
 
-- [ ] Stop until the operator が、Worker のエラー率と D1 の容量の Cloudflare 通知を有効にし、`https://api.<domain>/api/session` への外部の死活監視を足す。
+- [ ] Stop until the operator が、Worker のエラー率と D1 の容量の Cloudflare 通知を有効にし、`https://api.usenagi.dev/api/session` への外部の死活監視を足す。
 - [ ] 毎日のバックアップは `backups/YYYY-MM-DD.sqlgz` に書き、35 日より古いファイルを消す。
 - [ ] 復元の予行は staging だけで動かし、staging のものでないデータベース id は断る。
 
@@ -1481,7 +1481,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 **Files.**
 
-- [ ] `wrangler.jsonc` を直し、`env.staging` を足す。専用の Worker 名、専用の D1 データベース、ルート `staging.<domain>`、`SIGNUP="allowlist"` を持たせる。
+- [ ] `wrangler.jsonc` を直し、`env.staging` を足す。専用の Worker 名、専用の D1 データベース、ルート `staging.usenagi.dev`、`SIGNUP="allowlist"` を持たせる。
 - [ ] Create `.github/workflows/staging.yml`。`workflow_dispatch` と `staging` ブランチへの push で staging に配備する。
 - [ ] Create `scripts/seed-staging.mjs`。`scripts/seed-local.mjs` をもとに、3 人のテスト利用者とそのタスクを入れる。
 - [ ] `docs/operations.md` を直し、staging の配備と初期化のしかたを書く。
@@ -1490,11 +1490,11 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 - [ ] Stop until the operator が staging の D1 データベースと、専用の Cloudflare トークンつきの GitHub environment `staging` を作る。
 - [ ] staging は、データベース、秘密、課金のアカウントを、本番と決して共有しない。課金の提供元はそこではテストモードで動く。
-- [ ] `nagi --server https://staging.<domain>` で staging につながる。
+- [ ] `nagi --server https://staging.usenagi.dev` で staging につながる。
 
 **You see.**
 
-- [ ] `curl -s https://staging.<domain>/api/session` が 401 を返す。
+- [ ] `curl -s https://staging.usenagi.dev/api/session` が 401 を返す。
 - [ ] `wrangler d1 list` に、`nagi` と別の staging のデータベースが出る。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
@@ -1503,7 +1503,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `fast mechanical model (setup default)` at the PR head, per the boot recipe.
 
-- [ ] Lane 1. Regression lane against trunk. trunk に staging はない。それを記録してから、head で `scripts/tui-shot.py --cmd 'curl -si https://staging.<domain>/api/session'` を回す。Save `staging-alive.png`. Pass when 答えが 401 の JSON である。
+- [ ] Lane 1. Regression lane against trunk. trunk に staging はない。それを記録してから、head で `scripts/tui-shot.py --cmd 'curl -si https://staging.usenagi.dev/api/session'` を回す。Save `staging-alive.png`. Pass when 答えが 401 の JSON である。
 - [ ] Lane 2. staging の workflow を dispatch で回す。Save `staging-deploy.png`. Pass when 実行が緑で、変わったのは staging の Worker だけである。
 - [ ] Lane 3. staging に種を入れ、`nagi --server` でテスト利用者 1 としてログインする。Save `staging-login.png`. Pass when 種のタスクが出る。
 - [ ] Lane 4. 同じ GitHub アカウントで本番にログインする。Save `prod-separate.png`. Pass when staging のタスクが出ない。
@@ -1710,7 +1710,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 - [ ] Every box above is checked with its evidence.
 - [ ] `brew install myksyut/tap/nagi` on a fresh macOS runner, `scoop install nagi` or `winget install nagi` on a fresh Windows runner, and the Linux tarball on ubuntu-24.04-arm each print `nagi 1.0.0`.
-- [ ] The landing page at `<domain>` shows the price, the privacy policy, the terms, and the 特定商取引法に基づく表記 in Japanese and English.
+- [ ] The landing page at `usenagi.dev` shows the price, the privacy policy, the terms, and the 特定商取引法に基づく表記 in Japanese and English.
 - [ ] `docs/security/pentest-2026.md` lists no open high or critical finding.
 - [ ] Reply to the operator with the report the execution playbook names.
 
@@ -1720,6 +1720,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 - ドメインの空き（2026-10-11）。RDAP（`https://data.iana.org/rdap/dns.json` の登録先）と、whois の 43 番ポートで調べた。取られている名前は nagi.dev、nagi.app、nagi.com、nagi.io、nagi.sh、nagi.jp、nagi.so、nagi.page、nagi.day、nagi.cloud、bagi.dev、bagi.app、bagi.com、bagi.io。空いている名前は nagi.run、nagi.tools、nagi.ink、usenagi.dev、usenagi.app、getnagi.dev、nagitodo.dev、nagitodo.app、nagitodo.com、nagi-todo.dev、bagi.sh、bagi.jp。値段（プレミアム扱いか）は登録先で確かめていない。
 - ドメインの値段（2026-10-11、Cloudflare Registrar、1 年あたり、cfdomainpricing.com の一覧）。nagi.run は 21.20 ドル。nagi.tools は 28.20 ドル。nagi.ink は 25.20 ドル。.dev は初年 8.20 ドル、更新 12.20 ドル。.app は初年 8.20 ドル、更新 14.20 ドル。.com は 10.46 ドル。.sh は 45.00 ドル。.jp は Cloudflare では扱っていない。名前ごとのプレミアム扱いは、登録の画面で確かめる。
+- ドメインの決定。運用者は nagi.date も考えたが、.date はフィッシングに今も使われる TLD で（gTLD Trust Index で 82 日に 17 件、停止は 1 件）、「デート」とも読まれるので外した。運用者は usenagi.dev を選んで買った（2026-10-11）。
 - ロゴとアニメーション。使い捨ての試作で、ロゴ 6 案、TUI での描き方 7 案、動き 4 案を比べ、運用者がロゴ B と動き 3 を選んだ。#37、#38、#39 でマージ済み。配色を一つにする問いは、まだ答えが出ていない。R07 が試作で答える。
 - ほかのプラットフォーム。GitHub の changelog（2026-02-05 と 2026-06-11）と runner-images の告知で、Linux arm64、macOS Intel、Windows x64、Windows arm64 の runner があることを確かめた。nagi を実際にそれらで組んだことはまだない。R04 と R05 が確かめる。
 - 翻訳の量。`tui/src` の Rust に、日本語を含む文字列リテラルが 775 個、38 ファイルある（grep で数えた）。英語の日付の入力が今の解析器に素直に乗るかは確かめていない。R10 が確かめる。
