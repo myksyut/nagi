@@ -1,6 +1,6 @@
 //! 画面に重ねて出すもの（日付の入力・候補・検索とコマンド・小さな追加欄）と、ショートカットのページ、ログインの画面
 
-use std::time::Instant;
+use std::time::{Duration, Instant};
 
 use ratatui::Frame;
 use ratatui::layout::{Position, Rect};
@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::calendar::filter_label;
-use super::logo::{LOGO_HEIGHT, logo_lines};
+use super::logo::{LOGO_HEIGHT, TERMINAL_GROUND, logo_lines};
 use super::{centered, clear_for_popup};
 use crate::data::sort::TaskSort;
 use crate::dates::{format_long_date, parse_date_input};
@@ -516,9 +516,9 @@ pub fn draw_shortcuts(frame: &mut Frame, app: &mut App, area: Rect) {
 }
 
 /// ログインの画面
-pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) {
+pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> {
     let Some(login) = &app.login else {
-        return;
+        return None;
     };
     // この端末だけで使っているときは、やめて戻れる
     let leave = if app.config.is_cloud() {
@@ -621,12 +621,14 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) {
         theme::faint(),
     )));
     let fits_logo = area.height >= lines.len() as u16 + LOGO_HEIGHT + 1 + 2;
+    let elapsed = login.shown_at.elapsed();
     if fits_logo {
-        let mut with_logo = logo_lines(login.shown_at.elapsed());
+        let mut with_logo = logo_lines(elapsed, TERMINAL_GROUND);
         with_logo.push(Line::default());
         with_logo.append(&mut lines);
         lines = with_logo;
     }
     let rect = centered(area, 64, lines.len() as u16 + 2);
     frame.render_widget(Paragraph::new(lines), rect);
+    fits_logo.then_some(elapsed)
 }

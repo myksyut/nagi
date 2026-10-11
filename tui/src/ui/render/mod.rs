@@ -8,12 +8,17 @@ mod logo;
 mod overlay;
 mod timeline;
 
+pub use logo::animation_tick;
+
+use std::time::Duration;
+
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
+use self::logo::{LOGO_HEIGHT, logo_lines};
 use super::app::{App, Focus, Screen, ToastKind};
 use super::text::{pad, truncate, width};
 use super::theme;
@@ -28,11 +33,10 @@ const SIDEBAR_RAIL_WIDTH: u16 = 4;
 /// これより狭い端末では、サイドバーを出さない
 const MIN_WIDTH_FOR_SIDEBAR: u16 = 72;
 
-pub fn draw(frame: &mut Frame, app: &mut App) {
+pub fn draw(frame: &mut Frame, app: &mut App) -> Option<Duration> {
     let area = frame.area();
     if app.login.is_some() {
-        overlay::draw_login(frame, app, area);
-        return;
+        return overlay::draw_login(frame, app, area);
     }
     let [body, status] = Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
     // サイドバー：畳んでいれば細い帯、狭い端末で広げていれば出さない
@@ -44,14 +48,13 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     } else {
         0
     };
-    let main = if sidebar_width > 0 {
+    let (main, logo) = if sidebar_width > 0 {
         let [sidebar, main] =
             Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(20)])
                 .areas(body);
-        draw_sidebar(frame, app, sidebar, rail);
-        main
+        (main, draw_sidebar(frame, app, sidebar, rail))
     } else {
-        body
+        (body, None)
     };
     let main = Rect {
         x: main.x + 1,
@@ -75,6 +78,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) {
     draw_status(frame, app, status);
     draw_toasts(frame, app, body);
     overlay::draw(frame, app, body);
+    logo
 }
 
 /// 完了の丸。未着手は ○、進行中は半分を塗った ◐、完了は ●
@@ -99,7 +103,7 @@ pub fn priority_mark(priority: crate::model::Priority) -> Span<'static> {
 }
 
 /// サイドバー。rail なら、畳んだ細い帯（印だけ。見出し・名前・件数は出さない）
-fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) {
+fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) -> Option<Duration> {
     let lists = app.store.lists();
     let focused = app.focus == Focus::Sidebar;
     let inner_width = area.width.saturating_sub(2) as usize;
@@ -194,6 +198,15 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) {
         lines.push(Line::from(Span::styled(" プロジェクト", theme::faint())));
         lines.push(Line::from(Span::styled("  N で作成", theme::faint())));
     }
+    let elapsed = app.started_at.elapsed();
+    let fits_logo = !rail && area.height as usize > lines.len() + LOGO_HEIGHT as usize + 1;
+    if fits_logo {
+        let mut with_logo = vec![Line::default()];
+        with_logo.extend(logo_lines(elapsed, theme::SURFACE));
+        with_logo.push(Line::default());
+        with_logo.append(&mut lines);
+        lines = with_logo;
+    }
     // 長いときは、選んでいる位置が見えるように上を切る
     let visible = area.height as usize;
     let skip = lines
@@ -205,6 +218,7 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) {
         Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()).block(block),
         area,
     );
+    fits_logo.then_some(elapsed)
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {

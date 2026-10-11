@@ -38,8 +38,6 @@ pub enum AppEvent {
 
 /// 何も起きないあいだの、描き直しの間隔（トーストを片付ける・午前4時を確かめる）
 const TICK: Duration = Duration::from_millis(250);
-/// ログインの画面で、ロゴを動かすための描き直しの間隔
-const ANIMATION_TICK: Duration = Duration::from_millis(50);
 /// 終了のときに、送信中の操作が保存されるのを待つ時間
 const QUIT_GRACE: Duration = Duration::from_secs(4);
 
@@ -95,12 +93,9 @@ fn main_loop(
 ) -> io::Result<()> {
     let mut quit_deadline: Option<Instant> = None;
     loop {
-        terminal.draw(|frame| render::draw(frame, app))?;
-        let wait = if app.login.is_some() {
-            ANIMATION_TICK
-        } else {
-            TICK
-        };
+        let mut logo_elapsed = None;
+        terminal.draw(|frame| logo_elapsed = render::draw(frame, app))?;
+        let wait = logo_elapsed.map_or(TICK, render::animation_tick);
         let first = match inbox.recv_timeout(wait) {
             Ok(event) => Some(event),
             Err(RecvTimeoutError::Timeout) => None,
