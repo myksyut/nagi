@@ -37,6 +37,7 @@ impl App {
             Failure::TooMany => self.toast_error(&too_many_message(), None),
             // 並び順キーが長くなりすぎた（同じ隙間へ入れ続けた）など
             Failure::Invalid => self.toast_error("保存できませんでした", None),
+            Failure::TooLong(limit) => self.toast_error(&limit.message(), None),
             _ => {}
         }
         self.handle_notices();
@@ -448,9 +449,10 @@ impl App {
         );
     }
 
-    /// 新しいプロジェクトを作って、同じ操作でタスクに付ける（p の「「◯◯」を作成」）
-    pub fn create_project_for(&mut self, ids: &[String], name: &str) {
-        let _ = self.run_op(
+    /// 新しいプロジェクトを作って、同じ操作でタスクに付ける（p の「「◯◯」を作成」）。
+    /// 長すぎて断られたときは、打った名前を直せるように false を返す（欄を開いたままにする）
+    pub fn create_project_for(&mut self, ids: &[String], name: &str) -> bool {
+        let result = self.run_op(
             ids,
             false,
             |store| store.create_project(name, ids),
@@ -459,6 +461,7 @@ impl App {
                     .map(|subject| format!("{subject}を「{}」へ", name.trim()))
             },
         );
+        !matches!(result, Err(Failure::TooLong(_)))
     }
 
     pub fn set_priority(&mut self, ids: &[String], priority: Option<Priority>) {
@@ -537,8 +540,8 @@ impl App {
             Ok(_) | Err(Failure::Noop) => true,
             Err(reason) => {
                 self.notify_failure(reason);
-                // オフラインのときは、打った名前を消さないように欄を開いたままにする
-                reason != Failure::Offline
+                // オフラインと長すぎるときは、打った名前を消さないように欄を開いたままにする
+                !matches!(reason, Failure::Offline | Failure::TooLong(_))
             }
         }
     }

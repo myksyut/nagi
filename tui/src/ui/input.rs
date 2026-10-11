@@ -585,11 +585,12 @@ impl App {
                 }
                 true
             }
-            Err(_) => {
-                self.toast_error(
-                    "保存できませんでした",
-                    Some("打った文字は欄に残してあります"),
-                );
+            Err(failure) => {
+                let message = match failure {
+                    crate::data::Failure::TooLong(limit) => limit.message(),
+                    _ => "保存できませんでした".to_string(),
+                };
+                self.toast_error(&message, Some("打った文字は欄に残してあります"));
                 if let Some(detail) = &mut self.detail {
                     detail.edit = Some(edit);
                 }
@@ -607,8 +608,10 @@ impl App {
             },
             options,
         );
-        if matches!(result, Err(crate::data::Failure::Invalid)) {
-            self.toast_error("保存できませんでした", None);
+        match result {
+            Err(crate::data::Failure::Invalid) => self.toast_error("保存できませんでした", None),
+            Err(crate::data::Failure::TooLong(limit)) => self.toast_error(&limit.message(), None),
+            _ => {}
         }
     }
 
@@ -743,13 +746,19 @@ impl App {
             return Some(Overlay::Project { ids, input, index });
         }
         if key.code == KeyCode::Enter {
-            match choices.get(index.min(choices.len().saturating_sub(1))) {
-                Some(ProjectChoice::None) => self.set_task_project(&ids, None),
-                Some(ProjectChoice::Existing(id)) => self.set_task_project(&ids, Some(id)),
+            let closed = match choices.get(index.min(choices.len().saturating_sub(1))) {
+                Some(ProjectChoice::None) => {
+                    self.set_task_project(&ids, None);
+                    true
+                }
+                Some(ProjectChoice::Existing(id)) => {
+                    self.set_task_project(&ids, Some(id));
+                    true
+                }
                 Some(ProjectChoice::Create(name)) => self.create_project_for(&ids, name),
-                None => {}
-            }
-            return None;
+                None => true,
+            };
+            return (!closed).then_some(Overlay::Project { ids, input, index });
         }
         let index = match input.handle_key(key) {
             InputOutcome::Changed => 0,
@@ -1079,6 +1088,123 @@ impl App {
                 self.list.open_fold(&view, &key);
             }
             self.list.select(Some(task_id));
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::sync::mpsc;
+
+    use super::*;
+    use crate::config::Config;
+    use crate::data::Store;
+    use crate::data::store::{StoreOptions, SyncFlow, Transport};
+    use crate::dates::{APP_TIME_ZONE, parse_iso};
+    use crate::model::{MutationBatch, Project, SyncRow};
+
+    struct NullTransport;
+
+    impl Transport for NullTransport {
+        fn mutate(&mut self, _batch: MutationBatch) {}
+        fn sync(&mut self, _cursor: u64) {}
+    }
+
+    fn project(id: &str) -> Project {
+        Project {
+            id: id.into(),
+            name: "家".into(),
+            color: None,
+            archived_at: None,
+            created_at: "2026-10-01T00:00:00.000Z".into(),
+            updated_at: "2026-10-01T00:00:00.000Z".into(),
+            deleted_at: None,
+            seq: 1,
+        }
+    }
+
+    fn task(id: &str) -> Task {
+        Task {
+            id: id.into(),
+            title: "牛乳".into(),
+            memo: String::new(),
+            bucket: Bucket::Inbox,
+            scheduled_on: None,
+            deadline_on: None,
+            project_id: None,
+            rank: "a0".into(),
+            arrived_on: None,
+            checklist: Vec::new(),
+            completed_at: None,
+            started_at: None,
+            priority: None,
+            points: None,
+            created_at: "2026-10-01T00:00:00.000Z".into(),
+            updated_at: "2026-10-01T00:00:00.000Z".into(),
+            deleted_at: None,
+            seq: 1,
+        }
+    }
+
+    fn app() -> App {
+        let mut store = Store::new(StoreOptions {
+            transport: Box::new(NullTransport),
+            local: None,
+            clock: Box::new(|| parse_iso("2026-10-06T03:00:00.000Z").unwrap()),
+            tz: APP_TIME_ZONE,
+        });
+        store.sync();
+        store.on_sync_done(Ok(SyncFlow {
+            base_cursor: 0,
+            rows: vec![SyncRow::Project(project("p1")), SyncRow::Task(task("t1"))],
+            cursor: 10,
+            time_zone: None,
+        }));
+        let dir = std::env::temp_dir().join(format!("nagi-input-test-{}", uuid::Uuid::now_v7()));
+        let (events, _) = mpsc::channel();
+        App::new(
+            Config::at("https://nagi.example.com", &dir),
+            store,
+            None,
+            events,
+        )
+    }
+
+    fn enter() -> KeyEvent {
+        KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+    }
+
+    #[test]
+    fn 長すぎる名前で断られたら_名前の変更の欄を打った文字ごと開いたままにする() {
+        let mut app = app();
+        let name = "あ".repeat(101);
+        app.overlay = Some(Overlay::Name {
+            input: TextInput::new(&name),
+            rename: Some("p1".into()),
+        });
+        app.handle_overlay_key(enter());
+        match &app.overlay {
+            Some(Overlay::Name { input, rename }) => {
+                assert_eq!(input.text(), name);
+                assert_eq!(rename.as_deref(), Some("p1"));
+            }
+            _ => panic!("欄が閉じました"),
+        }
+    }
+
+    #[test]
+    fn 長すぎる名前で断られたら_タスクのプロジェクトの候補を打った文字ごと開いたままにする() {
+        let mut app = app();
+        let name = "あ".repeat(101);
+        app.overlay = Some(Overlay::Project {
+            ids: vec!["t1".into()],
+            input: TextInput::new(&name),
+            index: 0,
+        });
+        app.handle_overlay_key(enter());
+        match &app.overlay {
+            Some(Overlay::Project { input, .. }) => assert_eq!(input.text(), name),
+            _ => panic!("候補が閉じました"),
         }
     }
 }

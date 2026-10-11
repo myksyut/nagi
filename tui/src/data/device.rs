@@ -71,6 +71,7 @@ impl From<Stop> for ApiFailure {
             Stop::Rejected(reason) => ApiFailure::Rejected {
                 status: 400,
                 reason: Some(reason.to_string()),
+                mutation_index: None,
             },
             Stop::Broken(message) => {
                 log::error(&format!(
@@ -981,6 +982,7 @@ mod tests {
             Err(ApiFailure::Rejected {
                 status: 400,
                 reason: Some(reason),
+                ..
             }) => reason,
             other => panic!("断られるはずが: {other:?}"),
         }

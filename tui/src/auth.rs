@@ -69,6 +69,7 @@ fn failure(status: u16, text: &str) -> String {
             "GitHub とやり取りできませんでした（OAuth App でデバイスフローが有効か確かめてください）"
                 .to_string()
         }
+        _ if status == 429 => "試行が多すぎます。1 分待ってください".to_string(),
         _ => format!("ログインを始められませんでした（HTTP {status}）"),
     }
 }
@@ -189,6 +190,12 @@ mod tests {
 
     use super::*;
     use crate::config::Session;
+
+    #[test]
+    fn 回数制限の429は_待つように伝える() {
+        let text = r#"{"error":"rate_limited"}"#;
+        assert_eq!(failure(429, text), "試行が多すぎます。1 分待ってください");
+    }
 
     fn temp_config(name: &str) -> Config {
         let dir: PathBuf = std::env::temp_dir().join(format!(

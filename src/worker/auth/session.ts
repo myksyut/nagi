@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray, lt } from "drizzle-orm";
 import type { Db } from "../db/client";
 import { sessions, users } from "../db/schema";
 import { encodeBase64Url, randomBytes, sha256Hex } from "./crypto";
@@ -98,4 +98,32 @@ export async function validateSession(db: Db, token: string, now: Date): Promise
 
 export async function deleteSession(db: Db, token: string): Promise<void> {
   await db.delete(sessions).where(eq(sessions.id, await sha256Hex(token)));
+}
+
+/** 1回の DELETE で消す行数の上限（1回の文を小さく保つ） */
+const SWEEP_BATCH_SIZE = 1000;
+
+/**
+ * 期限切れのセッションを全部消す（cron から呼ぶ。使われないセッションは validateSession で消えないため）。
+ * 1000 行ずつ、消える行がなくなるまで繰り返し、消した行数を返す
+ */
+export async function sweepExpiredSessions(db: Db, now: Date): Promise<number> {
+  const cutoff = now.toISOString();
+  let total = 0;
+  for (;;) {
+    const result = await db
+      .delete(sessions)
+      .where(
+        inArray(
+          sessions.id,
+          db
+            .select({ id: sessions.id })
+            .from(sessions)
+            .where(lt(sessions.expiresAt, cutoff))
+            .limit(SWEEP_BATCH_SIZE),
+        ),
+      );
+    total += result.meta.changes;
+    if (result.meta.changes < SWEEP_BATCH_SIZE) return total;
+  }
 }

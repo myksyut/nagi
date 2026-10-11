@@ -91,12 +91,14 @@ impl ApiClient {
             401 => Err(ApiFailure::Unauthorized),
             // Worker が 409 を返すのは API の版が違うときだけ
             409 => Err(ApiFailure::VersionMismatch),
-            500.. => Err(ApiFailure::Server(status)),
+            // 回数制限。Retry-After は 60 秒だが、同じ ID で再送するだけにして待たない
+            429 | 500.. => Err(ApiFailure::Server(status)),
             _ => {
                 let body: ApiErrorBody = serde_json::from_str(&text).unwrap_or_default();
                 Err(ApiFailure::Rejected {
                     status,
                     reason: body.reason.or(Some(body.error).filter(|e| !e.is_empty())),
+                    mutation_index: body.mutation_index,
                 })
             }
         }
@@ -124,6 +126,7 @@ impl ApiClient {
                     return Err(ApiFailure::Rejected {
                         status: 200,
                         reason: Some("reset が続きました".to_string()),
+                        mutation_index: None,
                     });
                 }
                 reset = true;

@@ -15,6 +15,16 @@ import { isValidRank } from "./rank";
  */
 export const MAX_MUTATIONS_PER_BATCH = 500;
 
+/**
+ * 文字列と配列の上限。長さは JavaScript の `length`（UTF-16 の単位）で数える。
+ * 画面（tui/src/model.rs）にも同じ値がある
+ */
+export const MAX_TITLE_LENGTH = 500;
+export const MAX_MEMO_LENGTH = 20000;
+export const MAX_CHECKLIST_ITEMS = 200;
+export const MAX_CHECKLIST_ITEM_LENGTH = 500;
+export const MAX_PROJECT_NAME_LENGTH = 100;
+
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 
 /** ID は小文字の UUID（画面側で UUIDv7 を採番する） */
@@ -32,24 +42,31 @@ export const prioritySchema = z.enum(PRIORITIES);
 /** 工数。決まった値だけ（priority-points.ts） */
 export const pointsSchema = z.literal(POINTS);
 /** 空白だけのタイトルや名前は不可 */
-const nonBlankSchema = z.string().refine((value) => value.trim().length > 0, "blank");
+/**
+ * 上限つきの文字列。zod の `.max()` は Unicode のコードポイントで数えるので、
+ * JavaScript の `length`（UTF-16 の単位。画面の `encode_utf16().count()` と同じ）で数える refine を使う
+ */
+const boundedString = (maxLength: number) =>
+  z.string().refine((value) => value.length <= maxLength, "too_long");
+const nonBlankString = (maxLength: number) =>
+  boundedString(maxLength).refine((value) => value.trim().length > 0, "blank");
 
 export const checklistItemSchema = z.strictObject({
   id: idSchema,
-  title: z.string(),
+  title: boundedString(MAX_CHECKLIST_ITEM_LENGTH),
   done: z.boolean(),
 });
 
 const taskFields = {
-  title: nonBlankSchema,
-  memo: z.string(),
+  title: nonBlankString(MAX_TITLE_LENGTH),
+  memo: boundedString(MAX_MEMO_LENGTH),
   bucket: bucketSchema,
   scheduledOn: dateSchema.nullable(),
   deadlineOn: dateSchema.nullable(),
   projectId: idSchema.nullable(),
   rank: rankSchema,
   arrivedOn: dateSchema.nullable(),
-  checklist: z.array(checklistItemSchema),
+  checklist: z.array(checklistItemSchema).max(MAX_CHECKLIST_ITEMS),
   completedAt: timestampSchema.nullable(),
   /** 進行中にした時刻。入れるときは、同じ操作のあとの bucket が today でなければならない（サーバーが検証する） */
   startedAt: timestampSchema.nullable(),
@@ -100,7 +117,7 @@ export const projectCreateSchema = z.strictObject({
   type: z.literal("project.create"),
   project: z.strictObject({
     id: idSchema,
-    name: nonBlankSchema,
+    name: nonBlankString(MAX_PROJECT_NAME_LENGTH),
     color: projectColorSchema.nullable().default(null),
   }),
 });
@@ -114,7 +131,7 @@ export const projectUpdateSchema = z.strictObject({
   id: idSchema,
   changes: z
     .strictObject({
-      name: nonBlankSchema,
+      name: nonBlankString(MAX_PROJECT_NAME_LENGTH),
       color: projectColorSchema.nullable(),
       archivedAt: timestampSchema.nullable(),
       deletedAt: timestampSchema.nullable(),

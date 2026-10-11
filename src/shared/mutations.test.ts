@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
 import {
+  MAX_CHECKLIST_ITEM_LENGTH,
+  MAX_CHECKLIST_ITEMS,
+  MAX_MEMO_LENGTH,
+  MAX_PROJECT_NAME_LENGTH,
+  MAX_TITLE_LENGTH,
   mutationBatchSchema,
   mutationSchema,
   projectCreateSchema,
@@ -130,5 +135,61 @@ describe("strictObject", () => {
       unknownField: "x",
     });
     expect(result.success).toBe(false);
+  });
+});
+
+describe("文字数と項目数の上限", () => {
+  const item = (title = "a") => ({ id: crypto.randomUUID(), title, done: false });
+  const createTask = (overrides: Record<string, unknown>) =>
+    taskCreateSchema.safeParse({ type: "task.create", task: { ...validTask(), ...overrides } });
+  const updateTask = (changes: Record<string, unknown>) =>
+    mutationSchema.safeParse({ type: "task.update", id: crypto.randomUUID(), changes });
+  const createProject = (name: string) =>
+    projectCreateSchema.safeParse({
+      type: "project.create",
+      project: { id: crypto.randomUUID(), name },
+    });
+
+  it("タイトルは上限ちょうどまで。1つ超えると落ちる（作成も更新も）", () => {
+    expect(createTask({ title: "a".repeat(MAX_TITLE_LENGTH) }).success).toBe(true);
+    expect(createTask({ title: "a".repeat(MAX_TITLE_LENGTH + 1) }).success).toBe(false);
+    expect(updateTask({ title: "a".repeat(MAX_TITLE_LENGTH) }).success).toBe(true);
+    expect(updateTask({ title: "a".repeat(MAX_TITLE_LENGTH + 1) }).success).toBe(false);
+  });
+
+  it("長さは UTF-16 の単位で数える（BMP の外の文字は 2）", () => {
+    expect(createTask({ title: "𠮷".repeat(MAX_TITLE_LENGTH / 2) }).success).toBe(true);
+    expect(createTask({ title: "𠮷".repeat(MAX_TITLE_LENGTH / 2 + 1) }).success).toBe(false);
+  });
+
+  it("メモは上限ちょうどまで", () => {
+    expect(createTask({ memo: "a".repeat(MAX_MEMO_LENGTH) }).success).toBe(true);
+    expect(createTask({ memo: "a".repeat(MAX_MEMO_LENGTH + 1) }).success).toBe(false);
+    expect(updateTask({ memo: "a".repeat(MAX_MEMO_LENGTH + 1) }).success).toBe(false);
+  });
+
+  it("チェックリストは項目数と項目の長さに上限がある", () => {
+    const items = (count: number) => Array.from({ length: count }, () => item());
+    expect(createTask({ checklist: items(MAX_CHECKLIST_ITEMS) }).success).toBe(true);
+    expect(createTask({ checklist: items(MAX_CHECKLIST_ITEMS + 1) }).success).toBe(false);
+    expect(updateTask({ checklist: items(MAX_CHECKLIST_ITEMS + 1) }).success).toBe(false);
+    expect(createTask({ checklist: [item("a".repeat(MAX_CHECKLIST_ITEM_LENGTH))] }).success).toBe(
+      true,
+    );
+    expect(
+      createTask({ checklist: [item("a".repeat(MAX_CHECKLIST_ITEM_LENGTH + 1))] }).success,
+    ).toBe(false);
+  });
+
+  it("プロジェクト名は上限ちょうどまで", () => {
+    expect(createProject("a".repeat(MAX_PROJECT_NAME_LENGTH)).success).toBe(true);
+    expect(createProject("a".repeat(MAX_PROJECT_NAME_LENGTH + 1)).success).toBe(false);
+    expect(
+      projectUpdateSchema.safeParse({
+        type: "project.update",
+        id: crypto.randomUUID(),
+        changes: { name: "a".repeat(MAX_PROJECT_NAME_LENGTH + 1) },
+      }).success,
+    ).toBe(false);
   });
 });

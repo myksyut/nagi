@@ -61,7 +61,9 @@ export type InvalidRequestReason =
   | "started_outside_today"
   | "project_has_open_tasks"
   /** チェックリストの今の配列が、操作に添えられた「変える前の配列」と違う（ほかの画面が先に変えた） */
-  | "checklist_conflict";
+  | "checklist_conflict"
+  /** 利用者ごとの行数の上限（MAX_TASKS_PER_USER、MAX_PROJECTS_PER_USER）を超える作成 */
+  | "quota_exceeded";
 
 export type ApiErrorResponse =
   | {
@@ -77,6 +79,10 @@ export type ApiErrorResponse =
         | "unauthorized"
         | "forbidden_origin"
         | "unsupported_media_type"
+        /** 回数制限。Retry-After（秒）のあとにやり直す */
+        | "rate_limited"
+        /** 本文が大きすぎる（/api/* は 1 MiB、/auth/* は 4 KiB まで） */
+        | "payload_too_large"
         | "not_found"
         | "internal_error";
     };
