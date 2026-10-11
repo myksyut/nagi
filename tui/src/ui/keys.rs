@@ -98,6 +98,7 @@ pub enum Action {
     Sync,
     Login,
     Logout,
+    DeleteAccount,
     Quit,
 }
 
@@ -304,6 +305,7 @@ pub fn bindings() -> Vec<Binding> {
         binding(Msg::KeySync, G::Global, &["Ctrl+r"], A::Sync),
         binding(Msg::KeyLogin, G::Global, &[], A::Login),
         binding(Msg::KeyLogout, G::Global, &[], A::Logout),
+        binding(Msg::KeyDeleteAccount, G::Global, &[], A::DeleteAccount),
         binding(Msg::KeyQuit, G::Global, &["q", "Ctrl+c"], A::Quit),
     ];
     for sort in TaskSort::ALL {
@@ -575,6 +577,7 @@ impl App {
             // この端末だけで使っているときはログイン、Worker と同期しているときはログアウト
             A::Login => !self.config.is_cloud(),
             A::Logout => self.config.is_cloud(),
+            A::DeleteAccount => self.config.is_cloud(),
         }
     }
 
@@ -829,6 +832,7 @@ impl App {
             }
             A::Login => self.show_login(None),
             A::Logout => self.logout(),
+            A::DeleteAccount => self.open_delete_account(),
             A::Quit => self.should_quit = true,
         }
     }

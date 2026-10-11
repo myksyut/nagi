@@ -52,7 +52,9 @@ nagi — ターミナルで使う TODO アプリ
   nagi logout --discard-unsent
                              送っていない変更を消して、ログアウトする
   nagi export [--out <ファイル>]
-                             この端末のデータを JSON で書き出す（控えを取る。ログイン中でも、この端末のデータ）
+                             データを JSON で書き出す（ログイン中はクラウドのデータ、していなければこの端末のデータ）
+  nagi account delete [--yes]
+                             クラウドのアカウントとデータを消す（`delete` と打って確かめる。この端末のデータは残る）
 
 add の指定：
   --memo <文字>              メモ
@@ -82,7 +84,8 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
 
 共通：
   --json                     結果を JSON で出す（add・list・show・update・done・projects）
-  --out <ファイル>           export の書き出し先（省くと標準出力）
+  --out <ファイル>           export の書き出し先（省くと標準出力。--output でも同じ）
+  --yes                      account delete で、確かめを聞かずに消す
   --server <URL>             接続する Worker（省くと環境変数 NAGI_SERVER。どちらもなければ、ログインしていれば本番、
                              していなければこの端末のデータ）
   --lang <言語>              画面の言語（いまは ja だけ）
@@ -175,7 +178,6 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
     CliLoggedOut => "ログアウトしました",
     CliLoggedOutLocal => "ログアウトしました。このあとは、この端末のデータを使います",
     CliNotLoggedInShort => "ログインしていません",
-    CliExportWhileLoggedIn => "ログイン中ですが、この端末のデータ（{0}）を書き出します（クラウドのデータは含みません）",
     CliExportWriteFailed => "{0} に書き出せませんでした：{1}",
 
     // config.rs
@@ -441,6 +443,40 @@ update の指定（足すものと属性だけ。タイトルの書き換え・�
     LoggedOutLocalToast => "ログアウトしました。この端末のデータに戻りました",
     LogSaveTokenFailed => "トークンを保存できませんでした: {0}",
     UnsentCountLogoutWarning => "送っていない変更が {0} 件あります。ログアウトすると消えます",
+    AccountDeletedNotice => "クラウドのアカウントを消しました",
+    AccountDeletedToast => "クラウドのアカウントを消しました。この端末のデータに戻りました",
+    AccountDeleteFailed => "アカウントを消せませんでした",
+    AccountDeleteNoOwner => "ログインの持ち主を確かめられないため、消せません",
+    AccountDeleteRelogin => "`nagi login` でログインし直してください",
+    KeyDeleteAccount => "アカウントを削除",
+
+    // ui/render/overlay.rs（アカウントの削除）
+    AccountDeleteTitle => "アカウントを削除",
+    AccountDeleteHeading => " クラウドのアカウントとデータを消します",
+    AccountDeleteCounts => " タスク {0} 件、プロジェクト {1} 件",
+    AccountDeleteNotice => "消すと元に戻せません。先に `nagi export` で書き出せます。この端末のデータ（local.db）は消えません。",
+    AccountDeleting => " 消しています…",
+    AccountDeletePlaceholder => "delete と打って Enter（Esc でやめる）",
+
+    // cli.rs（アカウントの削除と書き出し）
+    CliAccountUsage => "account の使い方は `nagi account delete` です",
+    CliYesOnlyAccountDelete => "--yes は account delete で使えます",
+    CliExportReadFailed => "書き出しの応答を読めませんでした：{0}",
+    CliExportRateLimited => "回数の制限にかかったので、{0} 秒待ってから続けます",
+    CliAccountDeleteNoOwner => "ログインしていません（利用者を確かめられません）。先に `nagi login` を実行してください",
+    CliAccountDeleteWarning => "{0} のアカウントとデータを消します（タスク {1} 件、プロジェクト {2} 件）。元に戻せません",
+    CliAccountDeleteExportHint => "先に `nagi export` で書き出せます。この端末のデータ（local.db）は消しません",
+    CliAccountDeletePrompt => "消すなら delete と打ってください：",
+    CliReadInputFailed => "入力を読めませんでした：{0}",
+    CliAccountDeleteDeclined => "消しませんでした（何も消していません）",
+    CliAccountDeleted => "クラウドのアカウントを消しました",
+
+    // data/net.rs（アカウントの削除と書き出し）
+    ExportFailedHttp => "書き出せませんでした（HTTP {0}）",
+    DeleteLoginExpired => "ログインが切れています。`nagi login` でログインし直してください（何も消していません）",
+    DeleteIdMismatch => "利用者の ID が合いませんでした（何も消していません）",
+    DeleteFailedHttp => "消せませんでした（HTTP {0}）",
+    DeleteUnreachable => "Worker に接続できませんでした（消せたかを確かめられません）",
 
     // ui/theme.rs
     ColorViolet => "すみれ",

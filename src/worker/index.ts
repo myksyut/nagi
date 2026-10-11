@@ -2,6 +2,7 @@ import { Hono } from "hono";
 import { bodyLimit } from "hono/body-limit";
 import { secureHeaders } from "hono/secure-headers";
 import type { ApiErrorResponse } from "../shared/api";
+import { accountRoutes } from "./account/routes";
 import { requireSession } from "./auth/middleware";
 import { authRoutes } from "./auth/routes";
 import { sweepExpiredSessions } from "./auth/session";
@@ -25,7 +26,7 @@ const payloadTooLarge = (maxSize: number) =>
 /**
  * Worker がすべてのリクエストを受ける（画面のファイルは配らない。クライアントは TUI）。
  * - /auth/*：ログイン（GitHub のデバイスフロー）とログアウト
- * - /api/*：同期の API。`Authorization: Bearer <token>` のセッションが要る
+ * - /api/*：同期の API と、アカウントの削除・書き出し。`Authorization: Bearer <token>` のセッションが要る
  * - それ以外の URL：404 の JSON
  * どの応答にも、セキュリティのヘッダを付ける。/api/* と /auth/* の応答は、キャッシュさせない（no-store）。
  * 本文の大きさ（/api/* は 1 MiB、/auth/* は 4 KiB まで）と回数は、ここで制限する
@@ -54,6 +55,7 @@ export function createApp({ now = () => new Date() }: Partial<SyncRoutesOptions>
   /** ログインしているかと、だれとしてかを確かめる口（userId は users.id。画面が、手元の複製の持ち主を見分けるのに使う） */
   app.get("/api/session", (c) => c.json({ authenticated: true, userId: c.get("userId") }));
   app.route("/api", createSyncRoutes({ now }));
+  app.route("/api", accountRoutes);
 
   app.notFound((c) => c.json({ error: "not_found" }, 404));
   app.onError((error, c) => {
