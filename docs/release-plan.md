@@ -82,7 +82,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] 起動の形を `scripts/tui-shot.py [--bin PATH | --cmd "<shell command>"] [--size 120x36] [--keys SCRIPT] [--shot SLUG] [--out-dir DIR] [--home DIR] [--cwd DIR] [--env NAME=VALUE] [--unset NAME] [--timeout 30] [--font PATH] [-- ARGS]` にする。`--bin` の既定は `tui/target/release/nagi`。
 - [ ] `--cmd "<shell command>"` を足す。`bash -c` で、nagi と同じ PTY、同じ大きさ、同じ隔離した環境でコマンドを動かす（curl、nagi の CLI、sqlite3、gh など）。終わったら最後の画面を `--shot SLUG` の名前で撮る。`--bin` と一緒には使えない。
 - [ ] `--home` がなければ、`tempfile.mkdtemp()` で一時的な HOME を作る。`XDG_CONFIG_HOME` と `XDG_DATA_HOME` はその下に置く。終わったら消す。
-- [ ] 子の環境から `NAGI_TOKEN` と `NAGI_SERVER` を外す。足すのは `--env` で渡したものだけ。`--unset` で HOME なども外せる。`TERM=xterm-256color`、`COLORTERM=truecolor`、`TZ=Asia/Tokyo`、`LANG=C.UTF-8` に固定する。
+- [ ] 子の環境から `NAGI_TOKEN`、`NAGI_SERVER`、`NO_COLOR` を外す（運用者のシェルは `NO_COLOR=1` で、そのままだと nagi が色を出さない）。足すのは `--env` で渡したものだけ。`--unset` で HOME なども外せる。`TERM=xterm-256color`、`COLORTERM=truecolor`、`TZ=Asia/Tokyo`、`LANG=C.UTF-8` に固定する。
 - [ ] `pty.fork()` で子を起動し、`TIOCSWINSZ` で `--size` の大きさにする。出力は `pyte.ByteStream` と `pyte.Screen` に流す。作業のフォルダは `--cwd`。なければ今のフォルダ。
 - [ ] キーの台本は `;` 区切りの文字か、1 行 1 手順の `@PATH` のファイル。手順は 7 種。`sleep S`、`type TEXT`、`key NAME`、`shot SLUG`、`resize COLSxROWS`、`run SHELL`、`wait-exit S`。`run` は子と同じ環境で、PTY の外でコマンドを動かす。
 - [ ] `key` は `Enter`、`Esc`、`Tab`、`Up`、`Down`、`ctrl+k`、`ctrl+r`、`alt+up` などを xterm のバイト列に変える。
@@ -98,7 +98,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `run.json` で、終了コードと毎秒の書き出し回数が読める。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
-- [ ] `uv run --with pytest pytest scripts/test_tui_shot.py` が通る。
+- [ ] `uv run --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py` が通る。
 - [ ] `key ctrl+k` が `\x0b`、`key alt+up` が `\x1b[1;3A`、`key Enter` が `\r` になる。
 - [ ] 地が `#2e4670` のセルは、PNG でもその色の画素になる。
 - [ ] `牛乳` の 2 文字が 4 セルを占め、次の文字が 5 セル目から始まる。
@@ -110,8 +110,8 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] Lane 2. 空の HOME で head の nagi を起動し、1 秒待って撮る。Save `first-launch.png`. Pass when 画面の一番下に「ローカル」が出て、`first-launch.txt` にも「ローカル」がある.
 - [ ] Lane 3. タスク `牛乳を買う` を足して撮る。Save `wide-chars.png`. Pass when PNG で 5 文字がちょうど 10 セルに収まり、隣のセルに字形がはみ出さない.
 - [ ] Lane 4. タスクを一つ足し、カーソルをその行に置いて撮る。Save `cursor-row.png`. Pass when カーソルの行の地の画素が `#2e4670` で、`tui/src/ui/theme.rs` の `CURSOR_BG` と一致する.
-- [ ] Lane 5. `key ?` でショートカットの一覧を開いて撮る。Save `shortcuts.png`. Pass when ポップアップの地の画素が `#181c28`（`SURFACE`）で、`shortcuts.txt` に「終了」の行がある.
-- [ ] Lane 6. `--size 40x12` で起動し、`shot small; resize 100x30; sleep 0.5; shot resize; key q` で撮る。Save `resize.png`. Pass when `resize.png` が 100x30 セルの大きさで描かれ、`small.png` が 40x12 セルで、終了コードが 0.
+- [ ] Lane 5. `--size 120x100` で `key ?` を押し、ショートカットのページを開いて撮る（閉じるときは `key Esc; sleep 0.3; key q`）。Save `shortcuts.png`. Pass when 左のサイドバーの地の画素が `#181c28`（`SURFACE`）で、`shortcuts.txt` に「終了」の行がある（ショートカットはポップアップではなく右の欄のページで、120x80 でも「終了」は画面の外に出る）.
+- [ ] Lane 6. `--size 40x12` で起動し、`sleep 1; shot small; resize 100x30; sleep 0.5; shot resize; key q` で撮る（最初の `sleep 1` がないと、描く前の空の画面を撮る）。Save `resize.png`. Pass when `resize.png` が 100x30 セルの大きさで描かれ、`small.png` が 40x12 セルで、終了コードが 0.
 - [ ] Lane 7. `--cmd` で、一つの PTY の中で三つのコマンドを続けて動かす。`tui/target/release/nagi add 資料を送る && tui/target/release/nagi list --json && sqlite3 "$XDG_DATA_HOME/nagi/local.db" 'SELECT COUNT(*) FROM tasks' && curl -s -o /dev/null -w '%{http_code}' https://nagi.wizard1026miya.workers.dev/api/session`。Save `cmd.png`. Pass when `cmd.txt` に `資料を送る` を含む JSON、件数の `1`、`401` が出て、`sqlite3` が開いたファイルが一時的な HOME の下にある.
 - [ ] Lane 8. lane 2 から 7 の前と後で `sha256sum ~/.local/share/nagi/local.db` を `--cmd` で撮る（なければ `ls` の結果を撮る）。Save `isolation.png`. Pass when 前と後の sha256 が同じで（なければ、後もない）、`/tmp` に道具の一時的な HOME が残っていない.
 - [ ] Lane 9. 何も押さずに 10 秒待つ台本 `sleep 10; shot idle; key q` を、`--bin strace -- -qq -f -e trace=write -o /tmp/swarm-R00/worker-9/strace.log tui/target/release/nagi` で動かす。Save `idle.png`. Pass when `writes_per_sec` に 10 個以上の値があり、合計が 1 以上で、`strace.log` の `write(1,` の行の数を超えない.
@@ -218,12 +218,12 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `cd tui && cargo fmt --check && cargo clippy --all-targets -- -D warnings && cargo test` が通る。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `fast mechanical model (setup default)` at the PR head, per the boot recipe. trunk の nagi は `/tmp/trunk/tui/target/release/nagi`、head の nagi は `tui/target/release/nagi`。撮るのは `scripts/tui-shot.py`、ファイルを調べるのは `--cmd` の `sqlite3` と `sha256sum`。
-- [ ] Lane 1. Regression lane against trunk. `--home /tmp/swarm-R02/home-a` で、trunk の CLI で 30 件を `nagi add` する。trunk と head の画面を同じ台本 `sleep 1; key 1; shot inbox; key q` で撮る。Save `inbox.png`. Pass when 二つの `inbox.txt` が同じで、head で開いたあとも `PRAGMA user_version` が 1.
+- [ ] Lane 1. Regression lane against trunk. `--home /tmp/swarm-R02/home-a` で、trunk の CLI で 30 件を `nagi add` する。trunk と head の画面を同じ台本 `sleep 1; key 1; sleep 1; shot inbox; key q` で撮る（`key 1` のあとに待たないと、描き直す前の「今日」を撮る）。Save `inbox.png`. Pass when 二つの `inbox.txt` が同じで、head で開いたあとも `PRAGMA user_version` が 1.
 - [ ] Lane 2. `sqlite3 local.db "PRAGMA user_version = 2; INSERT OR REPLACE INTO meta VALUES ('written_by', '0.9.0');"` のあと、head を起動して撮る。Save `newer-refused.png`. Pass when 画面ではなく文言が出て、文言に `0.9.0` が入り、終了コードが 1 で、`local.db` の sha256 が前と同じ.
 - [ ] Lane 3. head の CLI で `nagi add 後から足した` を打ち、trunk の画面で開く。Save `trunk-reads-head.png`. Pass when trunk の画面に `後から足した` が出る（形を変えていないので、古い nagi に戻しても開ける）.
 - [ ] Lane 4. head で一回開いたあと、`--cmd` で `sqlite3 "$XDG_DATA_HOME/nagi/local.db" "SELECT value FROM meta WHERE key = 'written_by'"` を撮る。Save `written-by.png`. Pass when head の `nagi --version` と同じ版が出る.
 - [ ] Lane 5. head で `nagi list --json` を二回打つ。二回目の前と後で `local.db` の sha256 を撮る。Save `no-write.png`. Pass when 二回目の前後で sha256 が同じ.
-- [ ] Lane 6. 空の HOME で head を初めて起動する。Save `fresh.png`. Pass when 空の受信箱が出て、`PRAGMA user_version` が 1 で、`written_by` が head の版.
+- [ ] Lane 6. 空の HOME で head を初めて起動し、`key 1` で受信箱に移ってから撮る（最初の画面は「今日」）。Save `fresh.png`. Pass when 空の受信箱が出て、`PRAGMA user_version` が 1 で、`written_by` が head の版.
 - [ ] Lane 7. `head -c 4096 /dev/urandom > local.db` のあと、head を起動する。Save `corrupt.png`. Pass when 「開けませんでした」の文言が出て終了コードが 1、`local.db.v*.bak` ができず、`local.db` の sha256 が前と同じ.
 - [ ] Lane 8. head の画面を開いたまま、`run seq 20 | xargs -P 20 -I{} tui/target/release/nagi add 同時{}` を流し、`key ctrl+r` のあとに撮る。Save `concurrent.png`. Pass when 画面に `同時1` から `同時20` の 20 件が出て、`nagi.log` に `database is locked` がない.
 - [ ] Lane 9. 空の HOME の `local.db` に `sqlite3 local.db < tui/src/testdata/device-v1.sql` で fixture を入れ、head で開いて受信箱を撮る。Save `fixture-inbox.png`. Pass when `nagi list --json | jq length` が fixture の未完了で未削除のタスクの数と同じで、受信箱に fixture のタイトルが出る.
@@ -422,7 +422,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `windows-2025` の `ci.yml` の `tui` で `cargo test` が通る。
 - [ ] `scripts/scoop-manifest.sh 0.2.2 SHA256SUMS | jq .` が通り、`architecture.64bit.hash` が `SHA256SUMS` の値と同じ。
 - [ ] `actionlint .github/workflows/*.yml` が 0 件。
-- [ ] Linux で `uv run --with pytest pytest scripts/test_tui_shot.py` が通る（ConPTY の経路は lane で確かめる）。
+- [ ] Linux で `uv run --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py` が通る（ConPTY の経路は lane で確かめる）。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `fast mechanical model (setup default)` at the PR head, per the boot recipe. drill の main を PR の head にし、`vars.SCOOP_REPOSITORY` を `myksyut/scoop-bucket-drill` にして `v0.2.2` を出す。runner の上の撮影は `gh workflow run tui-shots.yml --repo myksyut/nagi-ci-drill` で動かし、`gh run download` で `/tmp/swarm-R05/worker-<n>/` に落とす。
 - [ ] Lane 1. Regression lane against trunk. trunk には Windows の成果物がない。そのことを記録する。`runner=windows-2025` で、trunk の ref と head の ref の両方に `keys='sleep 2; key n; type a; key Enter; key q'` と、作業のフォルダと `$env:LOCALAPPDATA` を並べる `cmd` を動かす。Save `win-data-place.png`. Pass when trunk の回は作業のフォルダに `.local` ができ、head の回は `%LOCALAPPDATA%\nagi\local.db` だけができて、作業のフォルダは空のまま.
@@ -1105,6 +1105,8 @@ Worker は `pnpm dev --test-scheduled` で起動する（`AUTH_DISABLED=true`、
 - [ ] `upgrade.rs` の `upgrade_command()` は `std::env::current_exe()` の実際の場所を見る。`/Cellar/` を含めば `brew upgrade nagi`、それ以外は `https://github.com/myksyut/nagi/releases/latest`。R05 と R15 のうち後に入るほうが、Windows の入れ方の分岐を足す。
 - [ ] 下の欄（`render/mod.rs`）と CLI（`cli.rs` の `StopReason::VersionMismatch` の文）は「nagi を更新してください。`brew upgrade nagi`。送っていない変更 3 件は残してあります」の形にする。
 - [ ] `pending` に行があるときのログアウトは、一度「送っていない変更が 3 件あります。ログアウトすると消えます」と出し、もう一度選んだときだけ消す。
+- [ ] Worker の `applied_mutations` と、ローカルの `applied` は消さない。版のずれのあと、nagi は同じ ID でまとまりを送り直し、前の送信が届いたかを知る手立てがない。ID を忘れると古い更新が新しい編集を上書きしうるので、ID を残して送り直しをいつでも書かずに済ませる（監査を受けて、送った時刻と日数の窓で守る案をやめた）。
+- [ ] `pending` の行は、残した利用者とトークンの見分けに結び、別の人のトークンでは送らない。起動のときは、トークンと利用者の ID を同じログインの読み取りから取る。
 
 **You see.**
 - [ ] Worker が先に新しくなっても、打った変更は画面に残り、下の欄に更新のコマンドが出る。
@@ -1195,7 +1197,7 @@ Worker は `pnpm dev --var AUTH_DISABLED:false --var SIGNUP:open` で起動し�
 
 - [ ] Lane 1. Regression lane against trunk. `time_zone` が NULL の利用者に、日本の今日に予定したタスクを入れ、`TZ=Asia/Tokyo` で trunk と head の nagi を開く。Save `r16-lane1-tokyo.png`. Pass when 両方でタスクが「今日」にあり、見出しの日付が同じ.
 - [ ] Lane 2. 西の利用者。日本の今日に予定したタスクを入れ、`TZ=Pacific/Pago_Pago` で head を開く。Save `r16-lane2-pago.png`. Pass when タスクは「予定」に残り、見出しが Pago Pago の論理日付で、`SELECT time_zone FROM users` が `Pacific/Pago_Pago`。trunk なら今日へ移ることを記録する.
-- [ ] Lane 3. 西の利用者の今日。Pago Pago の今日に予定したタスクを足し、45 秒の同期を待つ。Save `r16-lane3-pago-today.png`. Pass when タスクが「今日」に移り、`arrivedOn` が Pago Pago の論理日付.
+- [ ] Lane 3. 西の利用者の今日。日付の切り替えは論理日付ごとに一度だけで、起動の最初の同期がそれを使う。画面を開いた**あとで**、その利用者の `meta` の `last_rollover_on` を Pago Pago の前の日にし、Pago Pago の今日に予定したタスクを足して、45 秒の同期を待つ（日本時間の 4 時より前は Pago Pago と日本の論理日付が同じになるので、そのときは `Etc/GMT+12` で代える）。Save `r16-lane3-pago-today.png`. Pass when タスクが「今日」に移り、`arrivedOn` が Pago Pago の論理日付.
 - [ ] Lane 4. 端末のゾーンが変わる。lane 2 の HOME で `TZ=Europe/Berlin` を付けて head を開き直す。Save `r16-lane4-berlin.png`. Pass when 「タイムゾーンを Europe/Berlin にしました」と出て、D1 の列とセッションのファイルの `time_zone` が `Europe/Berlin`.
 - [ ] Lane 5. 二台の端末。同じ利用者の二つの HOME を、A は `Asia/Tokyo`、B は `Pacific/Pago_Pago` で保存済みにする。A を最後にログインした端末として列を `Asia/Tokyo` にし、B を開く。Save `r16-lane5-two-devices.png`. Pass when B は日本の論理日付を見出しに出し、D1 の列は `Asia/Tokyo` のまま変わらない.
 - [ ] Lane 6. 自動の実行。`TZ=Europe/London` と `NAGI_TOKEN` を付けて `scripts/tui-shot.py --cmd 'nagi list today --json'` を動かす。Save `r16-lane6-cli-token.png`. Pass when D1 の列が変わらず、JSON の今日は列のゾーンの論理日付で決まっている.
