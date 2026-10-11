@@ -1,6 +1,6 @@
 #!/usr/bin/env -S uv run --script
 # /// script
-# requires-python = ">=3.11"
+# requires-python = ">=3.13"
 # dependencies = ["pyte", "pillow"]
 # ///
 """nagi の TUI（または任意のコマンド）を PTY で動かし、画面を PNG とテキストに撮る。
@@ -48,6 +48,9 @@ FONT_SIZE = 18
 DEFAULT_FG = (229, 229, 229)
 DEFAULT_BG = (0, 0, 0)
 TIMEOUT_EXIT = 124
+# 一度に読み切る回数の上限。出し続ける子（yes など）でも、撮ったり時間切れを確かめたりへ戻れるようにする
+DRAIN_READS = 64
+TERM_SIGNALS = (signal.SIGTERM, signal.SIGINT)
 
 # xterm の標準の 16 色。pyte は色を名前（ANSI）か 6 桁の 16 進で返す。
 ANSI_RGB = {
@@ -76,6 +79,30 @@ class ScriptError(ValueError):
 
 class Timeout(Exception):
     pass
+
+
+class Terminated(Exception):
+    def __init__(self, signum: int):
+        super().__init__(signal.Signals(signum).name)
+        self.signum = signum
+
+
+def _terminate(signum, _frame) -> None:
+    raise Terminated(signum)
+
+
+def _has_exited(pid: int) -> bool:
+    """刈り取らずに終わったかだけを見る。ゾンビが pid を持ち続けるので、あとの killpg が別のグループに当たらない。
+
+    macOS の os.waitid は Python 3.13 から。"""
+    return os.waitid(os.P_PID, pid, os.WEXITED | os.WNOHANG | os.WNOWAIT) is not None
+
+
+def _killpg(pgid: int) -> None:
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        pass
 
 
 # ---- キーの台本 -------------------------------------------------------------
@@ -329,6 +356,7 @@ class Session:
         self.first_output_ms: float | None = None
         self.read_counts: dict[int, int] = {}
         self.eof = False
+        self.done = False
         self.status: int | None = None
         cols, rows = size
         pid, fd = pty.fork()
@@ -341,12 +369,15 @@ class Session:
                 os.write(2, f"tui-shot: exec {argv[0]}: {e}\n".encode())
                 os._exit(127)
         self.pid, self.fd = pid, fd
+        os.set_blocking(fd, False)
         self.screen.fd = fd
 
     # 読み書き
     def _read(self) -> None:
         try:
             data = os.read(self.fd, 65536)
+        except BlockingIOError:
+            return
         except OSError:
             data = b""
         if not data:
@@ -363,20 +394,17 @@ class Session:
         return bool(select.select([self.fd], [], [], timeout)[0])
 
     def _drain(self) -> None:
-        while not self.eof and self._readable(0):
+        for _ in range(DRAIN_READS):
+            if time.monotonic() >= self.deadline:
+                raise Timeout
+            if self.eof or not self._readable(0):
+                return
             self._read()
 
     def _poll_exit(self) -> None:
-        if self.status is not None:
-            return
-        pid, status = os.waitpid(self.pid, os.WNOHANG)
-        if pid:
+        if not self.done and _has_exited(self.pid):
             self._drain()
-            self.status = status
-
-    @property
-    def done(self) -> bool:
-        return self.status is not None
+            self.done = True
 
     def pump(self, seconds: float, stop_on_exit: bool = False) -> None:
         until = time.monotonic() + seconds
@@ -397,12 +425,24 @@ class Session:
         self._drain()
 
     def send(self, data: bytes) -> None:
-        if self.done:
-            return
-        try:
-            os.write(self.fd, data)
-        except OSError:
-            pass
+        """書けるだけ書き、残りは子の出力を読みながら待つ。子が入力を読まなくても、時間切れで抜けられる。"""
+        view = memoryview(data)
+        while view and not self.done:
+            now = time.monotonic()
+            if now >= self.deadline:
+                raise Timeout
+            reads = [] if self.eof else [self.fd]
+            r, w, _ = select.select(reads, [self.fd], [], min(self.deadline - now, 0.05))
+            if r:
+                self._read()
+            if w:
+                try:
+                    view = view[os.write(self.fd, view) :]
+                except BlockingIOError:
+                    pass
+                except OSError:
+                    return
+            self._poll_exit()
 
     def resize(self, cols: int, rows: int) -> None:
         self.screen.resize(rows, cols)
@@ -410,12 +450,8 @@ class Session:
             set_winsize(self.fd, cols, rows)  # カーネルが前面のプロセスグループに SIGWINCH を送る
 
     def kill(self) -> None:
-        if self.status is None:
-            try:
-                os.killpg(self.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            _, self.status = os.waitpid(self.pid, 0)
+        _killpg(self.pid)  # 親が先に終わっても、HUP を無視して残る子がいる
+        _, self.status = os.waitpid(self.pid, 0)
         os.close(self.fd)
 
     @property
@@ -487,13 +523,12 @@ def run(args: argparse.Namespace) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
 
     own_home = args.home is None
-    home = tempfile.mkdtemp(prefix="tui-shot-home-") if own_home else os.path.abspath(args.home)
+    home = None if own_home else os.path.abspath(args.home)
     started = time.monotonic()
     shots: list[dict] = []
     runs: list[dict] = []
     timed_out = False
     session: Session | None = None
-    env = build_env(args, home)
 
     def shot(slug: str) -> None:
         t = time.monotonic()
@@ -511,7 +546,27 @@ def run(args: argparse.Namespace) -> int:
             }
         )
 
+    def run_step(cmd: str) -> None:
+        # PTY を読み続けながら待つ。止めるときは後ろに回したものも含めてグループごと終わらせる
+        with tempfile.TemporaryFile() as log:
+            proc = subprocess.Popen(
+                ["bash", "-c", cmd], env=env, cwd=cwd, stdout=log, stderr=log, start_new_session=True
+            )
+            try:
+                while not _has_exited(proc.pid):
+                    session.pump(0.01)
+            finally:
+                _killpg(proc.pid)
+                proc.wait()
+            log.seek(0)
+            sys.stderr.write(log.read().decode("utf-8", errors="replace"))
+        runs.append({"cmd": cmd, "exit_code": proc.returncode})
+
+    previous = {s: signal.signal(s, _terminate) for s in TERM_SIGNALS}
     try:
+        if own_home:
+            home = tempfile.mkdtemp(prefix="tui-shot-home-")
+        env = build_env(args, home)
         session = Session(argv, env, cwd, size, started + args.timeout)
         try:
             for step in steps:
@@ -532,14 +587,7 @@ def run(args: argparse.Namespace) -> int:
                 elif step.verb == "wait-exit":
                     session.pump(float(step.arg), stop_on_exit=True)
                 else:
-                    left = max(0.1, session.deadline - time.monotonic())
-                    try:
-                        r = subprocess.run(["bash", "-c", step.arg], env=env, cwd=cwd, timeout=left,
-                                           capture_output=True, text=True)  # fmt: skip
-                    except subprocess.TimeoutExpired:
-                        raise Timeout from None
-                    runs.append({"cmd": step.arg, "exit_code": r.returncode})
-                    sys.stderr.write(r.stdout + r.stderr)
+                    run_step(step.arg)
             session.pump(float("inf"), stop_on_exit=True)
             final = args.shot or ("screen" if args.cmd is not None else None)
             if final:
@@ -547,10 +595,16 @@ def run(args: argparse.Namespace) -> int:
         except Timeout:
             timed_out = True
     finally:
-        if session is not None:
-            session.kill()
-        if own_home:
-            shutil.rmtree(home, ignore_errors=True)
+        signal.pthread_sigmask(signal.SIG_BLOCK, TERM_SIGNALS)  # 片付けの途中で止められないようにする
+        try:
+            if session is not None:
+                session.kill()
+            if own_home and home is not None:
+                shutil.rmtree(home, ignore_errors=True)
+        finally:
+            for s, handler in previous.items():
+                signal.signal(s, handler)
+            signal.pthread_sigmask(signal.SIG_UNBLOCK, TERM_SIGNALS)
 
     wall = time.monotonic() - started
     buckets = int(wall) + 1
@@ -582,6 +636,9 @@ def main(argv: list[str] | None = None) -> int:
     except (ScriptError, OSError) as e:
         print(f"tui-shot: {e}", file=sys.stderr)
         return 2
+    except Terminated as e:
+        print(f"tui-shot: stopped by {e}", file=sys.stderr)
+        return 128 + e.signum
 
 
 if __name__ == "__main__":

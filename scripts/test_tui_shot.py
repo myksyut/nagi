@@ -6,8 +6,11 @@
 import importlib.util
 import json
 import os
+import random
+import signal
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 import pyte
@@ -133,11 +136,23 @@ def test_cmd_runs_isolated_and_reports(shot, tmp_path, monkeypatch):
     assert sum(report["writes_per_sec"]) >= 1 and report["output_bytes"] > 0
 
 
-def test_timeout_kills_process_group_and_exits_124(shot, tmp_path):
-    code, out = run_tool(shot, tmp_path, "--cmd", "sleep 30 & wait", "--timeout", "1")
+@pytest.fixture
+def marker():
+    """同じ機械で動くほかのテストや道具のプロセスと取り違えないよう、この試しだけの値を引数にする。"""
+    m = str(random.randrange(10**8, 10**9))
+    yield m
+    subprocess.run(["pkill", "-f", m])
+
+
+def alive(marker) -> bool:
+    return subprocess.run(["pgrep", "-f", marker], capture_output=True).returncode == 0
+
+
+def test_timeout_kills_process_group_and_exits_124(shot, tmp_path, marker):
+    code, out = run_tool(shot, tmp_path, "--cmd", f"sleep {marker} & wait", "--timeout", "1")
     report = json.loads((out / "run.json").read_text())
     assert code == 124 and report["timed_out"] is True
-    assert subprocess.run(["pgrep", "-f", "^sleep 30$"], capture_output=True).returncode == 1
+    assert not alive(marker)
 
 
 def test_resize_changes_screen_size_and_tty_answers_cursor_query(shot, tmp_path):
@@ -156,3 +171,88 @@ def test_bare_esc_is_read_as_a_key_not_alt_prefix(shot, tmp_path):
         pytest.skip("tui/target/release/nagi が無い（cargo build --release）")
     code, _ = run_tool(shot, tmp_path, "--keys", "sleep 1; key ?; sleep 0.3; key Esc; key q", "--timeout", "10")
     assert code == 0  # Esc の直後の q が Alt+q と読まれると終わらず、124 になる
+
+
+# ---- 子を残さない・一時の HOME を残さない ---------------------------------------
+# 道具を別のプロセスで動かす。止まらない不具合でもテストが止まらず、シグナルも送れる。
+
+
+def spawn(tmp_path, *argv):
+    tmp = tmp_path / "tmp"
+    tmp.mkdir(exist_ok=True)
+    return subprocess.Popen(
+        [sys.executable, str(HERE / "tui-shot.py"), "--out-dir", str(tmp_path / "out"), "--size", "40x5", *argv],
+        env={**os.environ, "TMPDIR": str(tmp)},
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+
+
+def finish(proc, limit: float) -> int:
+    try:
+        return proc.wait(limit)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        pytest.fail(f"tui-shot が {limit} 秒で終わらない")
+
+
+def homes_left(tmp_path) -> list[str]:
+    return [p.name for p in (tmp_path / "tmp").iterdir() if p.name.startswith("tui-shot-home-")]
+
+
+def test_run_step_timeout_kills_its_background_children(tmp_path, marker):
+    proc = spawn(tmp_path, "--cmd", f"sleep {marker}", "--keys", f"run sleep {marker} & wait", "--timeout", "2")
+    assert finish(proc, 8) == 124
+    assert not alive(marker) and not homes_left(tmp_path)
+
+
+def test_endless_output_still_shoots_and_times_out(tmp_path, marker):
+    proc = spawn(tmp_path, "--cmd", f"yes {marker}", "--keys", "sleep 0.2; shot a", "--timeout", "3")
+    assert finish(proc, 9) == 124
+    assert marker in (tmp_path / "out" / "a.txt").read_text()
+    assert json.loads((tmp_path / "out" / "run.json").read_text())["timed_out"] is True
+    assert not alive(marker) and not homes_left(tmp_path)
+
+
+def test_children_left_after_the_command_exits_are_killed(tmp_path, marker):
+    proc = spawn(tmp_path, "--cmd", f"trap '' HUP; sleep {marker} >/dev/null 2>&1 & exit 0")
+    assert finish(proc, 8) == 0
+    assert not alive(marker)
+
+
+def test_bad_option_leaves_no_temporary_home(tmp_path):
+    assert finish(spawn(tmp_path, "--cmd", "true", "--env", "INVALID"), 8) == 2
+    assert not homes_left(tmp_path)
+
+
+@pytest.mark.parametrize("sig", [signal.SIGTERM, signal.SIGINT])
+def test_termination_signal_cleans_up_children_and_home(tmp_path, marker, sig):
+    keys = f"run sleep {marker} & touch $HOME/ready\\; wait"
+    proc = spawn(tmp_path, "--cmd", f"trap '' HUP; sleep {marker}", "--keys", keys, "--timeout", "30")
+    until = time.monotonic() + 10
+    while not list((tmp_path / "tmp").glob("tui-shot-home-*/ready")):
+        assert time.monotonic() < until and proc.poll() is None
+        time.sleep(0.05)
+    proc.send_signal(sig)
+    code = finish(proc, 5)
+    assert not alive(marker) and not homes_left(tmp_path)
+    assert code == 128 + sig
+
+
+def test_first_output_is_read_while_a_run_step_runs(shot, tmp_path):
+    code, out = run_tool(shot, tmp_path, "--cmd", "echo hi; sleep 2.5", "--keys", "run sleep 2")
+    assert code == 0
+    assert json.loads((out / "run.json").read_text())["first_output_ms"] < 1000
+
+
+def test_typed_input_is_delivered_in_full_and_never_outlasts_timeout(tmp_path, marker):
+    size = 2_000_000  # 端末の入力の詰まりより十分に大きい
+    keys = tmp_path / "keys"
+    keys.write_text(f"sleep 0.5\ntype {'a' * size}\nwait-exit 20\n")
+    proc = spawn(tmp_path, "--cmd", f"stty raw -echo; head -c {size} | wc -c", "--keys", f"@{keys}", "--shot", "wc")
+    assert finish(proc, 25) == 0
+    assert str(size) in (tmp_path / "out" / "wc.txt").read_text()
+    proc = spawn(tmp_path, "--cmd", f"stty raw -echo; sleep {marker}", "--keys", f"@{keys}", "--timeout", "2")
+    assert finish(proc, 8) == 124
+    assert not alive(marker) and not homes_left(tmp_path)
