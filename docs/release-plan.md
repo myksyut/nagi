@@ -82,7 +82,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] 起動の形を `scripts/tui-shot.py [--bin PATH | --cmd "<shell command>"] [--size 120x36] [--keys SCRIPT] [--shot SLUG] [--out-dir DIR] [--home DIR] [--cwd DIR] [--env NAME=VALUE] [--unset NAME] [--timeout 30] [--font PATH] [-- ARGS]` にする。`--bin` の既定は `tui/target/release/nagi`。
 - [ ] `--cmd "<shell command>"` を足す。`bash -c` で、nagi と同じ PTY、同じ大きさ、同じ隔離した環境でコマンドを動かす（curl、nagi の CLI、sqlite3、gh など）。終わったら最後の画面を `--shot SLUG` の名前で撮る。`--bin` と一緒には使えない。
 - [ ] `--home` がなければ、`tempfile.mkdtemp()` で一時的な HOME を作る。`XDG_CONFIG_HOME` と `XDG_DATA_HOME` はその下に置く。終わったら消す。
-- [ ] 子の環境から `NAGI_TOKEN` と `NAGI_SERVER` を外す。足すのは `--env` で渡したものだけ。`--unset` で HOME なども外せる。`TERM=xterm-256color`、`COLORTERM=truecolor`、`TZ=Asia/Tokyo`、`LANG=C.UTF-8` に固定する。
+- [ ] 子の環境から `NAGI_TOKEN`、`NAGI_SERVER`、`NO_COLOR` を外す（運用者のシェルは `NO_COLOR=1` で、そのままだと nagi が色を出さない）。足すのは `--env` で渡したものだけ。`--unset` で HOME なども外せる。`TERM=xterm-256color`、`COLORTERM=truecolor`、`TZ=Asia/Tokyo`、`LANG=C.UTF-8` に固定する。
 - [ ] `pty.fork()` で子を起動し、`TIOCSWINSZ` で `--size` の大きさにする。出力は `pyte.ByteStream` と `pyte.Screen` に流す。作業のフォルダは `--cwd`。なければ今のフォルダ。
 - [ ] キーの台本は `;` 区切りの文字か、1 行 1 手順の `@PATH` のファイル。手順は 7 種。`sleep S`、`type TEXT`、`key NAME`、`shot SLUG`、`resize COLSxROWS`、`run SHELL`、`wait-exit S`。`run` は子と同じ環境で、PTY の外でコマンドを動かす。
 - [ ] `key` は `Enter`、`Esc`、`Tab`、`Up`、`Down`、`ctrl+k`、`ctrl+r`、`alt+up` などを xterm のバイト列に変える。
@@ -98,7 +98,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `run.json` で、終了コードと毎秒の書き出し回数が読める。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
-- [ ] `uv run --with pytest pytest scripts/test_tui_shot.py` が通る。
+- [ ] `uv run --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py` が通る。
 - [ ] `key ctrl+k` が `\x0b`、`key alt+up` が `\x1b[1;3A`、`key Enter` が `\r` になる。
 - [ ] 地が `#2e4670` のセルは、PNG でもその色の画素になる。
 - [ ] `牛乳` の 2 文字が 4 セルを占め、次の文字が 5 セル目から始まる。
@@ -110,7 +110,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] Lane 2. 空の HOME で head の nagi を起動し、1 秒待って撮る。Save `first-launch.png`. Pass when 画面の一番下に「ローカル」が出て、`first-launch.txt` にも「ローカル」がある.
 - [ ] Lane 3. タスク `牛乳を買う` を足して撮る。Save `wide-chars.png`. Pass when PNG で 5 文字がちょうど 10 セルに収まり、隣のセルに字形がはみ出さない.
 - [ ] Lane 4. タスクを一つ足し、カーソルをその行に置いて撮る。Save `cursor-row.png`. Pass when カーソルの行の地の画素が `#2e4670` で、`tui/src/ui/theme.rs` の `CURSOR_BG` と一致する.
-- [ ] Lane 5. `key ?` でショートカットの一覧を開いて撮る。Save `shortcuts.png`. Pass when ポップアップの地の画素が `#181c28`（`SURFACE`）で、`shortcuts.txt` に「終了」の行がある.
+- [ ] Lane 5. `--size 120x80` で `key ?` を押し、ショートカットのページを開いて撮る。Save `shortcuts.png`. Pass when 左のサイドバーの地の画素が `#181c28`（`SURFACE`）で、`shortcuts.txt` に「終了」の行がある（ショートカットはポップアップではなく右の欄のページで、120x36 では「終了」が画面の外に出る）.
 - [ ] Lane 6. `--size 40x12` で起動し、`shot small; resize 100x30; sleep 0.5; shot resize; key q` で撮る。Save `resize.png`. Pass when `resize.png` が 100x30 セルの大きさで描かれ、`small.png` が 40x12 セルで、終了コードが 0.
 - [ ] Lane 7. `--cmd` で、一つの PTY の中で三つのコマンドを続けて動かす。`tui/target/release/nagi add 資料を送る && tui/target/release/nagi list --json && sqlite3 "$XDG_DATA_HOME/nagi/local.db" 'SELECT COUNT(*) FROM tasks' && curl -s -o /dev/null -w '%{http_code}' https://nagi.wizard1026miya.workers.dev/api/session`。Save `cmd.png`. Pass when `cmd.txt` に `資料を送る` を含む JSON、件数の `1`、`401` が出て、`sqlite3` が開いたファイルが一時的な HOME の下にある.
 - [ ] Lane 8. lane 2 から 7 の前と後で `sha256sum ~/.local/share/nagi/local.db` を `--cmd` で撮る（なければ `ls` の結果を撮る）。Save `isolation.png`. Pass when 前と後の sha256 が同じで（なければ、後もない）、`/tmp` に道具の一時的な HOME が残っていない.
@@ -422,7 +422,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `windows-2025` の `ci.yml` の `tui` で `cargo test` が通る。
 - [ ] `scripts/scoop-manifest.sh 0.2.2 SHA256SUMS | jq .` が通り、`architecture.64bit.hash` が `SHA256SUMS` の値と同じ。
 - [ ] `actionlint .github/workflows/*.yml` が 0 件。
-- [ ] Linux で `uv run --with pytest pytest scripts/test_tui_shot.py` が通る（ConPTY の経路は lane で確かめる）。
+- [ ] Linux で `uv run --with pytest --with pyte --with pillow pytest scripts/test_tui_shot.py` が通る（ConPTY の経路は lane で確かめる）。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `fast mechanical model (setup default)` at the PR head, per the boot recipe. drill の main を PR の head にし、`vars.SCOOP_REPOSITORY` を `myksyut/scoop-bucket-drill` にして `v0.2.2` を出す。runner の上の撮影は `gh workflow run tui-shots.yml --repo myksyut/nagi-ci-drill` で動かし、`gh run download` で `/tmp/swarm-R05/worker-<n>/` に落とす。
 - [ ] Lane 1. Regression lane against trunk. trunk には Windows の成果物がない。そのことを記録する。`runner=windows-2025` で、trunk の ref と head の ref の両方に `keys='sleep 2; key n; type a; key Enter; key q'` と、作業のフォルダと `$env:LOCALAPPDATA` を並べる `cmd` を動かす。Save `win-data-place.png`. Pass when trunk の回は作業のフォルダに `.local` ができ、head の回は `%LOCALAPPDATA%\nagi\local.db` だけができて、作業のフォルダは空のまま.
