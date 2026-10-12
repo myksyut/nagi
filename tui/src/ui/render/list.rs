@@ -6,7 +6,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use super::{detail, priority_mark, status_glyph};
+use super::{add_prompt, detail, priority_mark, status_glyph};
 use crate::dates::{DeadlineTone, deadline_status, format_short_date_with_weekday};
 use crate::i18n::{Msg, fill, t};
 use crate::model::{Bucket, Task};
@@ -168,14 +168,15 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     let add_line = |app: &App, lines: &mut Vec<Line<'static>>| -> Option<(usize, usize)> {
         let input = app.adding.as_ref()?;
         let label = format!("  {}", view.add_to.label);
-        let field = total.saturating_sub(5 + width(&label));
+        let prompt = add_prompt();
+        let field = total.saturating_sub(width(&prompt) + width(&label));
         let (shown, at) = input.visible(field);
         lines.push(Line::from(vec![
-            Span::styled("▌ ＋ ", theme::accent()),
+            Span::styled(prompt.clone(), theme::accent()),
             Span::raw(pad(&shown, field)),
             Span::styled(label, theme::faint()),
         ]));
-        Some((lines.len() - 1, 5 + at))
+        Some((lines.len() - 1, width(&prompt) + at))
     };
 
     // 追加欄を開くまとまりがなければ、一覧の一番上に開く

@@ -94,6 +94,11 @@ pub fn status_glyph(task: &Task) -> Span<'static> {
     }
 }
 
+/// 追加欄の先頭（左の印と、追加の記号）
+pub fn add_prompt() -> String {
+    format!("▌ {} ", t(Msg::AddMark))
+}
+
 /// 優先度の印：3本の棒のうち、高は3本・中は2本・低は1本（色だけに頼らず、形でも分かるように）。高だけ琥珀
 pub fn priority_mark(priority: crate::model::Priority) -> Span<'static> {
     use crate::model::Priority;
@@ -346,7 +351,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             (theme::accent(), theme::faint())
         };
         right.push(Span::styled(t(Msg::ViewList), list));
-        right.push(Span::styled("｜", theme::faint()));
+        right.push(Span::styled(t(Msg::BarSeparator), theme::faint()));
         right.push(Span::styled(t(Msg::ViewBoard), board));
     }
     let right_width: usize = right.iter().map(|span| width(&span.content)).sum();

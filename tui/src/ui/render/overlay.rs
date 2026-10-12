@@ -375,7 +375,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             let mut spans = vec![Span::styled(t(Msg::QuickTargetLabel), theme::faint())];
             for (i, target) in targets.iter().enumerate() {
                 if i > 0 {
-                    spans.push(Span::styled("｜", theme::faint()));
+                    spans.push(Span::styled(t(Msg::BarSeparator), theme::faint()));
                 }
                 let label = match target {
                     QuickTarget::Inbox => t(Msg::ListInbox).to_string(),

@@ -7,7 +7,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::list::task_meta;
-use super::status_glyph;
+use super::{add_prompt, status_glyph};
 use crate::data::lists::sum_points;
 use crate::i18n::{Msg, fill, t};
 use crate::ui::app::App;
@@ -28,17 +28,21 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     };
     if let (Some(add), Some(input)) = (add_area, &app.adding) {
         let label = format!("  {}", view.add_to.label);
-        let field = (add.width as usize).saturating_sub(5 + width(&label));
+        let prompt = add_prompt();
+        let field = (add.width as usize).saturating_sub(width(&prompt) + width(&label));
         let (shown, at) = input.visible(field);
         frame.render_widget(
             Paragraph::new(Line::from(vec![
-                Span::styled("▌ ＋ ", theme::accent()),
+                Span::styled(prompt.clone(), theme::accent()),
                 Span::raw(pad(&shown, field)),
                 Span::styled(label, theme::faint()),
             ])),
             add,
         );
-        frame.set_cursor_position(Position::new(add.x + 5 + at as u16, add.y));
+        frame.set_cursor_position(Position::new(
+            add.x + width(&prompt) as u16 + at as u16,
+            add.y,
+        ));
     }
 
     let areas = Layout::horizontal([Constraint::Ratio(1, 3); 3]).split(columns_area);
