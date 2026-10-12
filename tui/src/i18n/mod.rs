@@ -2,7 +2,7 @@
 //! 文はビルドのときに決まる `&'static str` で、鍵の書き忘れ・打ち間違いはビルドで落ちる
 
 use std::fmt::{Display, Write};
-use std::sync::OnceLock;
+use std::sync::atomic::{AtomicU8, Ordering};
 
 mod messages;
 
@@ -11,16 +11,48 @@ pub use messages::Msg;
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Lang {
     Ja,
+    En,
 }
 
 impl Lang {
     /// `--lang` に渡せる値
-    pub const CODES: [&str; 1] = ["ja"];
+    pub const CODES: [&str; 2] = ["ja", "en"];
 
-    fn from_code(code: &str) -> Option<Lang> {
+    pub fn from_code(code: &str) -> Option<Lang> {
         match code {
             "ja" => Some(Lang::Ja),
+            "en" => Some(Lang::En),
             _ => None,
+        }
+    }
+
+    /// `--lang` と `prefs.json` の `lang` に書く値
+    pub fn code(self) -> &'static str {
+        match self {
+            Lang::Ja => "ja",
+            Lang::En => "en",
+        }
+    }
+
+    /// 言語の名前（コマンドの一覧に出す）
+    pub fn name(self) -> &'static str {
+        match self {
+            Lang::Ja => t(Msg::LangNameJa),
+            Lang::En => t(Msg::LangNameEn),
+        }
+    }
+
+    fn index(self) -> u8 {
+        match self {
+            Lang::Ja => 0,
+            Lang::En => 1,
+        }
+    }
+
+    fn from_index(index: u8) -> Lang {
+        match index {
+            0 => Lang::Ja,
+            _ => Lang::En,
         }
     }
 }
@@ -53,12 +85,12 @@ impl<'a> LangSources<'a> {
     }
 }
 
-/// 使う言語を決める。`--lang`、覚え書き、`LC_ALL`、`LC_MESSAGES`、`LANG` の順に見て、最初の空でない値を使う
+/// 使う言語を決める。`--lang`、覚え書き、`LC_ALL`、`LC_MESSAGES`、`LANG` の順に見て、最初の空でない値を使う。
+/// `ja` で始まる値は日本語。`en` で始まる値、`C`、`POSIX`、ほかの言語、値がないときは英語
 pub fn resolve_lang(sources: &LangSources) -> Lang {
     match sources.first_set() {
         Some(value) if value.starts_with("ja") => Lang::Ja,
-        // 言語は日本語だけなので、どの値でも日本語になる
-        _ => Lang::Ja,
+        _ => Lang::En,
     }
 }
 
@@ -73,23 +105,48 @@ pub fn check_lang_flag(value: &str) -> Result<(), String> {
     }
 }
 
-static CURRENT: OnceLock<Lang> = OnceLock::new();
+static CURRENT: AtomicU8 = AtomicU8::new(0);
 
-/// 画面と CLI の言語を決める。引数の誤りの文も表を通すので、引数を読む前に呼ぶ
+#[cfg(test)]
+thread_local! {
+    /// テストごとに言語を変えるための上書き（テストは並んで走るので、全体の言語は触らない）
+    static TEST_LANG: std::cell::Cell<Option<Lang>> = const { std::cell::Cell::new(None) };
+}
+
+/// 画面と CLI の言語を決める。引数の誤りの文も表を通すので、引数を読む前に呼ぶ。
+/// 画面の中で言語を選び直したときも、これで切り替える（次の描画から変わる）
 pub fn init(lang: Lang) {
-    let _ = CURRENT.set(lang);
+    CURRENT.store(lang.index(), Ordering::Relaxed);
+}
+
+pub fn current() -> Lang {
+    #[cfg(test)]
+    if let Some(lang) = TEST_LANG.with(std::cell::Cell::get) {
+        return lang;
+    }
+    Lang::from_index(CURRENT.load(Ordering::Relaxed))
+}
+
+/// テスト用：この関数の間だけ、この言語で引く
+#[cfg(test)]
+pub fn with_lang<T>(lang: Lang, body: impl FnOnce() -> T) -> T {
+    let before = TEST_LANG.with(|cell| cell.replace(Some(lang)));
+    let result = body();
+    TEST_LANG.with(|cell| cell.set(before));
+    result
 }
 
 impl Msg {
     fn text(self, lang: Lang) -> &'static str {
         match lang {
             Lang::Ja => self.ja(),
+            Lang::En => self.en(),
         }
     }
 }
 
 pub fn t(msg: Msg) -> &'static str {
-    msg.text(CURRENT.get().copied().unwrap_or(Lang::Ja))
+    msg.text(current())
 }
 
 /// `{0}`・`{1}` の番号の穴に値を入れる。言語で語順が変わっても書けるように、番号で指す
@@ -364,10 +421,8 @@ mod tests {
     }
 
     #[test]
-    fn every_message_has_japanese() {
-        for msg in Msg::ALL {
-            let text = msg.ja();
-            assert!(!text.is_empty(), "{msg:?} が空です");
+    fn every_message_has_both_languages() {
+        let numbered = |msg: &Msg, text: &str| {
             let mut numbers = holes(text);
             numbers.sort_unstable();
             numbers.dedup();
@@ -375,6 +430,21 @@ mod tests {
             assert_eq!(
                 numbers, expected,
                 "{msg:?} の穴の番号が 0 から続いていません"
+            );
+            numbers
+        };
+        for msg in Msg::ALL {
+            let (ja, en) = (msg.ja(), msg.en());
+            assert!(!ja.is_empty(), "{msg:?} の日本語が空です");
+            assert!(!en.is_empty(), "{msg:?} の英語が空です");
+            assert!(
+                !en.chars().any(is_japanese),
+                "{msg:?} の英語にかなか漢字があります：{en}"
+            );
+            assert_eq!(
+                numbered(msg, ja),
+                numbered(msg, en),
+                "{msg:?} の穴の番号が、日本語と英語で違います"
             );
         }
     }
@@ -385,15 +455,28 @@ mod tests {
             fill(Msg::LangUnsupported, &[&"fr", &"ja"]),
             "知らない言語です：fr（使える値：ja）"
         );
+        with_lang(Lang::En, || {
+            assert_eq!(
+                fill(Msg::DateLongWithYear, &[&2027, &"Jan", &4, &"Mon"]),
+                "Mon, Jan 4, 2027"
+            );
+        });
     }
 
     #[test]
     fn lang_flag_accepts_only_known_codes() {
         assert_eq!(check_lang_flag("ja"), Ok(()));
+        assert_eq!(check_lang_flag("en"), Ok(()));
         assert_eq!(
             check_lang_flag("fr"),
-            Err("知らない言語です：fr（使える値：ja）".to_string())
+            Err("知らない言語です：fr（使える値：ja・en）".to_string())
         );
+        with_lang(Lang::En, || {
+            assert_eq!(
+                check_lang_flag("fr"),
+                Err("Unknown language: fr (available: ja, en)".to_string())
+            );
+        });
     }
 
     #[test]
@@ -450,6 +533,43 @@ mod tests {
         assert_eq!(sources.first_set(), Some("ja_JP.UTF-8"));
         assert_eq!(LangSources::default().first_set(), None);
         assert_eq!(resolve_lang(&sources), Lang::Ja);
-        assert_eq!(resolve_lang(&LangSources::default()), Lang::Ja);
+    }
+
+    #[test]
+    fn japanese_only_for_japanese_values() {
+        let from = |lang: Option<&str>| {
+            resolve_lang(&LangSources {
+                lang,
+                ..LangSources::default()
+            })
+        };
+        assert_eq!(from(Some("ja_JP.UTF-8")), Lang::Ja);
+        assert_eq!(from(Some("ja")), Lang::Ja);
+        for other in ["en_US.UTF-8", "en", "C", "POSIX", "fr_FR.UTF-8", "zh_CN"] {
+            assert_eq!(from(Some(other)), Lang::En, "{other}");
+        }
+        assert_eq!(from(None), Lang::En);
+    }
+
+    #[test]
+    fn flag_beats_prefs_and_prefs_beat_locale() {
+        let resolve = |flag, prefs| {
+            resolve_lang(&LangSources {
+                flag,
+                prefs,
+                lc_all: Some("ja_JP.UTF-8"),
+                ..LangSources::default()
+            })
+        };
+        assert_eq!(resolve(Some("en"), Some("ja")), Lang::En);
+        assert_eq!(resolve(None, Some("en")), Lang::En);
+        assert_eq!(resolve(None, None), Lang::Ja);
+    }
+
+    #[test]
+    fn language_codes_round_trip() {
+        for lang in [Lang::Ja, Lang::En] {
+            assert_eq!(Lang::from_code(lang.code()), Some(lang));
+        }
     }
 }

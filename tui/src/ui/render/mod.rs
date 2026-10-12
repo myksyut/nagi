@@ -94,6 +94,11 @@ pub fn status_glyph(task: &Task) -> Span<'static> {
     }
 }
 
+/// 追加欄の先頭（左の印と、追加の記号）
+pub fn add_prompt() -> String {
+    format!("▌ {} ", t(Msg::AddMark))
+}
+
 /// 優先度の印：3本の棒のうち、高は3本・中は2本・低は1本（色だけに頼らず、形でも分かるように）。高だけ琥珀
 pub fn priority_mark(priority: crate::model::Priority) -> Span<'static> {
     use crate::model::Priority;
@@ -250,7 +255,12 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
     let count_and_points = |count: usize, points: u32| {
         let mut parts = Vec::new();
         if count > 0 {
-            parts.push(fill(Msg::CountSpaced, &[&count]));
+            let msg = if count == 1 {
+                Msg::CountSpacedOne
+            } else {
+                Msg::CountSpacedMany
+            };
+            parts.push(fill(msg, &[&count]));
         }
         if points > 0 {
             parts.push(fill(Msg::PointsLabel, &[&points]));
@@ -273,7 +283,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             .into_iter()
             .filter(|part| !part.is_empty())
             .collect::<Vec<_>>()
-            .join("　"),
+            .join(t(Msg::HeaderGap)),
         ),
         Screen::Upcoming => (
             t(Msg::ListScheduled).to_string(),
@@ -341,7 +351,7 @@ fn draw_header(frame: &mut Frame, app: &App, area: Rect) {
             (theme::accent(), theme::faint())
         };
         right.push(Span::styled(t(Msg::ViewList), list));
-        right.push(Span::styled("｜", theme::faint()));
+        right.push(Span::styled(t(Msg::BarSeparator), theme::faint()));
         right.push(Span::styled(t(Msg::ViewBoard), board));
     }
     let right_width: usize = right.iter().map(|span| width(&span.content)).sum();
@@ -408,12 +418,40 @@ fn draw_status(frame: &mut Frame, app: &App, area: Rect) {
     let state_width = width(&state);
     let hint_width = (area.width as usize).saturating_sub(state_width + 3);
     let line = Line::from(vec![
-        Span::styled(format!(" {}", pad(hint, hint_width)), theme::faint()),
+        Span::styled(
+            format!(" {}", pad(&fit_hint(hint, hint_width), hint_width)),
+            theme::faint(),
+        ),
         Span::raw(" "),
         Span::styled(state, state_style),
         Span::raw(" "),
     ]);
     frame.render_widget(Paragraph::new(line), area);
+}
+
+/// 一番下のキーの案内を幅に収める。収まらないときは、案内の切れ目（2 つ以上の空白）で切って「…」を付ける
+/// （語の途中で切らない）
+fn fit_hint(hint: &str, max: usize) -> String {
+    if width(hint) <= max {
+        return hint.to_string();
+    }
+    let mut kept = String::new();
+    for item in hint.split("  ") {
+        let next = if kept.is_empty() {
+            item.to_string()
+        } else {
+            format!("{kept}  {item}")
+        };
+        if width(&next) + 1 > max {
+            break;
+        }
+        kept = next;
+    }
+    if kept.is_empty() {
+        truncate(hint, max)
+    } else {
+        format!("{kept}…")
+    }
 }
 
 /// トースト。右下に、新しいものを下にして重ねる
@@ -483,5 +521,20 @@ pub fn centered(area: Rect, width: u16, height: u16) -> Rect {
         y: area.y + (area.height.saturating_sub(height)) / 3,
         width,
         height,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::fit_hint;
+
+    #[test]
+    fn キーの案内は_切れ目で切って_はみ出さない() {
+        let hint = "n add  x done  Enter open  t today";
+        assert_eq!(fit_hint(hint, 40), hint);
+        assert_eq!(fit_hint(hint, 30), "n add  x done  Enter open…");
+        assert_eq!(fit_hint(hint, 12), "n add…");
+        // 最初の組も入らないときは、文字で切る
+        assert_eq!(fit_hint(hint, 4), "n a…");
     }
 }

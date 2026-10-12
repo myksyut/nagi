@@ -8,10 +8,10 @@ use ratatui::widgets::Paragraph;
 
 use super::list::task_meta;
 use super::status_glyph;
-use crate::dates::{format_day_heading, month_start, weekday_name};
+use crate::dates::{format_day_heading, month_full, month_start, weekday_name};
 use crate::i18n::{Msg, fill, t};
 use crate::ui::app::App;
-use crate::ui::text::{pad, truncate};
+use crate::ui::text::{pad, truncate, width};
 use crate::ui::theme;
 use crate::ui::views::{CalendarEntry, ProjectFilter, calendar_entries, month_weeks};
 
@@ -75,7 +75,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
     frame.render_widget(
         Paragraph::new(vec![Line::from(vec![
             Span::styled(
-                fill(Msg::CalendarMonthTitle, &[&year, &month_number]),
+                fill(Msg::CalendarMonthTitle, &[&year, &month_full(month_number)]),
                 theme::bold(),
             ),
             Span::styled(
@@ -133,8 +133,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
                     } else {
                         theme::faint()
                     };
+                    // 「今日」の語は、入りきらないときは付けない（語の途中で切らない）
                     let label = if *day == today {
-                        fill(Msg::CalendarTodayCell, &[&number])
+                        let with_word = fill(Msg::CalendarTodayCell, &[&number]);
+                        if width(&with_word) < inner {
+                            with_word
+                        } else {
+                            number.to_string()
+                        }
                     } else {
                         number.to_string()
                     };
@@ -192,7 +198,14 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
             theme::muted().add_modifier(Modifier::BOLD),
         ),
         Span::styled(
-            fill(Msg::CalendarEntryCount, &[&day_entries.len()]),
+            fill(
+                if day_entries.len() == 1 {
+                    Msg::CalendarEntryCountOne
+                } else {
+                    Msg::CalendarEntryCountMany
+                },
+                &[&day_entries.len()],
+            ),
             theme::faint(),
         ),
     ])];

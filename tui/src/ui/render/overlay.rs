@@ -375,7 +375,7 @@ pub fn draw(frame: &mut Frame, app: &App, area: Rect) {
             let mut spans = vec![Span::styled(t(Msg::QuickTargetLabel), theme::faint())];
             for (i, target) in targets.iter().enumerate() {
                 if i > 0 {
-                    spans.push(Span::styled("｜", theme::faint()));
+                    spans.push(Span::styled(t(Msg::BarSeparator), theme::faint()));
                 }
                 let label = match target {
                     QuickTarget::Inbox => t(Msg::ListInbox).to_string(),
@@ -512,7 +512,7 @@ pub fn draw_shortcuts(frame: &mut Frame, app: &mut App, area: Rect) {
             .map(|binding| {
                 // 決まった画面だけで効くキーには、効く画面の名前を添える
                 let label = match binding.place {
-                    Some(place) => format!("{}（{place}）", binding.label),
+                    Some(place) => fill(Msg::Parenthesized, &[&binding.label, &place]),
                     None => binding.label.clone(),
                 };
                 row(&label, keys_text(binding.keys))

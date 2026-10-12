@@ -12,7 +12,7 @@ use crate::dates::{deadline_status, format_long_date};
 use crate::i18n::{Msg, fill, t};
 use crate::model::{Bucket, Task};
 use crate::ui::app::{App, DetailEdit, DetailField};
-use crate::ui::text::{truncate, wrap};
+use crate::ui::text::{truncate, width, wrap};
 use crate::ui::theme;
 
 /// メモを直していないときに出す行数の上限
@@ -169,10 +169,11 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
     match &detail.edit {
         Some(DetailEdit::AddItem(input)) => {
             let (shown, at) = input.visible(inner.saturating_sub(2));
-            cursor = Some((lines.len(), 6 + at));
+            let prompt = format!("  {} ", t(Msg::AddMark));
+            cursor = Some((lines.len(), 2 + width(&prompt) + at));
             lines.push(Line::from(vec![
                 mark(true),
-                Span::styled("  ＋ ", theme::muted()),
+                Span::styled(prompt, theme::muted()),
                 Span::raw(shown),
             ]));
         }
@@ -198,10 +199,9 @@ pub fn build(app: &App, width_total: usize) -> Option<DetailBlock> {
         t(Msg::StatusNotStarted)
     };
     let deadline = task.deadline_on.as_deref().map(|on| {
-        format!(
-            "{}（{}）",
-            format_long_date(on, today),
-            deadline_status(on, today).1
+        fill(
+            Msg::Parenthesized,
+            &[&format_long_date(on, today), &deadline_status(on, today).1],
         )
     });
     let project = task

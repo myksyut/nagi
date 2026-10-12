@@ -330,7 +330,7 @@ pub struct Prefs {
     /// サイドバーを畳んでいるか（印だけの細い帯）
     #[serde(default)]
     pub sidebar_rail: bool,
-    /// 画面の言語（`ja`）。`--lang` の次、環境変数より前に見る
+    /// 画面の言語（`ja`・`en`）。Ctrl+K の言語の項目で選ぶ。`--lang` の次、環境変数より前に見る
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub lang: Option<String>,
     /// 「この端末のデータをクラウドへ移しますか」を聞いた印（`import_offer_key`）。聞いたら、答えにかかわらず二度と聞かない
@@ -379,6 +379,36 @@ mod tests {
 
     fn file_name(path: &Path) -> String {
         path.file_name().unwrap().to_string_lossy().into_owned()
+    }
+
+    #[test]
+    fn 選んだ言語は_prefsに残り_次の起動で読める() {
+        let dir = temp_dir("lang");
+        let env = |name: &str| match name {
+            "XDG_CONFIG_HOME" | "XDG_DATA_HOME" => Some(dir.clone().into_os_string()),
+            _ => None,
+        };
+        assert_eq!(saved_lang(env), None);
+
+        let config = Config {
+            server: SERVER.to_string(),
+            explicit_server: false,
+            config_dir: dir.join("nagi"),
+            data_dir: dir.join("nagi"),
+        };
+        fs::create_dir_all(&config.config_dir).unwrap();
+        let mut prefs = config.load_prefs();
+        prefs.sidebar_rail = true;
+        prefs.lang = Some("en".to_string());
+        config.save_prefs(&prefs);
+        assert_eq!(saved_lang(env), Some("en".to_string()));
+
+        // 言語を選び直しても、ほかの覚え書きは残る
+        let mut prefs = config.load_prefs();
+        prefs.lang = Some("ja".to_string());
+        config.save_prefs(&prefs);
+        assert_eq!(saved_lang(env), Some("ja".to_string()));
+        assert!(config.load_prefs().sidebar_rail);
     }
 
     #[test]

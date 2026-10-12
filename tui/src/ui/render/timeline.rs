@@ -8,7 +8,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
 use super::calendar::filter_label;
-use crate::dates::{add_days, weekday_index};
+use crate::dates::{add_days, month_short, weekday_index};
 use crate::i18n::{Msg, fill, t};
 use crate::ui::app::App;
 use crate::ui::text::pad;
@@ -66,7 +66,7 @@ pub fn draw(frame: &mut Frame, app: &mut App, area: Rect) {
         if (i == 0 || day.ends_with("-01")) && i + 2 <= days.len() {
             let month: u32 = day[5..7].parse().unwrap_or(1);
             months.push(Span::styled(
-                pad(&fill(Msg::MonthLabel, &[&month]), DAY_WIDTH * 2),
+                pad(month_short(month), DAY_WIDTH * 2),
                 theme::muted(),
             ));
             skip_cells = 1;
