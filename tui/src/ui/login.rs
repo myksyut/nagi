@@ -531,8 +531,11 @@ impl App {
         account: auth::Login,
         result: Result<Option<ImportResponse>, String>,
     ) {
-        // 自動の確かめは、ほかの画面（ログインの画面）が出ているあいだは、何もしない（印も付けない）
-        if !manual && self.login.is_some() {
+        // 自動の確かめは、ほかの画面（ログインの画面、アカウントを消す確かめ）が出ているあいだは、何もしない（印も付けない）。
+        // 消す確かめの上に移す画面を重ねると、消している最中に移せてしまう
+        let deleting =
+            self.deleting_account || matches!(self.overlay, Some(Overlay::DeleteAccount { .. }));
+        if !manual && (self.login.is_some() || deleting) {
             return;
         }
         if manual && self.login.is_none() {

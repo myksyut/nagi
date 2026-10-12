@@ -28,8 +28,9 @@ use crate::model::{
     SyncRow, Task, TaskChanges,
 };
 use crate::ui::AppEvent;
-use crate::ui::app::App;
+use crate::ui::app::{App, Overlay};
 use crate::ui::login::LoginStep;
+use crate::ui::text::TextInput;
 
 #[derive(Default)]
 struct Sent {
@@ -1621,5 +1622,32 @@ fn 確かめに失敗したら_もう一度は確かめ直して数を聞き_ま
             .all(|(head, _)| head.starts_with("POST /api/import?dryRun=1 "))
     );
     assert!(app.config.load_prefs().import_offered.is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn アカウントを消す確かめが出ているあいだは_起動のときの移す申し出を重ねない() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = format!("http://{}", listener.local_addr().unwrap());
+    let requests = serve_imports(listener, vec![(200, IMPORT_COUNTS.into())]);
+    let (mut app, inbox, dir) = import_app("deleting", &server, true);
+
+    app.check_import(false);
+    app.overlay = Some(Overlay::DeleteAccount {
+        input: TextInput::new("delete"),
+        tasks: 1,
+        projects: 0,
+        deleting: true,
+    });
+    app.deleting_account = true;
+    next_login_event(&mut app, &inbox);
+
+    assert!(app.login.is_none());
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::DeleteAccount { deleting: true, .. })
+    ));
+    assert!(app.config.load_prefs().import_offered.is_empty());
+    requests.join().unwrap();
     fs::remove_dir_all(dir).unwrap();
 }
