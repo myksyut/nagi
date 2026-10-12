@@ -10,6 +10,7 @@ use super::list::{AddTarget, Column, ListKind, ListState, ListView, Section};
 use super::login::Login;
 use super::text::{TextArea, TextInput};
 use super::views::ProjectFilter;
+use crate::auth;
 use crate::config::{Config, Prefs};
 use crate::data::lists::split_by_started;
 use crate::data::net::{ApiClient, NetEvent};
@@ -236,8 +237,9 @@ struct TimeZoneReport {
 pub struct App {
     pub config: Config,
     pub store: Store,
-    /// いまのログインの持ち主（Worker の利用者の ID。分からなければ None）。手元の控えは、この利用者のもの
-    pub user_id: Option<String>,
+    /// いまのログイン（ストアが使っているトークンと、その持ち主の利用者の ID。分からなければ None）。
+    /// 手元の控えは、この利用者のもの。ストアを作り直すまで変えない（ログインのファイルを、ほかの nagi が書き換えても）
+    pub account: auth::Login,
     pub screen: Screen,
     /// ショートカットのページから戻る先
     pub previous_screen: Screen,
@@ -293,7 +295,7 @@ impl App {
     pub fn new(
         config: Config,
         store: Store,
-        user_id: Option<String>,
+        account: auth::Login,
         events: Sender<AppEvent>,
     ) -> App {
         let today = store.today.clone();
@@ -302,7 +304,7 @@ impl App {
         App {
             config,
             store,
-            user_id,
+            account,
             screen: Screen::Today,
             previous_screen: Screen::Today,
             focus: Focus::Main,

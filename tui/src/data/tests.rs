@@ -5,13 +5,15 @@ use std::fs;
 use std::io::{Read, Write};
 use std::net::{TcpListener, TcpStream};
 use std::rc::Rc;
-use std::sync::mpsc::channel;
+use std::sync::mpsc::{Receiver, channel};
 use std::thread;
 use std::time::Duration;
 
 use chrono::{DateTime, Utc};
+use crossterm::event::{KeyCode, KeyEvent};
 
 use super::actions::{AddTask, Destination, Placement, normalize_task_changes};
+use super::device::DeviceDb;
 use super::local_db::{LocalDb, PendingOwner, unsent_count_at};
 use super::open_local;
 use super::replica::PendingBatch;
@@ -22,10 +24,13 @@ use super::store::{
 use crate::config::Config;
 use crate::dates::{APP_TIME_ZONE, device_time_zone, parse_iso};
 use crate::model::{
-    Bucket, ChecklistItem, Mutation, MutationBatch, Priority, Project, ProjectChanges, SyncRow,
-    Task, TaskChanges,
+    Bucket, ChecklistItem, Mutation, MutationBatch, NewTask, Priority, Project, ProjectChanges,
+    SyncRow, Task, TaskChanges,
 };
-use crate::ui::app::App;
+use crate::ui::AppEvent;
+use crate::ui::app::{App, Overlay};
+use crate::ui::login::LoginStep;
+use crate::ui::text::TextInput;
 
 #[derive(Default)]
 struct Sent {
@@ -1126,7 +1131,7 @@ fn タイムゾーンを書いているあいだは_日付が変わっても差�
     };
     config.save_time_zone("token-1", told).unwrap();
     let (events, _events) = channel();
-    let mut app = App::new(config, store, None, events);
+    let mut app = App::new(config, store, crate::auth::Login::default(), events);
 
     app.sync_now();
     let (mut stream, request) = accept_request(&listener);
@@ -1279,4 +1284,370 @@ fn 上限の知らせは_断られた操作で決め_あとに続く別の操作
             ..
         }]
     ));
+}
+
+fn import_export(projects: usize, tasks: usize, memo: &str) -> super::device::Export {
+    super::device::Export {
+        projects: (0..projects)
+            .map(|i| serde_json::json!({ "id": format!("p{i}"), "name": "project" }))
+            .collect(),
+        tasks: (0..tasks)
+            .map(|i| serde_json::json!({ "id": format!("t{i}"), "title": "task", "memo": memo }))
+            .collect(),
+    }
+}
+
+/// 送る本文から、行の id を順に取り出す（プロジェクト、タスクの順）
+fn import_ids(body: &str) -> Vec<String> {
+    let document: serde_json::Value = serde_json::from_str(body).unwrap();
+    ["projects", "tasks"]
+        .iter()
+        .flat_map(|key| document[key].as_array().unwrap().iter())
+        .map(|row| row["id"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[test]
+fn 取り込みの本文は_500行ずつに分け_プロジェクトをタスクより先に送る() {
+    let export = import_export(3, 1200, "");
+    let chunks =
+        super::net::split_import(&export, "2026-10-12T00:00:00.000Z", "nagi 0.1.0").unwrap();
+    assert_eq!(
+        chunks.iter().map(|chunk| chunk.rows()).collect::<Vec<_>>(),
+        [500, 500, 203]
+    );
+    // 最初の本文の頭にプロジェクトが全部あり、あとの本文はタスクだけ
+    assert_eq!(chunks[0].projects, 3);
+    assert!(chunks[1..].iter().all(|chunk| chunk.projects == 0));
+    let sent: Vec<String> = chunks
+        .iter()
+        .flat_map(|chunk| import_ids(&chunk.body))
+        .collect();
+    let expected: Vec<String> = (0..3)
+        .map(|i| format!("p{i}"))
+        .chain((0..1200).map(|i| format!("t{i}")))
+        .collect();
+    assert_eq!(sent, expected);
+    let document: serde_json::Value = serde_json::from_str(&chunks[0].body).unwrap();
+    assert_eq!(document["format"], "nagi-export");
+    assert_eq!(document["formatVersion"], 1);
+    assert_eq!(document["app"], "nagi 0.1.0");
+}
+
+#[test]
+fn 取り込みの本文は_900kib以下に分ける() {
+    // 1 件が約 6 KB のメモ（全角 2000 文字）。行数の上限より先に、大きさの上限に当たる
+    let export = import_export(2, 400, &"あ".repeat(2000));
+    let chunks =
+        super::net::split_import(&export, "2026-10-12T00:00:00.000Z", "nagi 0.1.0").unwrap();
+    assert!(chunks.len() > 2);
+    for chunk in &chunks {
+        assert!(chunk.body.len() <= super::net::MAX_IMPORT_BODY_BYTES);
+        assert!(chunk.rows() < super::net::MAX_IMPORT_ROWS);
+        serde_json::from_str::<serde_json::Value>(&chunk.body).unwrap();
+    }
+    let sent: usize = chunks.iter().map(|chunk| chunk.rows()).sum();
+    assert_eq!(sent, 402);
+    assert_eq!(chunks.iter().map(|chunk| chunk.projects).sum::<usize>(), 2);
+}
+
+#[test]
+fn 一件で上限を超える行は_黙って捨てずに断る() {
+    let export = import_export(0, 1, &"a".repeat(1024 * 1024));
+    let error =
+        super::net::split_import(&export, "2026-10-12T00:00:00.000Z", "nagi 0.1.0").unwrap_err();
+    assert!(error.contains("t0"), "{error}");
+    assert!(
+        super::net::split_import(&import_export(0, 0, ""), "2026-10-12T00:00:00.000Z", "nagi")
+            .unwrap()
+            .is_empty()
+    );
+}
+
+/// 取り込みの要求を `replies.len()` 回受け、要求の頭（要求の行とヘッダー）と本文を順に返す。応答は、1 回ごとに `replies` の文
+fn serve_imports(
+    listener: TcpListener,
+    replies: Vec<(u16, String)>,
+) -> thread::JoinHandle<Vec<(String, String)>> {
+    thread::spawn(move || {
+        let mut requests = Vec::new();
+        for (status, body) in replies {
+            let (mut stream, request) = accept_request(&listener);
+            let (head, text) = request.split_once("\r\n\r\n").unwrap();
+            assert!(head.starts_with("POST /api/import"), "{head}");
+            requests.push((head.to_string(), text.to_string()));
+            write!(
+                stream,
+                "HTTP/1.1 {status} X\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}",
+                body.len()
+            )
+            .unwrap();
+        }
+        requests
+    })
+}
+
+fn import_reply(chunk: &super::net::ImportChunk) -> (u16, String) {
+    (
+        200,
+        format!(
+            r#"{{"tasks":{{"new":{},"existing":0}},"projects":{{"new":{},"existing":0}},"detachedTasks":0}}"#,
+            chunk.tasks, chunk.projects
+        ),
+    )
+}
+
+#[test]
+fn 取り込みは_本文を順に送り_進み具合と合計を返す() {
+    let export = import_export(2, 700, "");
+    let chunks =
+        super::net::split_import(&export, "2026-10-12T00:00:00.000Z", "nagi 0.1.0").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = super::net::ApiClient::new(
+        &format!("http://{}", listener.local_addr().unwrap()),
+        Some("token-1".into()),
+    );
+    let server = serve_imports(listener, chunks.iter().map(import_reply).collect());
+
+    let mut progress = Vec::new();
+    let counts = super::net::run_import(&client, &chunks, false, |done, total| {
+        progress.push((done, total));
+    })
+    .unwrap();
+
+    assert_eq!(progress, [(500, 702), (702, 702)]);
+    assert_eq!((counts.projects.new, counts.tasks.new), (2, 700));
+    let requests = server.join().unwrap();
+    assert_eq!(import_ids(&requests[0].1)[..2], ["p0", "p1"]);
+    assert_eq!(import_ids(&requests[1].1).last().unwrap(), "t699");
+}
+
+#[test]
+fn 取り込みが途中で断られたら_そこまでに移した件数と_やり直せることを伝える() {
+    let export = import_export(0, 700, "");
+    let chunks =
+        super::net::split_import(&export, "2026-10-12T00:00:00.000Z", "nagi 0.1.0").unwrap();
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let client = super::net::ApiClient::new(
+        &format!("http://{}", listener.local_addr().unwrap()),
+        Some("token-1".into()),
+    );
+    let server = serve_imports(
+        listener,
+        vec![
+            import_reply(&chunks[0]),
+            (
+                400,
+                r#"{"error":"invalid_request","reason":"quota_exceeded"}"#.to_string(),
+            ),
+        ],
+    );
+
+    let error = super::net::run_import(&client, &chunks, false, |_, _| {}).unwrap_err();
+    server.join().unwrap();
+    assert!(error.contains("上限"), "{error}");
+    assert!(error.contains("500 件までは移してあります"), "{error}");
+}
+
+const IMPORT_COUNTS: &str =
+    r#"{"tasks":{"new":1,"existing":0},"projects":{"new":0,"existing":0},"detachedTasks":0}"#;
+
+/// クラウドで開いた画面。保存してあるログインは利用者 A（token-a）で、ストアのログイン（NAGI_TOKEN で開いたときのように）は
+/// 利用者 B（token-b）。`local_task` なら、この端末のデータにタスクを 1 件入れておく
+fn import_app(
+    name: &str,
+    server: &str,
+    local_task: bool,
+) -> (App, Receiver<AppEvent>, std::path::PathBuf) {
+    let dir = std::env::temp_dir().join(format!("nagi-import-{name}-{}", uuid::Uuid::now_v7()));
+    let config = Config::at(server, &dir);
+    config.save_session("token-a", Some("user-a")).unwrap();
+    if local_task {
+        let mut device = DeviceDb::open(&config.device_db_path()).unwrap();
+        let task = NewTask {
+            id: uuid::Uuid::now_v7().to_string(),
+            title: "この端末のタスク".into(),
+            memo: String::new(),
+            bucket: Bucket::Inbox,
+            scheduled_on: None,
+            project_id: None,
+            rank: "a0".into(),
+        };
+        let batch = MutationBatch {
+            id: uuid::Uuid::now_v7().to_string(),
+            mutations: vec![Mutation::TaskCreate { task }],
+        };
+        device.mutate(&batch, Utc::now()).unwrap();
+    }
+    let (events, inbox) = channel();
+    let account = crate::auth::Login {
+        token: Some("token-b".into()),
+        user_id: Some("user-b".into()),
+    };
+    (
+        App::new(config, harness().store, account, events),
+        inbox,
+        dir,
+    )
+}
+
+/// 取り込みのスレッドからの知らせを 1 つ待って、画面に渡す
+fn next_login_event(app: &mut App, inbox: &Receiver<AppEvent>) {
+    loop {
+        if let AppEvent::Login(_, event) = inbox.recv_timeout(Duration::from_secs(10)).unwrap() {
+            app.on_login_event(event);
+            return;
+        }
+    }
+}
+
+fn import_step(app: &App) -> &LoginStep {
+    &app.login
+        .as_ref()
+        .expect("取り込みの画面が出ていません")
+        .step
+}
+
+fn press_enter(app: &mut App) {
+    app.handle_login_key(&KeyEvent::from(KeyCode::Enter));
+}
+
+#[test]
+fn 取り込みはストアと同じログインで確かめて移し_確かめたあとにログインのファイルが替わっても送り先は変わらない()
+ {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = format!("http://{}", listener.local_addr().unwrap());
+    let requests = serve_imports(
+        listener,
+        vec![(200, IMPORT_COUNTS.into()), (200, IMPORT_COUNTS.into())],
+    );
+    let (mut app, inbox, dir) = import_app("same-login", &server, true);
+
+    app.check_import(true);
+    next_login_event(&mut app, &inbox);
+    assert!(matches!(import_step(&app), LoginStep::ImportOffer { .. }));
+    // 聞いているあいだに、ほかの nagi が別の利用者でログインし直した
+    app.config.save_session("token-c", Some("user-c")).unwrap();
+    press_enter(&mut app);
+    while let Some(login) = &app.login {
+        assert!(!matches!(login.step, LoginStep::ImportFailed { .. }));
+        next_login_event(&mut app, &inbox);
+    }
+
+    let requests = requests.join().unwrap();
+    assert!(requests[0].0.starts_with("POST /api/import?dryRun=1 "));
+    assert!(requests[1].0.starts_with("POST /api/import "));
+    for (head, _) in &requests {
+        assert!(
+            head.to_ascii_lowercase()
+                .contains("authorization: bearer token-b"),
+            "{head}"
+        );
+    }
+    let user_b = app.config.import_offer_key(Some("user-b"));
+    assert_eq!(
+        app.config
+            .load_prefs()
+            .import_offered
+            .into_iter()
+            .collect::<Vec<_>>(),
+        [user_b]
+    );
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn 確かめたあとにログインが替わったら_移さず_聞いた印も付けない() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = format!("http://{}", listener.local_addr().unwrap());
+    let requests = serve_imports(listener, vec![(200, IMPORT_COUNTS.into())]);
+    let (mut app, inbox, dir) = import_app("login-changed", &server, true);
+
+    app.check_import(true);
+    next_login_event(&mut app, &inbox);
+    assert!(matches!(import_step(&app), LoginStep::ImportOffer { .. }));
+    app.account = crate::auth::Login {
+        token: Some("token-c".into()),
+        user_id: Some("user-c".into()),
+    };
+    press_enter(&mut app);
+
+    assert!(app.login.is_none());
+    assert_eq!(requests.join().unwrap().len(), 1);
+    assert!(inbox.recv_timeout(Duration::from_millis(200)).is_err());
+    assert!(app.config.load_prefs().import_offered.is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn この端末に移すデータがなければ_聞いた印を付けない() {
+    let (mut app, inbox, dir) = import_app("no-local-data", "http://127.0.0.1:9", false);
+
+    app.check_import(false);
+    next_login_event(&mut app, &inbox);
+
+    assert!(app.login.is_none());
+    assert!(app.prefs.import_offered.is_empty());
+    assert!(app.config.load_prefs().import_offered.is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn 確かめに失敗したら_もう一度は確かめ直して数を聞き_まだ移さない() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = format!("http://{}", listener.local_addr().unwrap());
+    let requests = serve_imports(
+        listener,
+        vec![
+            (401, r#"{"error":"unauthorized"}"#.into()),
+            (200, IMPORT_COUNTS.into()),
+        ],
+    );
+    let (mut app, inbox, dir) = import_app("preview-retry", &server, true);
+
+    app.check_import(true);
+    next_login_event(&mut app, &inbox);
+    assert!(matches!(import_step(&app), LoginStep::ImportCheckFailed(_)));
+    press_enter(&mut app);
+    next_login_event(&mut app, &inbox);
+
+    let LoginStep::ImportOffer { counts, .. } = import_step(&app) else {
+        panic!("移すかを聞いていません");
+    };
+    assert_eq!(counts.new_rows(), 1);
+    let requests = requests.join().unwrap();
+    assert!(
+        requests
+            .iter()
+            .all(|(head, _)| head.starts_with("POST /api/import?dryRun=1 "))
+    );
+    assert!(app.config.load_prefs().import_offered.is_empty());
+    fs::remove_dir_all(dir).unwrap();
+}
+
+#[test]
+fn アカウントを消す確かめが出ているあいだは_起動のときの移す申し出を重ねない() {
+    let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+    let server = format!("http://{}", listener.local_addr().unwrap());
+    let requests = serve_imports(listener, vec![(200, IMPORT_COUNTS.into())]);
+    let (mut app, inbox, dir) = import_app("deleting", &server, true);
+
+    app.check_import(false);
+    app.overlay = Some(Overlay::DeleteAccount {
+        input: TextInput::new("delete"),
+        tasks: 1,
+        projects: 0,
+        deleting: true,
+    });
+    app.deleting_account = true;
+    next_login_event(&mut app, &inbox);
+
+    assert!(app.login.is_none());
+    assert!(matches!(
+        app.overlay,
+        Some(Overlay::DeleteAccount { deleting: true, .. })
+    ));
+    assert!(app.config.load_prefs().import_offered.is_empty());
+    requests.join().unwrap();
+    fs::remove_dir_all(dir).unwrap();
 }

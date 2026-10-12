@@ -1,4 +1,5 @@
-//! ログインの画面（GitHub のデバイスフロー）。コードと URL を出し、承認されるまで別のスレッドで確かめに行く
+//! ログインの画面（GitHub のデバイスフロー）。コードと URL を出し、承認されるまで別のスレッドで確かめに行く。
+//! 同じ画面の枠で、この端末のデータをクラウドへ移すかの確かめと、移すあいだの進み具合も出す
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -13,7 +14,7 @@ use super::{AppEvent, build_store};
 use crate::auth::{self, DevicePoll, DeviceStart};
 use crate::data::StopReason;
 use crate::data::local_db::unsent_count_at;
-use crate::data::net::ApiClient;
+use crate::data::net::{ApiClient, ImportResponse, local_import_chunks, run_import};
 use crate::i18n::{Msg, fill, t};
 
 pub enum LoginStep {
@@ -29,6 +30,23 @@ pub enum LoginStep {
     },
     /// 失敗した（Enter でやり直す）
     Failed(String),
+    /// この端末のデータが、クラウドにどれだけ入るかを確かめている（Ctrl+K から選んだとき）
+    ImportChecking,
+    /// 確かめられなかった（Enter で確かめ直す。Esc で閉じる）
+    ImportCheckFailed(String),
+    /// この端末のデータをクラウドへ移すかを聞いている（Enter で移す。Esc で移さない）。
+    /// `account` は数を確かめたときのログイン。移すのも、聞いた印も、このログインの利用者のもの
+    ImportOffer {
+        counts: ImportResponse,
+        account: auth::Login,
+    },
+    /// 移している。送り終えた行数と全体の行数（全体は、最初の本文が通るまで 0）
+    ImportRunning { done: usize, total: usize },
+    /// 移せなかった（Enter で、同じログインのまま残りを移し直す。Esc で閉じる）
+    ImportFailed {
+        message: String,
+        account: auth::Login,
+    },
 }
 
 pub struct Login {
@@ -62,6 +80,25 @@ impl Drop for Login {
 pub enum LoginEvent {
     Started(Result<DeviceStart, String>),
     Polled(Result<DevicePoll, String>),
+    Import(ImportEvent),
+}
+
+/// この端末のデータをクラウドへ移す流れのスレッドからの知らせ。`account` は、確かめた・移したときのログイン
+pub enum ImportEvent {
+    /// 確かめた結果。Ok(None) は、この端末に移すデータがないこと。`manual` は Ctrl+K から選んだ確かめ
+    Checked {
+        manual: bool,
+        account: auth::Login,
+        result: Result<Option<ImportResponse>, String>,
+    },
+    Progress {
+        done: usize,
+        total: usize,
+    },
+    Done {
+        account: auth::Login,
+        result: Result<ImportResponse, String>,
+    },
 }
 
 /// クラウドのアカウントを消した結果（Ok は、Worker が 204 を返した）と、消すのに使ったログイン
@@ -81,6 +118,9 @@ impl App {
     }
 
     pub fn handle_login_key(&mut self, key: &KeyEvent) {
+        if self.handle_import_key(key) {
+            return;
+        }
         match key.code {
             // この端末だけで使っているときは、ログインをやめて戻れる
             KeyCode::Esc if !self.config.is_cloud() => self.cancel_login(),
@@ -101,19 +141,19 @@ impl App {
     /// 捨てられるので、ストアを作り直す
     fn cancel_login(&mut self) {
         self.login = None;
-        if self.rebuild_store(None) {
+        if self.rebuild_store() {
             self.sync_now();
             self.reconcile();
         }
     }
 
-    /// ストアと、その相手（通信か、この端末のデータ）を作り直す。作れなければ、前のストアのまま false
-    fn rebuild_store(&mut self, token: Option<String>) -> bool {
+    /// ストアと、その相手（通信か、この端末のデータ）を、いまのログイン（account）で作り直す。作れなければ、前のストアのまま false
+    fn rebuild_store(&mut self) -> bool {
         self.generation += 1;
         match build_store(
             &self.config,
-            token,
-            self.user_id.as_deref(),
+            self.account.token.clone(),
+            self.account.user_id.as_deref(),
             self.events.clone(),
             self.generation,
         ) {
@@ -184,6 +224,10 @@ impl App {
     }
 
     pub fn on_login_event(&mut self, event: LoginEvent) {
+        if let LoginEvent::Import(event) = event {
+            self.on_import_event(event);
+            return;
+        }
         let Some(login) = &mut self.login else {
             return;
         };
@@ -200,7 +244,7 @@ impl App {
             }
             LoginEvent::Polled(Ok(result)) => match result {
                 DevicePoll::Ok { token, user_id } => {
-                    // この端末だけで使っていたなら、そのデータはそのまま残る（クラウドへは移さない）
+                    // この端末だけで使っていたなら、そのデータは消さずに残る。クラウドへは、このあと移すかを聞く
                     let left_on_device = !self.config.is_cloud();
                     if let Err(error) = self.config.save_session(&token, user_id.as_deref()) {
                         crate::log::error(&fill(Msg::LogSaveTokenFailed, &[&error]));
@@ -208,14 +252,18 @@ impl App {
                     self.login = None;
                     // 新しいログインで、ストアと通信を作り直す。手元の控えは、ログインした利用者のものを開く
                     // （前と別の利用者なら別の控えなので、前の利用者の行は混ざらない）
-                    self.user_id = user_id;
-                    if self.rebuild_store(Some(token)) {
+                    self.account = auth::Login {
+                        token: Some(token),
+                        user_id,
+                    };
+                    if self.rebuild_store() {
                         self.sync_now();
                         self.reconcile();
                     }
                     if left_on_device {
                         self.toast_info(t(Msg::LoginSyncStartedKeepLocal));
                     }
+                    self.check_import(false);
                 }
                 DevicePoll::Expired => {
                     login.step = LoginStep::Failed(t(Msg::LoginCodeExpired).to_string());
@@ -228,6 +276,8 @@ impl App {
                 }
                 DevicePoll::Pending | DevicePoll::SlowDown(_) => {}
             },
+            // 取り込みの知らせは、上で処理している
+            LoginEvent::Import(_) => {}
         }
     }
 
@@ -267,11 +317,12 @@ impl App {
     /// もう一度選んだときにログアウトする
     pub fn logout(&mut self) {
         if !self.logout_warned {
-            let message = match unsent_count_at(&self.config.db_path(self.user_id.as_deref())) {
-                Ok(0) => None,
-                Ok(count) => Some(fill(Msg::UnsentCountLogoutWarning, &[&count])),
-                Err(_) => Some(t(Msg::UnsentUnknownLogoutWarning).to_string()),
-            };
+            let message =
+                match unsent_count_at(&self.config.db_path(self.account.user_id.as_deref())) {
+                    Ok(0) => None,
+                    Ok(count) => Some(fill(Msg::UnsentCountLogoutWarning, &[&count])),
+                    Err(_) => Some(t(Msg::UnsentUnknownLogoutWarning).to_string()),
+                };
             if let Some(message) = message {
                 self.logout_warned = true;
                 self.toast_error(&message, Some(t(Msg::LogoutAgainHint)));
@@ -294,10 +345,10 @@ impl App {
     /// トークンは、呼ぶ前に消しておく
     fn return_to_device(&mut self, login_reason: &str, device_message: &str) {
         // 手元の控えを消す
-        self.config.remove_db(self.user_id.as_deref());
-        self.user_id = None;
+        self.config.remove_db(self.account.user_id.as_deref());
+        self.account = auth::Login::default();
         self.logout_warned = false;
-        let rebuilt = self.rebuild_store(None);
+        let rebuilt = self.rebuild_store();
         if self.config.is_cloud() {
             // Worker を名指しして使っている：空のストアのまま、ログインの画面へ（通信はしない）
             self.show_login(Some(login_reason));
@@ -310,7 +361,7 @@ impl App {
 
     /// Ctrl+K の「アカウントを削除」。件数と書き出しの案内を出す確かめの画面を開く（`delete` と打つまで消さない）
     pub fn open_delete_account(&mut self) {
-        if self.user_id.is_none() || self.delete_account_token().is_none() {
+        if self.account.user_id.is_none() || self.delete_account_token().is_none() {
             self.toast_error(
                 t(Msg::AccountDeleteNoOwner),
                 Some(t(Msg::AccountDeleteRelogin)),
@@ -381,7 +432,8 @@ impl App {
     /// Worker にアカウントを消させる。通信は別のスレッドで行い、返事は世代を付けずに送る（on_account_deleted）。
     /// ログインの情報がなくて始められなかったときは false
     fn delete_account(&mut self) -> bool {
-        let (Some(user_id), Some(token)) = (self.user_id.clone(), self.delete_account_token())
+        let (Some(user_id), Some(token)) =
+            (self.account.user_id.clone(), self.delete_account_token())
         else {
             return false;
         };
@@ -396,6 +448,227 @@ impl App {
                 result,
             }));
         });
+        true
+    }
+}
+
+/// この端末のデータをクラウドへ移す流れ（ログインの画面の枠を使う）
+impl App {
+    /// この Worker とこの利用者で、移すかを聞いた印を付けて保存する（答えにかかわらず、二度と自動では聞かない）
+    fn mark_import_offered(&mut self, account: &auth::Login) {
+        let key = self.config.import_offer_key(account.user_id.as_deref());
+        if self.prefs.import_offered.insert(key) {
+            self.config.save_prefs(&self.prefs);
+        }
+    }
+
+    /// クラウドで開いたとき（ログインの直後と起動のとき）に、この端末に移していないデータがあれば、移すかを一度だけ聞く。
+    /// `manual`（Ctrl+K から選んだとき）は、聞いた印にかかわらず確かめて、結果を必ず知らせる。
+    /// 確かめは、いまのログイン（ストアと同じ。手元の開発サーバーはログインなしでも通る）で、別のスレッドで行い、
+    /// データがなければ、画面には何も出さない
+    pub fn check_import(&mut self, manual: bool) {
+        if !self.config.is_cloud() {
+            return;
+        }
+        let account = self.account.clone();
+        let key = self.config.import_offer_key(account.user_id.as_deref());
+        if !manual && self.prefs.import_offered.contains(&key) {
+            return;
+        }
+        if account.token.is_none() && !self.config.is_dev_server() {
+            if manual {
+                self.toast_error(t(Msg::CliNotLoggedInShort), None);
+            }
+            return;
+        }
+        if manual {
+            self.show_login(None);
+            if let Some(login) = &mut self.login {
+                login.step = LoginStep::ImportChecking;
+            }
+        }
+        let client = ApiClient::new(&self.config.server, account.token.clone());
+        let path = self.config.device_db_path();
+        let events = self.events.clone();
+        let generation = self.generation;
+        thread::spawn(move || {
+            let result = local_import_chunks(&path).and_then(|chunks| {
+                if chunks.is_empty() {
+                    return Ok(None);
+                }
+                run_import(&client, &chunks, true, |_, _| {}).map(Some)
+            });
+            let event = ImportEvent::Checked {
+                manual,
+                account,
+                result,
+            };
+            let _ = events.send(AppEvent::Login(generation, LoginEvent::Import(event)));
+        });
+    }
+
+    fn on_import_event(&mut self, event: ImportEvent) {
+        match event {
+            ImportEvent::Checked {
+                manual,
+                account,
+                result,
+            } => self.on_import_checked(manual, account, result),
+            ImportEvent::Progress { done, total } => {
+                if let Some(login) = &mut self.login
+                    && matches!(login.step, LoginStep::ImportRunning { .. })
+                {
+                    login.step = LoginStep::ImportRunning { done, total };
+                }
+            }
+            ImportEvent::Done { account, result } => self.on_import_done(account, result),
+        }
+    }
+
+    fn on_import_checked(
+        &mut self,
+        manual: bool,
+        account: auth::Login,
+        result: Result<Option<ImportResponse>, String>,
+    ) {
+        // 自動の確かめは、ほかの画面（ログインの画面、アカウントを消す確かめ）が出ているあいだは、何もしない（印も付けない）。
+        // 消す確かめの上に移す画面を重ねると、消している最中に移せてしまう
+        let deleting =
+            self.deleting_account || matches!(self.overlay, Some(Overlay::DeleteAccount { .. }));
+        if !manual && (self.login.is_some() || deleting) {
+            return;
+        }
+        if manual && self.login.is_none() {
+            return;
+        }
+        match result {
+            Ok(Some(counts)) if counts.new_rows() > 0 => {
+                if !manual {
+                    self.show_login(None);
+                }
+                if let Some(login) = &mut self.login {
+                    login.step = LoginStep::ImportOffer { counts, account };
+                }
+            }
+            Ok(Some(counts)) => {
+                // 全部クラウドにある。聞かずに、聞いた印だけ付ける
+                self.mark_import_offered(&account);
+                if manual {
+                    self.login = None;
+                    self.toast_info(&fill(Msg::LoginImportAllThere, &[&counts.existing_rows()]));
+                }
+            }
+            // この端末にデータがない。印は付けない（あとでデータができたら、そのとき聞く）
+            Ok(None) => {
+                if manual {
+                    self.login = None;
+                    self.toast_info(t(Msg::CliNothingToImport));
+                }
+            }
+            Err(message) if manual => {
+                if let Some(login) = &mut self.login {
+                    login.step = LoginStep::ImportCheckFailed(message);
+                }
+            }
+            // つながらないときなどは、次に開いたときにもう一度確かめる
+            Err(message) => crate::log::error(&fill(Msg::LogImportCheckFailed, &[&message])),
+        }
+    }
+
+    /// 移す。この端末のデータをもう一度読んで、`account`（数を確かめたときのログイン）で本文を順に送り、進み具合を知らせる。
+    /// そのあとでログインが替わっていたら移さない（聞いた数も、聞いた印も、前のログインの利用者のものなので）
+    fn start_import(&mut self, account: auth::Login) {
+        if account != self.account {
+            self.login = None;
+            self.toast_error(
+                t(Msg::LoginImportChanged),
+                Some(t(Msg::LoginImportChangedHint)),
+            );
+            return;
+        }
+        self.mark_import_offered(&account);
+        if let Some(login) = &mut self.login {
+            login.step = LoginStep::ImportRunning { done: 0, total: 0 };
+        }
+        let client = ApiClient::new(&self.config.server, account.token.clone());
+        let path = self.config.device_db_path();
+        let events = self.events.clone();
+        let generation = self.generation;
+        thread::spawn(move || {
+            let send = |event| {
+                let _ = events.send(AppEvent::Login(generation, LoginEvent::Import(event)));
+            };
+            let result = local_import_chunks(&path).and_then(|chunks| {
+                run_import(&client, &chunks, false, |done, total| {
+                    send(ImportEvent::Progress { done, total });
+                })
+            });
+            send(ImportEvent::Done { account, result });
+        });
+    }
+
+    /// 終わったら、同期して一覧に出す
+    fn on_import_done(&mut self, account: auth::Login, result: Result<ImportResponse, String>) {
+        match result {
+            Ok(counts) => {
+                self.login = None;
+                self.sync_now();
+                self.reconcile();
+                self.toast_info(&fill(Msg::LoginImportDone, &[&counts.new_rows()]));
+            }
+            Err(message) => {
+                if let Some(login) = &mut self.login {
+                    login.step = LoginStep::ImportFailed { message, account };
+                }
+            }
+        }
+    }
+
+    /// 取り込みの画面のキー。取り込みの画面でなければ false
+    fn handle_import_key(&mut self, key: &KeyEvent) -> bool {
+        let Some(login) = &self.login else {
+            return false;
+        };
+        match (&login.step, key.code) {
+            (
+                LoginStep::ImportOffer { account, .. } | LoginStep::ImportFailed { account, .. },
+                KeyCode::Enter,
+            ) => {
+                let account = account.clone();
+                self.start_import(account);
+            }
+            (LoginStep::ImportOffer { account, .. }, KeyCode::Esc) => {
+                let account = account.clone();
+                self.mark_import_offered(&account);
+                self.login = None;
+            }
+            (LoginStep::ImportCheckFailed(_), KeyCode::Enter) => self.check_import(true),
+            (
+                LoginStep::ImportFailed { .. }
+                | LoginStep::ImportCheckFailed(_)
+                | LoginStep::ImportChecking,
+                KeyCode::Esc,
+            ) => {
+                self.login = None;
+            }
+            (
+                LoginStep::ImportOffer { .. }
+                | LoginStep::ImportFailed { .. }
+                | LoginStep::ImportCheckFailed(_)
+                | LoginStep::ImportChecking
+                | LoginStep::ImportRunning { .. },
+                KeyCode::Char('q'),
+            ) => self.should_quit = true,
+            (
+                LoginStep::ImportOffer { .. }
+                | LoginStep::ImportFailed { .. }
+                | LoginStep::ImportCheckFailed(_)
+                | LoginStep::ImportChecking
+                | LoginStep::ImportRunning { .. },
+                _,
+            ) => {}
+            _ => return false,
+        }
         true
     }
 }
@@ -438,7 +711,15 @@ mod tests {
         config.save_session(saved.0, Some(saved.1)).unwrap();
         std::fs::write(config.db_path(Some("user-a")), b"replica").unwrap();
         let (events, _) = mpsc::channel();
-        let mut app = App::new(config, store, Some("user-a".into()), events);
+        let mut app = App::new(
+            config,
+            store,
+            auth::Login {
+                token: Some(saved.0.into()),
+                user_id: Some("user-a".into()),
+            },
+            events,
+        );
         app.overlay = Some(Overlay::DeleteAccount {
             input: TextInput::new("delete"),
             tasks: 0,
@@ -494,7 +775,7 @@ mod tests {
         assert!(app.login.is_none());
         assert_eq!(app.config.saved_session(), None);
         assert!(!app.config.db_path(Some("user-a")).exists());
-        assert_eq!(app.user_id, None);
+        assert_eq!(app.account.user_id, None);
         assert!(!app.config.is_cloud());
         app.show_login_if_unauthorized();
         assert!(app.login.is_none());

@@ -1177,7 +1177,7 @@ mod tests {
         App::new(
             Config::at("https://nagi.example.com", &dir),
             store,
-            None,
+            crate::auth::Login::default(),
             events,
         )
     }

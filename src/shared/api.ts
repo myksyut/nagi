@@ -53,6 +53,19 @@ export type SyncChanges =
  */
 export type MutateResponse = { rows: SyncRow[] };
 
+/** 取り込みの行の数。新しく入れる行と、その利用者にもう同じ id の行がある行（入れない）に分ける */
+export type ImportCounts = { new: number; existing: number };
+
+/**
+ * POST /api/import（?dryRun=1 なら、書かずに、入れたとしたときの数）の応答。
+ * detachedTasks：指す先のプロジェクトがなく、projectId を null にして入れる（入れた）タスクの数
+ */
+export type ImportResponse = {
+  tasks: ImportCounts;
+  projects: ImportCounts;
+  detachedTasks: number;
+};
+
 /** 400 の理由。schema は形の誤り（issues に詳細）、それ以外は中身の検証 */
 export type InvalidRequestReason =
   | "invalid_json"

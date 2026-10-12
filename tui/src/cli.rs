@@ -16,7 +16,9 @@ use crate::auth::{self, DevicePoll};
 use crate::config::Config;
 use crate::data::device::DeviceDb;
 use crate::data::local_db::unsent_count_at;
-use crate::data::net::{ApiClient, ExportReply, NetEvent};
+use crate::data::net::{
+    ApiClient, ExportReply, ImportChunk, NetEvent, local_import_chunks, run_import,
+};
 use crate::data::{
     AddTask, Destination, Failure, Notice, OpResult, PerformOptions, SaveFailure, StopReason,
     Store, open_store,
@@ -117,6 +119,12 @@ pub struct ExportArgs {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub struct ImportArgs {
+    /// 移さずに、新しく入る件数と、クラウドにもうある件数だけを出す
+    pub dry_run: bool,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub enum Command {
     Tui,
     Help,
@@ -139,6 +147,7 @@ pub enum Command {
         /// 確かめを聞かずに消す
         yes: bool,
     },
+    Import(ImportArgs),
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -194,13 +203,14 @@ const VALUE_FLAGS: [&str; 17] = [
     "output",
 ];
 /// 値を取らない指定
-const SWITCHES: [&str; 6] = [
+const SWITCHES: [&str; 7] = [
     "json",
     "help",
     "version",
     "keep-existing",
     "discard-unsent",
     "yes",
+    "dry-run",
 ];
 
 /// 指定の値を1つ取り出す（同じ指定が重なっていたら、最後のものを使う）
@@ -286,6 +296,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     let keep_existing = switches.contains(&"keep-existing");
     let discard_unsent = switches.contains(&"discard-unsent");
     let yes = switches.contains(&"yes");
+    let dry_run = switches.contains(&"dry-run");
     let command = match positionals.split_first() {
         None => Command::Tui,
         Some((&"help", _)) => Command::Help,
@@ -363,6 +374,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
         Some((&"account", _)) => {
             return Err(t(Msg::CliAccountUsage).to_string());
         }
+        Some((&"import", [])) => Command::Import(ImportArgs { dry_run }),
         Some((&("projects" | "login" | "logout" | "export"), _)) => {
             return Err(t(Msg::CliNoExtraArgs).to_string());
         }
@@ -380,6 +392,7 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
                 | Command::Logout { .. }
                 | Command::Export(_)
                 | Command::AccountDelete { .. }
+                | Command::Import(_)
         )
     {
         return Err(t(Msg::CliJsonNotHere).to_string());
@@ -392,6 +405,9 @@ pub fn parse(args: &[String]) -> Result<Invocation, String> {
     }
     if yes && !matches!(command, Command::AccountDelete { .. }) {
         return Err(t(Msg::CliYesOnlyAccountDelete).to_string());
+    }
+    if dry_run && !matches!(command, Command::Import(_)) {
+        return Err(t(Msg::CliDryRunOnlyImport).to_string());
     }
     Ok(Invocation { server, command })
 }
@@ -1168,7 +1184,7 @@ fn login(config: &Config) -> Result<(), String> {
                     .save_session(&token, user_id.as_deref())
                     .map_err(|error| fill(Msg::CliSaveTokenFailed, &[&error]))?;
                 emit(t(Msg::CliLoggedIn));
-                // この端末だけで使っていたときのデータは、そのまま残る（クラウドへは移さない）
+                // この端末だけで使っていたときのデータは、そのまま残る。クラウドへは `nagi import` で移せる
                 let left = DeviceDb::open(&config.device_db_path())
                     .ok()
                     .and_then(|db| db.count().ok())
@@ -1219,6 +1235,49 @@ fn logout(config: &Config, discard_unsent: bool) -> Result<(), String> {
             }
         }
         None => emit(t(Msg::CliNotLoggedInShort)),
+    }
+    Ok(())
+}
+
+/// この端末のデータ（`local.db`）をクラウドへ移す。クラウドにもある行は入れないので、途中で切れても
+/// もう一度動かせば残りだけが入る。移したあとも `local.db` は消さない。`--dry-run` は何も書かずに件数だけを出す
+fn import(config: &Config, args: ImportArgs) -> Result<(), String> {
+    let login = auth::current_login(config);
+    let can_reach = config.is_cloud() && (login.token.is_some() || config.is_dev_server());
+    if !can_reach {
+        return Err(t(Msg::CliNotLoggedIn).to_string());
+    }
+    let chunks = local_import_chunks(&config.device_db_path())?;
+    let total: usize = chunks.iter().map(ImportChunk::rows).sum();
+    if total == 0 {
+        emit(t(Msg::CliNothingToImport));
+        return Ok(());
+    }
+    let client = ApiClient::new(&config.server, login.token);
+    if args.dry_run {
+        let counts = run_import(&client, &chunks, true, |_, _| {})?;
+        emit(&fill(
+            Msg::CliImportDryRun,
+            &[
+                &counts.new_rows(),
+                &counts.existing_rows(),
+                &counts.projects.new,
+                &counts.projects.existing,
+                &counts.tasks.new,
+                &counts.tasks.existing,
+            ],
+        ));
+        return Ok(());
+    }
+    let counts = run_import(&client, &chunks, false, |done, total| {
+        emit(&fill(Msg::CliImportProgress, &[&done, &total]));
+    })?;
+    emit(&fill(
+        Msg::CliImportDone,
+        &[&counts.new_rows(), &counts.existing_rows()],
+    ));
+    if counts.detached_tasks > 0 {
+        emit(&fill(Msg::CliImportDetached, &[&counts.detached_tasks]));
     }
     Ok(())
 }
@@ -1553,6 +1612,7 @@ pub fn run(config: &Config, command: Command) -> ExitCode {
         Command::Logout { discard_unsent } => logout(config, discard_unsent),
         Command::Export(args) => export(config, args),
         Command::AccountDelete { yes } => account_delete(config, yes),
+        Command::Import(args) => import(config, args),
         Command::Tui | Command::Help | Command::Version => Ok(()),
     };
     match result {
@@ -1960,6 +2020,22 @@ mod tests {
         assert!(parsed(&["account", "delete", "now"]).is_err());
         assert!(parsed(&["account", "delete", "--json"]).is_err());
         assert!(parsed(&["list", "--yes"]).is_err());
+    }
+
+    #[test]
+    fn importは_dry_runだけを取り_ほかの引数と_json_は断る() {
+        assert_eq!(
+            command(&["import"]),
+            Command::Import(ImportArgs { dry_run: false })
+        );
+        assert_eq!(
+            command(&["import", "--dry-run"]),
+            Command::Import(ImportArgs { dry_run: true })
+        );
+        assert!(parsed(&["import", "x.json"]).is_err());
+        assert!(parsed(&["import", "--json"]).is_err());
+        assert!(parsed(&["export", "--dry-run"]).is_err());
+        assert!(parsed(&["list", "--dry-run"]).is_err());
     }
 
     #[test]
