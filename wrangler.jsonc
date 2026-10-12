@@ -38,8 +38,16 @@
     // /api/*：利用者ごとに 60 秒で 600 回
     { "name": "API_LIMITER", "namespace_id": "1003", "simple": { "limit": 600, "period": 60 } }
   ],
-  // 期限切れのセッションの掃除。毎日 日本時間の 4 時 17 分（UTC の 19 時 17 分）
-  "triggers": { "crons": ["17 19 * * *"] },
+  // D1 のバックアップの置き場。バケットは `wrangler r2 bucket create nagi-backups` で作る（35 日ぶんだけ残す。src/worker/ops/backup.ts）
+  "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "nagi-backups" }],
+  "triggers": {
+    "crons": [
+      // 期限切れのセッションの掃除。毎日 日本時間の 4 時 17 分（UTC の 19 時 17 分）
+      "17 19 * * *",
+      // D1 のバックアップ。毎日 日本時間の 4 時 37 分（UTC の 19 時 37 分）
+      "37 19 * * *"
+    ]
+  },
   "vars": {
     "APP_TIMEZONE": "Asia/Tokyo",
     // GitHub の OAuth App「nagi」（myksyut が持ち主）の Client ID。秘密ではない。

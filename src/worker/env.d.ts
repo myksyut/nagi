@@ -3,6 +3,8 @@
 declare namespace Cloudflare {
   interface Env {
     DB: D1Database;
+    /** D1 の毎日のバックアップ（backups/YYYY-MM-DD.sqlgz）の置き場 */
+    BACKUPS: R2Bucket;
     /** /auth/device/start の回数制限（IP ごとに 60 秒で 5 回） */
     AUTH_START_LIMITER: RateLimit;
     /** /auth/device/token と /auth/logout の回数制限（IP ごとに 60 秒で 30 回） */
