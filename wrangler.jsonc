@@ -53,5 +53,49 @@
     // "allowlist" のときに登録・ログインできる GitHub ユーザー ID（カンマ区切り。例："1002,1003"）。
     // ID は https://api.github.com/users/<ユーザー名> の id
     "ALLOWED_GITHUB_USER_IDS": ""
+  },
+  "env": {
+    // 検証用の環境（staging）。routes・triggers は Wrangler の環境へ引き継がれる項目だが、本番の値を使わないよう、
+    // ここで明示して上書きする。bindings・vars は引き継がれないので、本番と共有しないものも含め、すべてここに書く。
+    // D1・回数制限の namespace・Worker の名前は本番と別にする
+    "staging": {
+      "name": "nagi-staging",
+      "preview_urls": false,
+      "workers_dev": false,
+      "routes": [{ "pattern": "staging.usenagi.dev", "custom_domain": true }],
+      "d1_databases": [
+        {
+          "binding": "DB",
+          "database_name": "nagi-staging",
+          "database_id": "8f5e89a9-19fb-4982-b33a-dc6374731e9e",
+          "migrations_dir": "migrations"
+        }
+      ],
+      // 上限は本番と同じ。namespace_id だけ本番（1001〜1003）と分ける
+      "ratelimits": [
+        {
+          "name": "AUTH_START_LIMITER",
+          "namespace_id": "2001",
+          "simple": { "limit": 5, "period": 60 }
+        },
+        {
+          "name": "AUTH_POLL_LIMITER",
+          "namespace_id": "2002",
+          "simple": { "limit": 30, "period": 60 }
+        },
+        { "name": "API_LIMITER", "namespace_id": "2003", "simple": { "limit": 600, "period": 60 } }
+      ],
+      "triggers": { "crons": ["17 19 * * *"] },
+      "vars": {
+        "APP_TIMEZONE": "Asia/Tokyo",
+        // staging は専用の OAuth App を使う（デバイスフローを有効にする。Client ID は秘密ではない。Client secret はデバイスフローでは使わない）
+        // R21: staging 専用の OAuth App の client id に替える（運用者が作る）
+        "GITHUB_CLIENT_ID": "Ov23licDbYh47XzAIdS6",
+        // staging の D1 には持ち主の行（migrations/0004）だけがあり、本番のデータは入れない
+        "OWNER_GITHUB_USER_ID": "51072711",
+        "SIGNUP": "allowlist",
+        "ALLOWED_GITHUB_USER_IDS": ""
+      }
+    }
   }
 }
