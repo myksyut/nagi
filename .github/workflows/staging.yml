@@ -1,0 +1,52 @@
+name: staging
+
+# 検証用の環境（https://staging.usenagi.dev）に Worker を出す。本番（deploy.yml）とは、Worker・D1・シークレットをすべて分ける。
+# staging ブランチへの push か、手で動かしたときに、D1（nagi-staging）にマイグレーションを当ててから出す
+on:
+  push:
+    branches: [staging]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# 出している途中では止めない（マイグレーションの途中で切らないため）。待っているものは新しいほうだけが残る
+concurrency:
+  group: deploy-staging
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    environment:
+      name: staging
+      url: https://staging.usenagi.dev
+    env:
+      CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+      CLOUDFLARE_ACCOUNT_ID: ${{ vars.CLOUDFLARE_ACCOUNT_ID }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version-file: .node-version
+      # pnpm の版は package.json の packageManager に従う
+      - uses: pnpm/action-setup@v6
+        with:
+          cache: true
+      - run: pnpm install --frozen-lockfile
+      - name: staging の D1 にマイグレーションを当てる
+        run: pnpm exec wrangler d1 migrations apply nagi-staging --env staging --remote
+      - name: staging に出す
+        run: pnpm exec wrangler deploy --env staging
+      - name: staging の応答を確かめる
+        run: |
+          base=https://staging.usenagi.dev
+          # 出した直後は、まだ応えないことがあるので、少し待ってやり直す
+          for _ in 1 2 3 4 5; do
+            actual=$(curl -s -o /dev/null -w '%{http_code}' "$base/api/session")
+            echo "$base/api/session → $actual"
+            if [ "$actual" = "401" ]; then exit 0; fi
+            sleep 3
+          done
+          exit 1

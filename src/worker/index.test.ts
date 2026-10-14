@@ -44,6 +44,24 @@ describe("知らない URL", () => {
   });
 });
 
+describe("staging の変数", () => {
+  // env.staging.vars（wrangler.jsonc）と同じ値。staging は公開の URL なので、AUTH_DISABLED が紛れ込んでも、
+  // localhost 以外ではログインを外さない
+  const stagingEnv = { ...env, SIGNUP: "allowlist", ALLOWED_GITHUB_USER_IDS: "" };
+
+  it.each(["/api/session", "/api/sync"])(
+    "AUTH_DISABLED=true を渡されても、staging の URL ではトークンなしは 401：%s",
+    async (path) => {
+      const res = await app.request(
+        `https://staging.usenagi.dev${path}`,
+        { method: "POST", headers: { "Content-Type": "application/json" }, body: "{}" },
+        { ...stagingEnv, AUTH_DISABLED: "true" },
+      );
+      expect(res.status).toBe(401);
+    },
+  );
+});
+
 const JSON_HEADERS = { "Content-Type": "application/json", Origin: BASE };
 const FAILING_LIMITER: RateLimit = { limit: async () => ({ success: false }) };
 
