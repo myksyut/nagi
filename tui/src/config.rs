@@ -308,7 +308,8 @@ impl Config {
     /// 新旧の URL は同じ Worker と D1 なので、同じトークンと控えがどちらでも使える。新しい名前に動かすと、
     /// 開いたままの古い nagi が使っている SQLite のファイルを壊しかねないので、名前を変えず、新旧の nagi で同じファイルを使う
     fn storage_key(&self) -> &str {
-        if self.server == DEFAULT_SERVER || self.server == LEGACY_DEFAULT_SERVER {
+        let host = slug(&self.server.to_ascii_lowercase());
+        if host == slug(DEFAULT_SERVER) || host == slug(LEGACY_DEFAULT_SERVER) {
             LEGACY_DEFAULT_SERVER
         } else {
             &self.server
@@ -680,6 +681,9 @@ mod tests {
             home_config(&root, Some(LEGACY_DEFAULT_SERVER), None),
             home_config(&root, None, Some("https://api.usenagi.dev/")),
             home_config(&root, None, Some(LEGACY_DEFAULT_SERVER)),
+            home_config(&root, Some("http://api.usenagi.dev"), None),
+            home_config(&root, Some("https://API.USENAGI.DEV"), None),
+            home_config(&root, None, Some("HTTP://Nagi.Wizard1026miya.Workers.Dev")),
         ] {
             assert_eq!(named.session_path(), default.session_path());
             assert_eq!(named.db_path(None), default.db_path(None));
