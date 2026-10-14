@@ -30,33 +30,37 @@
 
 三つとも、運用者（myksyut）に行く。通知先は、運用者が Cloudflare の通知（Notifications）と外部の監視サービスに設定した、運用者のメールアドレス。ほかの人には行かない。通知の設定（Worker のエラー率、D1 の容量、外部の死活監視）は、運用者がダッシュボード側で行う作業で、このリポジトリには入っていない。設定したら、この節に通知先と監視サービスの名前を書き足す。
 
-## 復元の予行（staging だけ）
+## 復元の予行（予行専用の D1 だけ）
 
-いちばん新しいバックアップを staging の D1 に読み込み、表ごとの行数を、バックアップに記録された元の行数と突き合わせる。**staging の D1 の中身を、すべて消してから読み込む。** 本番の D1 には何も書かない。
+いちばん新しいバックアップを、予行専用の D1 に読み込み、表ごとの行数を、バックアップに記録された元の行数と突き合わせる。**予行専用の D1 の中身を、すべて消してから読み込む。** 本番の D1 には何も書かない。
+
+バックアップは本番のユーザーデータそのものなので、テストや侵入テストに共用している staging の D1（`nagi-staging`）には読み込まない。予行の直前に専用の D1 を作り、終わったらすぐ消す。本番のユーザーデータを staging に置いたままにしない。
 
 ```sh
-export STAGING_D1_ID=<staging の D1 の id>
-export STAGING_D1_NAME=<staging の D1 の名前>   # nagi-staging で始まる
+wrangler d1 create nagi-staging-restore-$(date +%Y%m%d)   # 出た database_id を控える
+export STAGING_D1_ID=<作った D1 の id>
+export STAGING_D1_NAME=nagi-staging-restore-YYYYMMDD   # nagi-staging-restore で始まる
 export BACKUP_BUCKET=<バックアップの R2 バケット>   # 例：nagi-backups
 scripts/restore-rehearsal.sh
+wrangler d1 delete nagi-staging-restore-YYYYMMDD   # 結果を確かめたら、すぐ消す
 ```
 
-- staging の D1 の名前は `nagi-staging` で始める。スクリプトは、次の D1 を、何も読まずに、何も書かずに、0 以外で断る。
-  - 名前が `nagi-staging` で始まらないもの。
+- 予行用の D1 の名前は `nagi-staging-restore` で始める。スクリプトは、次の D1 を、何も読まずに、何も書かずに、0 以外で断る。
+  - 名前が `nagi-staging-restore` で始まらないもの。共用の `nagi-staging` も断る。
   - `wrangler.jsonc` の最上位の `d1_databases`（今の本番の D1）と、id か名前が同じもの。スクリプトは、手元の `wrangler.jsonc` を読むので、最新の main で走らせる。
   - remote で、`STAGING_D1_NAME` の D1 の実際の id と名前（`wrangler d1 info`）が、`STAGING_D1_ID` と `STAGING_D1_NAME` に合わないもの。
 - 断る場合は `scripts/restore-rehearsal.test.sh` で確かめられる（偽の wrangler を使うので、Cloudflare にも手元の D1 にも触れない）。スクリプトを変えたら走らせる。
 - 日付を決めたいときは `BACKUP_DATE=YYYY-MM-DD`。なければ、今日（日本時間）から 35 日前へさかのぼって、最初に見つかったファイルを使う。
 - 全テーブルの行数が元と合えば `restore rehearsal ok` を出して 0 で終わる。合わないテーブルは `MISMATCH`、バックアップにない表があれば `unexpected table` を出して 1 で終わる。
-- 手元の D1・R2 で試すときは、`RESTORE_LOCAL=1`（保存先は `RESTORE_PERSIST_TO`）。手元でも本番の名前（`nagi`）は断るので、`WRANGLER_CONFIG` に、`nagi-staging` で始まる名前の D1 と、バックアップのバケットだけを書いた設定ファイルを渡す。例：`{ "name": "nagi-staging-local", "compatibility_date": "2026-08-15", "d1_databases": [{ "binding": "DB", "database_name": "nagi-staging-local", "database_id": "<適当な UUID>" }], "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "nagi-backups" }] }`。`wrangler dev --test-scheduled --persist-to <保存先>` で作ったバックアップを、同じ保存先の別の D1 に戻す。
-- 道具：`pnpm`（wrangler）、`node`、`gzip`。`wrangler login` 済みで、staging の D1 と R2 に触れるトークンが要る。
+- 手元の D1・R2 で試すときは、`RESTORE_LOCAL=1`（保存先は `RESTORE_PERSIST_TO`）。手元でも本番の名前（`nagi`）は断るので、`WRANGLER_CONFIG` に、`nagi-staging-restore` で始まる名前の D1 と、バックアップのバケットだけを書いた設定ファイルを渡す。例：`{ "name": "nagi-staging-restore-local", "compatibility_date": "2026-08-15", "d1_databases": [{ "binding": "DB", "database_name": "nagi-staging-restore-local", "database_id": "<適当な UUID>" }], "r2_buckets": [{ "binding": "BACKUPS", "bucket_name": "nagi-backups" }] }`。`wrangler dev --test-scheduled --persist-to <保存先>` で作ったバックアップを、同じ保存先の別の D1 に戻す。
+- 道具：`pnpm`（wrangler）、`node`、`gzip`。`wrangler login` 済みで、D1 の作成・削除と R2 の読み取りができるトークンが要る。
 
 ## 本番を復元する
 
-障害（データの破損や削除）で、本番の D1 をバックアップから戻すとき。予行と同じファイルを使うが、**予行のスクリプトは staging 専用で、本番には使わない。**
+障害（データの破損や削除）で、本番の D1 をバックアップから戻すとき。予行と同じファイルを使うが、**予行のスクリプトは予行専用の D1 のためのもので、本番には使わない。**
 
 1. 戻す日付を決める：`wrangler r2 object get nagi-backups/backups/<日付>.sqlgz --remote --file backup.sqlgz`。選んだファイルの日付より新しい変更は失われる（最大で 1 日ぶん）。
-2. 壊れた D1 は、消さずに残す。`wrangler d1 create nagi-restore --location apac` で新しい D1 を作る。復元先の名前は `nagi-staging` で始めない（予行のスクリプトが staging とみなす名前だから）。
+2. 壊れた D1 は、消さずに残す。`wrangler d1 create nagi-restore --location apac` で新しい D1 を作る。復元先の名前は `nagi-staging` で始めない（staging の D1 と取り違えないため）。
 3. `gzip -dc backup.sqlgz > backup.sql`。末尾の `-- rows <表> <行数>` を控える。
 4. `wrangler d1 execute nagi-restore --remote --file backup.sql -y`。
 5. 表ごとに `wrangler d1 execute nagi-restore --remote --command 'SELECT count(*) FROM "<表>"'` を回し、手順 3 の行数と合わせる。

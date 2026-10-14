@@ -1,16 +1,18 @@
 #!/usr/bin/env bash
-# いちばん新しい D1 のバックアップ（R2 の backups/YYYY-MM-DD.sqlgz）を staging の D1 に読み込み、
+# いちばん新しい D1 のバックアップ（R2 の backups/YYYY-MM-DD.sqlgz）を、予行専用の D1 に読み込み、
 # 表ごとの行数を、バックアップに記録された元の行数と突き合わせる（docs/operations.md の「復元の予行」）。
 #
-# staging の D1 の中身を、すべて消してから読み込む。本番の D1 には、何も書かない。何かに触れる前に、次の D1 を断る。
-#   - 名前が nagi-staging で始まらないもの（staging の D1 の名前の決まり）
+# 予行の D1 の中身を、すべて消してから読み込む。本番の D1 には、何も書かない。バックアップは本番のユーザーデータなので、
+# テストや侵入テストに共用している staging の D1（nagi-staging）には置かない。予行の直前に nagi-staging-restore-YYYYMMDD を
+# 作り、終わったら消す。何かに触れる前に、次の D1 を断る。
+#   - 名前が nagi-staging-restore で始まらないもの（nagi-staging そのものも断る）
 #   - wrangler.jsonc の最上位の d1_databases（今の本番の D1）と、id か名前が同じもの
 #   - remote で、STAGING_D1_NAME の D1 の実際の id と名前が、STAGING_D1_ID と STAGING_D1_NAME に合わないもの
 # scripts/restore-rehearsal.test.sh が、断る場合を確かめる。
 #
 # 必須の環境変数
-#   STAGING_D1_ID       staging の D1 の id（UUID）
-#   STAGING_D1_NAME     staging の D1 の名前（nagi-staging で始まる）
+#   STAGING_D1_ID       予行用の D1 の id（UUID）
+#   STAGING_D1_NAME     予行用の D1 の名前（nagi-staging-restore で始まる）
 #   BACKUP_BUCKET       バックアップの R2 バケットの名前
 # 任意の環境変数
 #   BACKUP_DATE         読み込む日付（YYYY-MM-DD）。なければ、今日から 35 日前へさかのぼって、最初に見つかったもの
@@ -18,7 +20,7 @@
 #   WRANGLER_CONFIG     wrangler の設定ファイル（-c に渡す）。本番の D1 は、これと関係なく wrangler.jsonc から読む
 set -euo pipefail
 
-STAGING_PREFIX="nagi-staging"
+STAGING_PREFIX="nagi-staging-restore"
 RETENTION_DAYS=35
 
 die() {
@@ -26,13 +28,13 @@ die() {
   exit 1
 }
 
-# ---- 何かに触れる前の検査（本番と staging 以外の取り違えを、ここで止める） ----
+# ---- 何かに触れる前の検査（本番と、共用の staging の取り違えを、ここで止める） ----
 : "${STAGING_D1_ID:?STAGING_D1_ID is required}"
 : "${STAGING_D1_NAME:?STAGING_D1_NAME is required}"
 : "${BACKUP_BUCKET:?BACKUP_BUCKET is required}"
 
 [[ "$STAGING_D1_NAME" == "$STAGING_PREFIX"* ]] \
-  || die "refusing: '$STAGING_D1_NAME' is not a staging database (the name must start with '$STAGING_PREFIX')"
+  || die "refusing: '$STAGING_D1_NAME' is not a restore-rehearsal database (the name must start with '$STAGING_PREFIX')"
 shopt -s nocasematch
 [[ "$STAGING_D1_ID" =~ ^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$ ]] \
   || die "refusing: STAGING_D1_ID is not a UUID: $STAGING_D1_ID"

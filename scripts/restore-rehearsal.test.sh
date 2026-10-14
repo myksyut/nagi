@@ -9,6 +9,7 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 
 STAGING_ID="0b7f6f1e-2d4c-4c1a-9a51-5d6e7f809a1b"
+RESTORE_NAME="nagi-staging-restore-20261012"
 RECOVERED_ID="5e0c3a2b-8d71-4f6e-b9a4-1c2d3e4f5a6b"
 PROD_ID="$(node -e '
   const text = require("node:fs").readFileSync(process.argv[1], "utf8");
@@ -39,8 +40,8 @@ run() {
   : >"$work/calls"
   local status=0
   env PATH="$work/bin:$PATH" CALLS="$work/calls" BACKUP_BUCKET=nagi-backups BACKUP_DATE=2026-10-12 \
-    FAKE_INFO='{"uuid":"'"$STAGING_ID"'","name":"nagi-staging"}' \
-    STAGING_D1_ID="$STAGING_ID" STAGING_D1_NAME=nagi-staging "$@" \
+    FAKE_INFO='{"uuid":"'"$STAGING_ID"'","name":"'"$RESTORE_NAME"'"}' \
+    STAGING_D1_ID="$STAGING_ID" STAGING_D1_NAME="$RESTORE_NAME" "$@" \
     bash "$repo/scripts/restore-rehearsal.sh" >"$work/out" 2>&1 || status=$?
   local touched
   touched="$(grep -v '^exec wrangler d1 info ' "$work/calls" || true)"
@@ -72,21 +73,27 @@ run "restore target named in the runbook" "$recovered_config" refuse STAGING_D1_
 run "recovered production id under a staging name" "$recovered_config" refuse \
   STAGING_D1_ID="$RECOVERED_ID"
 run "production database named like staging" \
-  '{ "d1_databases": [{ "binding": "DB", "database_name": "nagi-staging", "database_id": "'"$RECOVERED_ID"'" }] }' \
+  '{ "d1_databases": [{ "binding": "DB", "database_name": "nagi-staging-restore-20261012", "database_id": "'"$RECOVERED_ID"'" }] }' \
   refuse
+run "shared staging database (nagi-staging)" "$prod_config" refuse STAGING_D1_NAME=nagi-staging \
+  FAKE_INFO='{"uuid":"'"$STAGING_ID"'","name":"nagi-staging"}'
+run "shared staging database, local" "$prod_config" refuse STAGING_D1_NAME=nagi-staging RESTORE_LOCAL=1
+run "staging prefix without the restore marker" "$prod_config" refuse STAGING_D1_NAME=nagi-staging-e2e
+run "restore marker without the hyphen" "$prod_config" refuse STAGING_D1_NAME=nagi-stagingrestore
+run "restore name as a suffix" "$prod_config" refuse STAGING_D1_NAME=old-nagi-staging-restore
 run "wrangler.jsonc missing" "" refuse
 run "wrangler.jsonc without d1_databases" '{ "name": "nagi" }' refuse
 run "binding name instead of a database name" "$prod_config" refuse STAGING_D1_NAME=DB
 run "not a UUID" "$prod_config" refuse STAGING_D1_ID=nagi-staging
 run "remote id differs from STAGING_D1_ID" "$prod_config" refuse \
-  FAKE_INFO='{"uuid":"'"$RECOVERED_ID"'","name":"nagi-staging"}'
+  FAKE_INFO='{"uuid":"'"$RECOVERED_ID"'","name":"'"$RESTORE_NAME"'"}'
 run "remote name differs (config maps the name to another database)" "$prod_config" refuse \
   FAKE_INFO='{"uuid":"'"$STAGING_ID"'","name":"nagi"}'
 run "remote resolves to the production database" "$prod_config" refuse \
   STAGING_D1_ID="$STAGING_ID" FAKE_INFO='{"uuid":"'"$PROD_ID"'","name":"nagi"}'
-run "staging database (remote)" "$prod_config" proceed
-run "staging database after recovery (remote)" "$recovered_config" proceed
-run "staging database (local)" "$prod_config" proceed RESTORE_LOCAL=1
+run "restore database (remote)" "$prod_config" proceed
+run "restore database after recovery (remote)" "$recovered_config" proceed
+run "restore database (local)" "$prod_config" proceed RESTORE_LOCAL=1
 
 if [[ $failures -gt 0 ]]; then
   echo "$failures case(s) failed" >&2
