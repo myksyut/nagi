@@ -7,6 +7,7 @@ import { requireSession } from "./auth/middleware";
 import { authRoutes } from "./auth/routes";
 import { sweepExpiredSessions } from "./auth/session";
 import { getDb } from "./db/client";
+import { runBackup } from "./ops/backup";
 import { limitByIp, limitByUser } from "./rate-limit";
 import { requireSameOriginJson } from "./request-guard";
 import { createSyncRoutes, type SyncRoutesOptions } from "./sync/routes";
@@ -65,13 +66,34 @@ export function createApp({ now = () => new Date() }: Partial<SyncRoutesOptions>
   return app;
 }
 
+/** wrangler.jsonc の triggers.crons と同じ文字列。どちらの cron かで仕事を分ける */
+const SWEEP_CRON = "17 19 * * *";
+const BACKUP_CRON = "37 19 * * *";
+
 /**
  * 既定の出力は fetch と scheduled を持つ。アプリ自体に scheduled を足すので、テストはそのまま
  * `.request()` でも呼べる
  */
 export default Object.assign(createApp(), {
-  /** cron（wrangler.jsonc の triggers.crons）で、期限切れのセッションを消す */
+  /**
+   * cron で、期限切れのセッションを消し（SWEEP_CRON）、D1 を R2 にバックアップする（BACKUP_CRON）。
+   * cron の指定がない手動の起動（`wrangler dev --test-scheduled`）は、両方走らせる。
+   * 失敗は返す Promise の拒否で伝え、Cloudflare のエラー率の通知に載せる
+   */
   scheduled(controller: ScheduledController, env: Cloudflare.Env, ctx: ExecutionContext) {
-    ctx.waitUntil(sweepExpiredSessions(getDb(env.DB), new Date(controller.scheduledTime)));
+    const now = new Date(controller.scheduledTime);
+    const jobs: Promise<unknown>[] = [];
+    if (controller.cron !== BACKUP_CRON) jobs.push(sweepExpiredSessions(getDb(env.DB), now));
+    if (controller.cron !== SWEEP_CRON) {
+      jobs.push(
+        runBackup(env, now).catch((error) => {
+          console.error("backup failed", error);
+          throw error;
+        }),
+      );
+    }
+    const done = Promise.all(jobs).then(() => undefined);
+    ctx.waitUntil(done);
+    return done;
   },
 }) satisfies ExportedHandler<Cloudflare.Env>;
