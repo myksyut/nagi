@@ -30,7 +30,7 @@ jobs:
     timeout-minutes: 15
     environment:
       name: production
-      url: https://nagi.wizard1026miya.workers.dev
+      url: https://api.usenagi.dev
     steps:
       - uses: actions/checkout@v7
         with:
@@ -75,7 +75,8 @@ jobs:
       - name: 本番の応答を確かめる
         if: steps.latest.outputs.deploy == 'true'
         run: |
-          base=https://nagi.wizard1026miya.workers.dev
+          # 更新していない nagi は workers.dev の URL を見続けるので、そちらも同じ Worker が応えることを確かめる
+          bases="https://api.usenagi.dev https://nagi.wizard1026miya.workers.dev"
           # expect <パス> <期待する状態コード> [curl に足す引数…]
           expect() {
             path=$1 want=$2
@@ -83,14 +84,16 @@ jobs:
             # 出した直後は、まだ前の版が応えることがあるので、少し待ってやり直す
             for _ in 1 2 3 4 5; do
               actual=$(curl -s -o /dev/null -w '%{http_code}' "$@" "$base$path")
-              echo "$path → $actual"
+              echo "$base$path → $actual"
               if [ "$actual" = "$want" ]; then return 0; fi
               sleep 3
             done
             return 1
           }
-          # ログインなしでは API に入れない
-          expect /api/session 401
-          # ログインの口（デバイスフロー）がある。本文の形が違うので 400 が返り、GitHub には問い合わせない。
-          # Origin を付けない POST（TUI と同じ呼び方）が通ることも、これで確かめられる
-          expect /auth/device/token 400 -X POST -H 'Content-Type: application/json' -d '{}'
+          for base in $bases; do
+            # ログインなしでは API に入れない
+            expect /api/session 401
+            # ログインの口（デバイスフロー）がある。本文の形が違うので 400 が返り、GitHub には問い合わせない。
+            # Origin を付けない POST（TUI と同じ呼び方）が通ることも、これで確かめられる
+            expect /auth/device/token 400 -X POST -H 'Content-Type: application/json' -d '{}'
+          done

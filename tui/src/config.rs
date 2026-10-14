@@ -8,8 +8,11 @@ use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
-/// 本番の Worker
-pub const DEFAULT_SERVER: &str = "https://nagi.wizard1026miya.workers.dev";
+/// 本番の Worker（独自ドメイン）
+pub const DEFAULT_SERVER: &str = "https://api.usenagi.dev";
+
+/// 独自ドメインに移る前の本番の Worker。いまも動いていて、更新していない nagi がここを見る
+const LEGACY_DEFAULT_SERVER: &str = "https://nagi.wizard1026miya.workers.dev";
 
 const PREFS_FILE: &str = "prefs.json";
 
@@ -85,11 +88,21 @@ fn slug(server: &str) -> String {
 impl Config {
     /// server は `--server`、なければ環境変数 NAGI_SERVER、なければ本番
     pub fn new(server: Option<String>) -> Result<Config, String> {
-        let explicit =
-            server.or_else(|| std::env::var("NAGI_SERVER").ok().filter(|s| !s.is_empty()));
+        Self::from_env(server, |name| std::env::var_os(name))
+    }
+
+    fn from_env(
+        server: Option<String>,
+        env: impl Fn(&str) -> Option<OsString>,
+    ) -> Result<Config, String> {
+        let explicit = server.or_else(|| {
+            env("NAGI_SERVER")
+                .and_then(|s| s.into_string().ok())
+                .filter(|s| !s.is_empty())
+        });
         let explicit_server = explicit.is_some();
         let server = explicit.unwrap_or_else(|| DEFAULT_SERVER.to_string());
-        let dirs = resolve_dirs(|name| std::env::var_os(name))?;
+        let dirs = resolve_dirs(env)?;
         Ok(Config {
             server: server.trim_end_matches('/').to_string(),
             explicit_server,
@@ -156,19 +169,23 @@ impl Config {
         if self.shared_db_owner().as_deref() == Some(user_id) {
             return shared;
         }
-        self.data_dir
-            .join(format!("{}--{}.db", slug(&self.server), slug(user_id)))
+        self.data_dir.join(format!(
+            "{}--{}.db",
+            slug(self.storage_key()),
+            slug(user_id)
+        ))
     }
 
     /// Worker ごとに 1 つの控え（利用者を分ける前の置き場）
     fn shared_db_path(&self) -> PathBuf {
-        self.data_dir.join(format!("{}.db", slug(&self.server)))
+        self.data_dir
+            .join(format!("{}.db", slug(self.storage_key())))
     }
 
     /// Worker ごとに 1 つの控えが、だれのものかの印（控えの隣に置く）
     fn shared_db_owner_path(&self) -> PathBuf {
         self.data_dir
-            .join(format!("{}.db.owner", slug(&self.server)))
+            .join(format!("{}.db.owner", slug(self.storage_key())))
     }
 
     fn shared_db_owner(&self) -> Option<String> {
@@ -216,7 +233,7 @@ impl Config {
 
     fn session_path(&self) -> PathBuf {
         self.config_dir
-            .join(format!("session-{}.json", slug(&self.server)))
+            .join(format!("session-{}.json", slug(self.storage_key())))
     }
 
     fn prefs_path(&self) -> PathBuf {
@@ -284,7 +301,19 @@ impl Config {
 
     /// `Prefs::import_offered` に入れる、この Worker とこの利用者の印
     pub fn import_offer_key(&self, user_id: Option<&str>) -> String {
-        format!("{}|{}", self.server, user_id.unwrap_or_default())
+        format!("{}|{}", self.storage_key(), user_id.unwrap_or_default())
+    }
+
+    /// セッション・控えのファイル名と、覚え書きの印に使う接続先。本番は、新旧どちらの URL でも古い URL のまま。
+    /// 新旧の URL は同じ Worker と D1 なので、同じトークンと控えがどちらでも使える。新しい名前に動かすと、
+    /// 開いたままの古い nagi が使っている SQLite のファイルを壊しかねないので、名前を変えず、新旧の nagi で同じファイルを使う
+    fn storage_key(&self) -> &str {
+        let host = slug(&self.server.to_ascii_lowercase());
+        if host == slug(DEFAULT_SERVER) || host == slug(LEGACY_DEFAULT_SERVER) {
+            LEGACY_DEFAULT_SERVER
+        } else {
+            &self.server
+        }
     }
 }
 
@@ -608,6 +637,122 @@ mod tests {
                 .contains(&config.import_offer_key(Some("u2")))
         );
         assert!(read_back.sidebar_rail);
+    }
+
+    /// HOME だけがある端末で、Config::new と同じ決め方で作り、置き場も作る
+    fn home_config(root: &Path, server: Option<&str>, nagi_server: Option<&str>) -> Config {
+        let home = root.to_str().unwrap();
+        let mut env = vec![("HOME", home)];
+        if let Some(value) = nagi_server {
+            env.push(("NAGI_SERVER", value));
+        }
+        let config = Config::from_env(server.map(str::to_string), env_of(&env)).unwrap();
+        config.prepare_dirs().unwrap();
+        config
+    }
+
+    fn legacy_session(root: &Path) -> PathBuf {
+        root.join(".config/nagi/session-nagi.wizard1026miya.workers.dev.json")
+    }
+
+    #[test]
+    fn 本番は_新旧どちらのurlでも_古い版と同じ名前のセッションと控えと印を使う() {
+        let root = temp_dir("storage-default");
+        let default = home_config(&root, None, None);
+        assert_eq!(default.server, DEFAULT_SERVER);
+        assert_eq!(default.session_path(), legacy_session(&root));
+        assert_eq!(
+            file_name(&default.db_path(None)),
+            "nagi.wizard1026miya.workers.dev.db"
+        );
+        assert_eq!(
+            file_name(&default.db_path(Some("user-1"))),
+            "nagi.wizard1026miya.workers.dev--user-1.db"
+        );
+        assert_eq!(
+            default.import_offer_key(Some("user-1")),
+            "https://nagi.wizard1026miya.workers.dev|user-1"
+        );
+        fs::write(default.db_path(None), b"replica").unwrap();
+        default.adopt_shared_db("owner");
+
+        for named in [
+            home_config(&root, Some(DEFAULT_SERVER), None),
+            home_config(&root, Some(LEGACY_DEFAULT_SERVER), None),
+            home_config(&root, None, Some("https://api.usenagi.dev/")),
+            home_config(&root, None, Some(LEGACY_DEFAULT_SERVER)),
+            home_config(&root, Some("http://api.usenagi.dev"), None),
+            home_config(&root, Some("https://API.USENAGI.DEV"), None),
+            home_config(&root, None, Some("HTTP://Nagi.Wizard1026miya.Workers.Dev")),
+        ] {
+            assert_eq!(named.session_path(), default.session_path());
+            assert_eq!(named.db_path(None), default.db_path(None));
+            assert_eq!(named.db_path(Some("owner")), default.db_path(None));
+            assert_eq!(
+                named.db_path(Some("user-1")),
+                default.db_path(Some("user-1"))
+            );
+            assert_eq!(
+                named.import_offer_key(Some("user-1")),
+                default.import_offer_key(Some("user-1"))
+            );
+        }
+    }
+
+    #[test]
+    fn ほかのworkerは_そのworkerの名前を使う() {
+        let root = temp_dir("storage-other");
+        let config = home_config(&root, Some("http://localhost:5317"), None);
+        assert_eq!(
+            file_name(&config.session_path()),
+            "session-localhost_5317.json"
+        );
+        assert_eq!(file_name(&config.db_path(None)), "localhost_5317.db");
+        assert_eq!(
+            file_name(&config.db_path(Some("u"))),
+            "localhost_5317--u.db"
+        );
+        assert_eq!(
+            config.import_offer_key(Some("u")),
+            "http://localhost:5317|u"
+        );
+    }
+
+    #[test]
+    fn 古い版が保存したログインを_既定の接続先でそのまま使う() {
+        let root = temp_dir("storage-legacy");
+        let config = home_config(&root, None, None);
+        let saved = r#"{"token":"old-token","user_id":"user-1"}"#;
+        write_private(&legacy_session(&root), saved).unwrap();
+
+        assert_eq!(
+            config.saved_session(),
+            Some(Session {
+                token: "old-token".to_string(),
+                user_id: Some("user-1".to_string()),
+                time_zone: None,
+            })
+        );
+        assert_eq!(fs::read_to_string(legacy_session(&root)).unwrap(), saved);
+    }
+
+    #[test]
+    fn ログアウトのあと_既定の接続先にログインは戻らない() {
+        let root = temp_dir("storage-logout");
+        let config = home_config(&root, None, None);
+        write_private(
+            &legacy_session(&root),
+            r#"{"token":"old-token","user_id":"user-1"}"#,
+        )
+        .unwrap();
+
+        config.clear_token();
+
+        assert_eq!(home_config(&root, None, None).saved_session(), None);
+        assert_eq!(
+            home_config(&root, Some(LEGACY_DEFAULT_SERVER), None).saved_session(),
+            None
+        );
     }
 
     #[cfg(unix)]

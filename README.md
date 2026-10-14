@@ -144,7 +144,7 @@ GitHub とやり取りするのは Worker だけで、GitHub のアクセスト�
 
 ```sh
 nagi                                   # ログインしていなければ、この端末のデータ（ローカル）。していれば、本番と同期する
-nagi login                             # ログインして、本番（https://nagi.wizard1026miya.workers.dev）と同期する
+nagi login                             # ログインして、本番（https://api.usenagi.dev）と同期する
 nagi --server http://localhost:5317    # 手元の Worker（pnpm dev）につなぐ。環境変数 NAGI_SERVER でも渡せる
 ```
 
@@ -159,6 +159,7 @@ nagi --server http://localhost:5317    # 手元の Worker（pnpm dev）につな
 - `nagi login` か、画面の Ctrl+K の「ログイン（クラウドと同期する）」でログインする。Enter を押すと URL（<https://github.com/login/device>）とコードが出るので、手元のブラウザで開いてコードを打ち込み、承認する。承認されると自動で一覧に移る。Worker を名指しして起動したときは、ログインしていなければ、最初にログインの画面が出る
 - ログインのトークンと、その持ち主（利用者の ID）は `~/.config/nagi/session-<接続先>.json`（自分だけが読める）に置く。期限は 1 年で、使うたびに延びる。Ctrl+K の「ログアウト」（`nagi logout`）で、Worker のセッション・手元のトークン・手元の控えを消し、この端末のデータに戻る。控えに送っていない変更があるときは、画面では一度目は消える件数を知らせるだけで、もう一度選ぶとログアウトする。`nagi logout` は何も消さずに失敗し、`nagi logout --discard-unsent` で消してログアウトする
 - アカウントを消す：Ctrl+K の「アカウントを削除」（クラウドのときだけ出る）か `nagi account delete`。タスクとプロジェクトの件数と、先に `nagi export` で書き出せることを見せ、`delete` と打つまで消さない（`--yes` は聞かない）。Worker は、その利用者のタスク・プロジェクト・反映済みの操作・通し番号・セッション・利用者の行を、まとめて消す。ほかの端末のセッションも切れる。消えたデータは戻せない。Worker が消せたあとで、手元の控えと、消したアカウントのログインを消す（`NAGI_TOKEN` で別の利用者を消したときは、保存してあるログインは残す）。画面は、Worker の返事を待つあいだは同期せず、ログインが切れてもログインの画面に移らない。この端末のデータ（`local.db`）には触れない。API は `DELETE /api/account`（本文 `{"confirm":"<利用者の ID>"}`。違えば 400 で何も消さない。成功は 204）
+- 接続先は、名指ししなければ `https://api.usenagi.dev`。独自ドメインに移る前の版は `https://nagi.wizard1026miya.workers.dev`（同じ Worker と D1。止めない）を見ていた。どちらの URL でも（名指ししても）、ログインのファイル・控え・`prefs.json` の「この端末のデータをクラウドへ移しますか」を聞いた印は、古い URL の名前（`session-nagi.wizard1026miya.workers.dev.json`、`nagi.wizard1026miya.workers.dev.db`・`.db.owner`・`nagi.wizard1026miya.workers.dev--<利用者の ID>.db`）のまま使う。同じ Worker なので同じトークンと控えがどちらでも使え、更新した nagi と更新していない nagi が同じファイルを使う（開いたままの古い nagi が使っている SQLite のファイルを動かすと壊しかねないので、名前を変えない）。ログアウトで消すのはこのログインのファイルなので、消せば戻らない
 - 手元の Worker（`localhost`）は `AUTH_DISABLED` でログインなしで使える
 - データの控えは `~/.local/share/nagi/<接続先>--<利用者の ID>.db`（SQLite。利用者ごと）。利用者を分ける前（0.1.10 まで）に作った控え `<接続先>.db` は、そのまま、そのときの利用者のものとして使い続ける（隣の `<接続先>.db.owner` に持ち主を書く）。手元の開発サーバーなど、利用者が分からないときも `<接続先>.db`。起動するとまず控えを読んで描き、そのあと差分を取る。記録は `~/.local/share/nagi/nagi.log`、画面の覚え書き（リスト｜ボード・並び方）は `~/.config/nagi/prefs.json`（置き場は `XDG_CONFIG_HOME`・`XDG_DATA_HOME` で変えられる。どちらも決まらず `HOME` もない環境では、今いるフォルダに作らずに、理由を出して 1 で終わる。置き場は `nagi --help` の最後に、今の環境で解いたパスで出る）
 - 置き場の権限：unix では、`nagi` のフォルダ（設定とデータ）を 0700、`local.db`・`nagi.log`・`prefs.json`・ログインのファイルを 0600 で作る（もとからあるフォルダとファイルの権限は変えない）
@@ -290,7 +291,7 @@ cargo fmt --check
 ## 事前準備（本番に出すまでに1回だけ）
 
 1. GitHub に `myksyut/nagi` を作る（済み。公開のリポジトリ）
-2. Cloudflare の workers.dev のサブドメインを確かめる（済み）。サブドメインは `wizard1026miya` で、Worker の URL は `https://nagi.wizard1026miya.workers.dev` になる。プランは、まず無料のまま出す。1回の処理の CPU 時間（10ms）などの制限に当たったら（ダッシュボードやログに「exceeded CPU」のエラーが出る、同期が失敗するなど）、Workers Paid（月 $5）に切り替える
+2. Cloudflare の workers.dev のサブドメインを確かめる（済み）。サブドメインは `wizard1026miya` で、Worker の URL は `https://nagi.wizard1026miya.workers.dev` になる。本番の URL は独自ドメインの `https://api.usenagi.dev`（Cloudflare のダッシュボードで Worker `nagi` の Custom Domain に足す。`wrangler.jsonc` の `routes` が、デプロイのたびに同じ設定を保つ）。workers.dev の URL も止めない（`"workers_dev": true`）。ドメインに移る前の版の nagi は、この URL を見続けるため。プランは、まず無料のまま出す。1回の処理の CPU 時間（10ms）などの制限に当たったら（ダッシュボードやログに「exceeded CPU」のエラーが出る、同期が失敗するなど）、Workers Paid（月 $5）に切り替える
 3. M7 の wrangler を Cloudflare に接続する（済み）。M7 には画面がないので、デバイスコードでログインする。権限は nagi のデプロイに要るものだけに絞る
 
    ```sh
@@ -308,8 +309,8 @@ cargo fmt --check
    差し替えたあとは、手元の D1 も別のものになるので、`pnpm db:migrate:local` をもう一度実行する
 
 5. GitHub の OAuth App を登録する（GitHub の Settings → Developer settings → OAuth Apps の「nagi」。登録は済み）
-   - Homepage URL：`https://nagi.wizard1026miya.workers.dev`
-   - Authorization callback URL：`https://nagi.wizard1026miya.workers.dev/auth/callback`（デバイスフローでは使わないが、必須の欄なのでそのまま残す）
+   - Homepage URL：`https://usenagi.dev`
+   - Authorization callback URL：`https://api.usenagi.dev/auth/callback`（デバイスフローでは使わないが、必須の欄なのでそのまま残す）
    - **「Enable Device Flow」にチェックを入れて「Update application」を押す**。TUI のログインに要る。入れていないと、`/auth/device/start` が 502 `{"error":"github"}` を返し、Worker のログに `device_flow_disabled` が残る
    - Client secret は不要になった（デバイスフローでは使わない。Worker にも渡さない）
 6. Worker の設定値を入れる（どれも `wrangler.jsonc` の `vars` に書いてある。シークレットはない）
@@ -394,7 +395,7 @@ uv run --python '>=3.13' --with pytest --with pyte --with pillow pytest scripts/
 
 ## デプロイ
 
-**Worker**：main にマージすると、GitHub Actions が本番に出す（`.github/workflows/deploy.yml`）。main の CI（Worker と TUI の両方の job）が通ったあとに動き、マイグレーションの前に D1 の Time Travel のブックマークをログに残し、`pnpm release` を実行して、本番の応答（`/api/session` が 401、形の違う本文の `POST /auth/device/token` が 400）を確かめる。Actions の「deploy」を手で動かしても、main をそのまま出し直せる。
+**Worker**：main にマージすると、GitHub Actions が本番に出す（`.github/workflows/deploy.yml`）。main の CI（Worker と TUI の両方の job）が通ったあとに動き、マイグレーションの前に D1 の Time Travel のブックマークをログに残し、`pnpm release` を実行して、本番の応答（`/api/session` が 401、形の違う本文の `POST /auth/device/token` が 400）を確かめる。確かめるのは、本番の URL `https://api.usenagi.dev` と、更新していない nagi が見続ける古い URL `https://nagi.wizard1026miya.workers.dev` の両方（同じ Worker が応える）。Actions の「deploy」を手で動かしても、main をそのまま出し直せる。
 
 使うもの：secret の `CLOUDFLARE_API_TOKEN` と、変数の `CLOUDFLARE_ACCOUNT_ID`。トークンの権限は、Workers Scripts の Edit と D1 の Edit だけ（独自ドメインを Worker に付けたあとは Workers Routes の Edit も）で、リソースは `nagi` の Worker と `nagi` の D1 に絞る。トークンは環境 `production` の secret で、環境は main ブランチからしか使えない（トークンの権限とは別の守り）。出すのは main の最新のコミットだけ（古い CI をやり直しても、古い版で上書きしない）。
 
