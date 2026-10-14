@@ -66,10 +66,7 @@ fn main() -> ExitCode {
         }
         // 書き出すデータがなければ何も作らないので、フォルダも記録も用意しない
         Command::Export(args) => match Config::new(invocation.server) {
-            Ok(config) => {
-                config.migrate_legacy_files();
-                cli::run(&config, Command::Export(args))
-            }
+            Ok(config) => cli::run(&config, Command::Export(args)),
             Err(message) => fail(&message),
         },
         command => match prepared_config(invocation.server) {
@@ -110,6 +107,5 @@ fn prepared_config(server: Option<String>) -> Result<Config, ExitCode> {
         None => log::init(&config.log_path()),
         Some(reason) => eprintln!("{}", fill(Msg::ContinueWithoutLocalCopy, &[&reason])),
     }
-    config.migrate_legacy_files();
     Ok(config)
 }

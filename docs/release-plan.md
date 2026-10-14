@@ -873,7 +873,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 
 **Files.**
 - [ ] `wrangler.jsonc` に `routes`（`api.usenagi.dev` の custom domain）と `"workers_dev": true` を足す。
-- [ ] `tui/src/config.rs` の `DEFAULT_SERVER` を `https://api.usenagi.dev` に変える。`LEGACY_DEFAULT_SERVER` と `Config::migrate_legacy_files` を足し、`mod tests` にテストを足す。
+- [ ] `tui/src/config.rs` の `DEFAULT_SERVER` を `https://api.usenagi.dev` に変える。`LEGACY_DEFAULT_SERVER` と、ファイル名と覚え書きの印に使う接続先を決める `Config::storage_key` を足し、`mod tests` にテストを足す。
 - [ ] `.github/workflows/deploy.yml` の `environment.url` と「本番の応答を確かめる」の `base` を新しい URL にし、古い URL にも同じ確かめを回す。
 - [ ] `README.md` の `## 事前準備` の 2 と 5、`### ログインと同期`、`## デプロイ` の URL を直し、古い URL を残す理由を書く。
 
@@ -883,11 +883,10 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] 運用者が GitHub の OAuth App「nagi」の Homepage URL を `https://usenagi.dev` に変える。デバイスフローは callback を使わないので、ログインの流れは変わらない。
 - [ ] `wrangler.jsonc` に `"routes": [{ "pattern": "api.usenagi.dev", "custom_domain": true }]` を書き、`"workers_dev": true` を明示する。更新していない nagi は `https://nagi.wizard1026miya.workers.dev` を見続けるので、この URL は止めない。
 - [ ] `pnpm exec wrangler deploy --dry-run` の出力に、custom domain と workers.dev の両方が出ることを確かめる。
-- [ ] `Config::new` は、`--server` も `NAGI_SERVER` もないときだけ `migrate_legacy_files` を呼ぶ。`slug(LEGACY_DEFAULT_SERVER)` のファイルがあり、`slug(DEFAULT_SERVER)` の同じ種類のファイルがないときだけ動く。
-- [ ] 移すのは `session-nagi.wizard1026miya.workers.dev.json`、`nagi.wizard1026miya.workers.dev.db` と `.db.owner`、`nagi.wizard1026miya.workers.dev--<user>.db`。`.db` は `-wal` と `-shm` も一緒に移す。
-- [ ] 移し方は `fs::rename` にする。写すと、ログアウトで新しい方を消したあとに、古い方から黙ってログインし直してしまう。開いたままの古い nagi はトークンをメモリに持っているので、名前が変わっても動き続ける。
-- [ ] 控えの `.db` は、移す前に rusqlite で開いて `PRAGMA wal_checkpoint(TRUNCATE)` をかける。移せないときは移さずに `log::error` に残す。控えはカーソル 0 から取り直せるので、失敗してもデータは失われない。
-- [ ] セッションのファイルは `fs::rename` で移るので、`write_private` が付けた 0600 の権限のまま残る。
+- [ ] リクエストは、`--server` も `NAGI_SERVER` もなければ `DEFAULT_SERVER`（`https://api.usenagi.dev`）に送る。`nagi --help` もこの URL を出す。
+- [ ] ファイル名と覚え書きの印は、リクエストの URL ではなく `Config::storage_key` で決める。本番（名指しなし、または `--server`・`NAGI_SERVER` が新旧どちらかの本番の URL）は `LEGACY_DEFAULT_SERVER` を返し、ほかの接続先はその URL を返す。`session-<slug>.json`、`<slug>.db` と `.db.owner`、`<slug>--<user>.db`、`import_offer_key` の `<URL>|<user>` がこれを使うので、本番は新旧どちらの URL でも `nagi.wizard1026miya.workers.dev` の名前のファイルと印を使う。
+- [ ] ファイルは動かさない。新旧の URL は同じ Worker と D1 なので、同じトークンと控えがどちらでも使える。開いたままの古い nagi が使っている SQLite のファイルを rename すると、書き込みを壊したり、送っていない操作（R15）を置き去りにしたりしかねない。名前を変えなければ、新旧の nagi は、これまでの版の更新と同じように同じファイルを使う。
+- [ ] ログアウトは、その一つのセッションのファイルを消す。別の名前のセッションが残らないので、消したログインは戻らない。新しく入れた人も、古い URL の名前で書く。
 - [ ] `deploy.yml` の確かめは、新しい URL と古い URL の両方に `expect /api/session 401` と `expect /auth/device/token 400` を回す。
 
 **You see.**
@@ -896,11 +895,10 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] 更新していない nagi は、今までどおり同期する。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
-- [ ] `tui/src/config.rs` のテスト。古い slug のセッションと控えだけがある置き場で `migrate_legacy_files` を呼ぶと、`saved_session()` が同じトークンと `user_id` を返し、`db_path(Some(user))` が移した控えを指す。
-- [ ] 新しい slug のファイルがすでにあれば、どちらのファイルも書き換えない。
-- [ ] `--server` か `NAGI_SERVER` で名指ししたときは、何も移さない。
-- [ ] `.db.owner` の印も移り、`db_path(Some(owner))` が移した共有の控えを指す。
-- [ ] `clear_token` と `remove_db` のあとに、もう一度 `Config::new(None)` を呼んでもセッションが戻らない。
+- [ ] `tui/src/config.rs` のテスト。名指しなし、`--server` と `NAGI_SERVER` に `https://api.usenagi.dev` と `https://nagi.wizard1026miya.workers.dev` を入れたもので、`session_path`、`db_path(None)`、`db_path(Some(user))`、`.db.owner` の印を付けた `db_path(Some(owner))`、`import_offer_key` が同じで、`nagi.wizard1026miya.workers.dev` の名前を指す。名指しなしの `server` は `https://api.usenagi.dev`。
+- [ ] ほかの接続先（`http://localhost:5317`）は、その接続先の slug の名前を使う。
+- [ ] 古い版が書いた `session-nagi.wizard1026miya.workers.dev.json` を、名指しなしの `saved_session()` がそのまま（同じトークンと `user_id`）読み、ファイルは書き換わらない。
+- [ ] `clear_token` のあとに、もう一度 `Config::new(None)` を呼んでもセッションが戻らない（古い URL を名指ししても戻らない）。
 - [ ] `cd tui && cargo test`、`cargo clippy --all-targets -- -D warnings`、`pnpm check`、`pnpm test` が通る。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `fast mechanical model (setup default)` at the PR head, per the boot recipe.
@@ -908,21 +906,21 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 運用者は Build のあと、trunk の nagi で `nagi login` を一度行い、その HOME を `/tmp/swarm-R12/seed-home` に残す。各 lane は、この HOME を `scripts/tui-shot.py` の一時 HOME に写してから動かす。画面は 120 x 36 で撮る。
 
 - [ ] Lane 1. Regression lane against trunk. 種の HOME で trunk の nagi と head の nagi を順に開き、今日の一覧を撮る。Save `r12-lane1-today.png`. Pass when 両方ともログインの画面を出さず、今日のタスクの件数と並びが同じ.
-- [ ] Lane 2. 移したあとの置き場。head で開いて `q` で閉じ、`scripts/tui-shot.py --cmd 'ls -l ~/.config/nagi ~/.local/share/nagi'` で撮る。Save `r12-lane2-files.png`. Pass when `session-api.usenagi.dev.json` が `-rw-------` で、古い slug の控えが新しい slug の名前で残り、古い slug のファイルが一つもない.
-- [ ] Lane 3. 控えを使い直すこと。lane 2 のあと、ネットのない名前空間（`unshare -rn`）で head を開く。Save `r12-lane3-offline.png`. Pass when 移した控えからタスクが出て、下の欄がオフラインを示す.
+- [ ] Lane 2. 同じファイルを使い直したあとの置き場。head で開いて `q` で閉じ、`scripts/tui-shot.py --cmd 'ls -l ~/.config/nagi ~/.local/share/nagi'` で撮る。Save `r12-lane2-files.png`. Pass when 二つのフォルダのファイル名が種の HOME とちょうど同じで（古い slug の名前のセッションと控え。`api.usenagi.dev` の名前の新しいファイルは一つもない）、セッションのファイルが `-rw-------`.
+- [ ] Lane 3. 控えを使い直すこと。lane 2 のあと、ネットのない名前空間（`unshare -rn`）で head を開く。Save `r12-lane3-offline.png`. Pass when 同じ控えからタスクが出て、下の欄がオフラインを示す.
 - [ ] Lane 4. 新しく入れた人。空の HOME で head の `nagi login` を動かす。Save `r12-lane4-login.png`. Pass when `https://github.com/login/device` とコードが出て（`api.usenagi.dev/auth/device/start` が応えた印）、承認前にはセッションのファイルが作られない.
 - [ ] Lane 5. 古い URL の名指し。種の HOME で `NAGI_SERVER=https://nagi.wizard1026miya.workers.dev` を付けて head を開く。Save `r12-lane5-legacy-explicit.png`. Pass when 古い slug のセッションでそのまま一覧が出て、新しい slug のファイルが作られない.
 - [ ] Lane 6. 二つの URL が同じ Worker であること。`NAGI_TOKEN` に lane 2 のセッションのトークンを入れ、`scripts/tui-shot.py --cmd` で `nagi list today --json` を名指しなしと `--server https://nagi.wizard1026miya.workers.dev` で続けて動かす。Save `r12-lane6-both-hosts.png`. Pass when 二つの JSON が同じ.
 - [ ] Lane 7. ログアウト。lane 2 のあとの HOME で head を開き、Ctrl+K から「ログアウト」を選び、閉じてもう一度開く。Save `r12-lane7-logout.png`. Pass when 新旧どちらの slug のセッションも控えも残らず、二度目はこの端末のデータの一覧が出る.
-- [ ] Lane 8. 新旧の両方があるとき。lane 2 のあとの HOME に、種の HOME の古い slug のファイルをもう一度写して head を開く。Save `r12-lane8-both-slugs.png`. Pass when head は新しい slug のセッションを使い、古い slug のファイルの `sha256sum` が開く前と同じ.
+- [ ] Lane 8. 紛れ込んだ新しい slug のセッション。種の HOME に、前の head のビルドが書いたような `session-api.usenagi.dev.json` を足して head を開く。Save `r12-lane8-both-slugs.png`. Pass when head はこのファイルを使わず、古い slug の名前のセッションを使い、ログインの画面を出さずにタスクが出る.
 - [ ] Lane 9. 本番の確かめ。`deploy.yml` の「本番の応答を確かめる」の中身を `base` を新旧それぞれにして、`scripts/tui-shot.py --cmd 'bash smoke.sh'` で動かす。Save `r12-lane9-smoke.png`. Pass when 四つの確かめが順に 401、400、401、400.
-- [ ] Lane 10. CLI が先に動くとき。種の HOME で、画面を開く前に head の `nagi add "R12 lane"` を動かし、そのあと画面を開く。Save `r12-lane10-cli-first.png`. Pass when `nagi add` が 0 で終わり、そのときに移す処理が動いていて、画面の一覧に `R12 lane` が出る.
+- [ ] Lane 10. CLI が先に動くとき。種の HOME で、画面を開く前に head の `nagi add "R12 lane"` を動かし、そのあと画面を開く。Save `r12-lane10-cli-first.png`. Pass when `nagi add` が 0 で終わり、そのときに同じファイルを使い直していて、画面の一覧に `R12 lane` が出る.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 - [ ] Metric. 更新した人の最初の起動で、種のタスク名が画面に出るまでの時間。
 - [ ] Probe. `scripts/tui-shot.py` で 50 ms ごとに画面を起こし、種の HOME を毎回写し直して 10 回起動し、中央値を取る。
 - [ ] Baseline. trunk の nagi で同じ 10 回。trunk は古い slug の控えをそのまま読む。
-- [ ] Rule. head の中央値が、trunk の中央値と 100 ms の和以下。超えたら、控えを移せずにカーソル 0 から取り直している。
+- [ ] Rule. head の中央値が、trunk の中央値と 100 ms の和以下。超えたら、同じ控えを使い直せずにカーソル 0 から取り直している。
 
 **Review gate.** None.
 
