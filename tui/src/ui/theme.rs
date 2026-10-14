@@ -4,6 +4,15 @@
 use crate::i18n::{Msg, t};
 use ratatui::style::{Color, Modifier, Style};
 
+/// ブランドの色。ロゴ（`render/logo.rs`）と `assets/*.svg` は、ここと同じ 16 進を使う。色の値を書く場所はここだけ
+pub const BRAND_SUN_TOP: Color = Color::Rgb(0xFD, 0xE6, 0x8A);
+pub const BRAND_SUN_BOTTOM: Color = Color::Rgb(0xF5, 0xB9, 0x71);
+pub const BRAND_HORIZON: Color = Color::Rgb(0x93, 0xC5, 0xFD);
+pub const BRAND_WATER_TOP: Color = Color::Rgb(0x60, 0xA5, 0xFA);
+pub const BRAND_WATER_BOTTOM: Color = Color::Rgb(0x3B, 0x4C, 0xCA);
+/// ロゴを置く暗い地。端末の本当の背景色は読み取れず、ほかの配色も暗い端末を前提にしているため、暗い背景だと決めている
+pub const BRAND_GROUND: Color = Color::Rgb(0x0D, 0x11, 0x17);
+
 /// 選択の青
 pub const ACCENT: Color = Color::Rgb(96, 165, 250);
 /// 小さい補助の文字
@@ -66,5 +75,142 @@ pub fn project_color_label(name: &str) -> &'static str {
         "orange" => t(Msg::ColorOrange),
         "teal" => t(Msg::ColorTeal),
         _ => t(Msg::ColorGray),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const SVGS: [(&str, &str); 3] = [
+        (
+            "logo-dark.svg",
+            include_str!("../../../assets/logo-dark.svg"),
+        ),
+        (
+            "logo-light.svg",
+            include_str!("../../../assets/logo-light.svg"),
+        ),
+        ("icon.svg", include_str!("../../../assets/icon.svg")),
+    ];
+    /// 字の線の色。ブランドの色ではなく、地に合わせて SVG ごとに違う
+    const STROKES: [&str; 2] = ["#EEF0F5", "#16203A"];
+
+    fn rgb(color: Color) -> [u8; 3] {
+        match color {
+            Color::Rgb(r, g, b) => [r, g, b],
+            other => panic!("RGB ではない色: {other:?}"),
+        }
+    }
+
+    fn hex(color: Color) -> String {
+        let [r, g, b] = rgb(color);
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
+
+    fn hexes(svg: &str) -> Vec<String> {
+        svg.match_indices('#')
+            .filter_map(|(i, _)| svg.get(i..i + 7))
+            .filter(|h| h[1..].chars().all(|c| c.is_ascii_hexdigit()))
+            .map(str::to_uppercase)
+            .collect()
+    }
+
+    fn linear(c: u8) -> f64 {
+        let c = f64::from(c) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn luminance(color: Color) -> f64 {
+        let [r, g, b] = rgb(color);
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    }
+
+    fn contrast(a: Color, b: Color) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    fn lab(color: Color) -> [f64; 3] {
+        let [r, g, b] = rgb(color);
+        let (r, g, b) = (linear(r), linear(g), linear(b));
+        let x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
+        let y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b;
+        let z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883;
+        let f = |t: f64| {
+            if t > 216.0 / 24389.0 {
+                t.cbrt()
+            } else {
+                (24389.0 / 27.0 * t + 16.0) / 116.0
+            }
+        };
+        let (fx, fy, fz) = (f(x), f(y), f(z));
+        [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+    }
+
+    /// CIE76 の色差
+    fn distance(a: Color, b: Color) -> f64 {
+        let (a, b) = (lab(a), lab(b));
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn brand_colors_match_svgs() {
+        let gradient = [
+            BRAND_SUN_TOP,
+            BRAND_SUN_BOTTOM,
+            BRAND_HORIZON,
+            BRAND_WATER_TOP,
+            BRAND_WATER_BOTTOM,
+        ]
+        .map(hex);
+        for (name, svg) in SVGS {
+            let found = hexes(svg);
+            for want in &gradient {
+                assert!(found.contains(want), "{name} に {want} がない");
+            }
+            // アイコンの地だけが BRAND_GROUND と同じ色を使う
+            let ground = hex(BRAND_GROUND);
+            assert_eq!(found.contains(&ground), name == "icon.svg", "{name}");
+            for h in &found {
+                let known = gradient.contains(h) || *h == ground || STROKES.contains(&h.as_str());
+                assert!(known, "{name} にブランドにない色 {h} がある");
+            }
+        }
+    }
+
+    #[test]
+    fn semantic_colors_stay_apart() {
+        let colors = [
+            ("ACCENT", ACCENT),
+            ("ATTENTION", ATTENTION),
+            ("DANGER", DANGER),
+        ];
+        for (i, (a_name, a)) in colors.iter().enumerate() {
+            for (b_name, b) in &colors[i + 1..] {
+                let d = distance(*a, *b);
+                assert!(d >= 25.0, "{a_name} と {b_name} の色差が {d:.1}");
+            }
+        }
+    }
+
+    #[test]
+    fn text_contrast_on_grounds() {
+        for (ground_name, ground) in [("SURFACE", SURFACE), ("BRAND_GROUND", BRAND_GROUND)] {
+            for (name, color, min) in [
+                ("ACCENT", ACCENT, 4.5),
+                ("MUTED", MUTED, 4.5),
+                ("ATTENTION", ATTENTION, 4.5),
+                ("DANGER", DANGER, 4.5),
+                ("FAINT", FAINT, 3.0),
+            ] {
+                let ratio = contrast(color, ground);
+                assert!(ratio >= min, "{name} on {ground_name}: {ratio:.2} < {min}");
+            }
+        }
     }
 }

@@ -5,19 +5,13 @@ use std::time::Duration;
 use ratatui::style::{Color, Style};
 use ratatui::text::{Line, Span};
 
+use crate::ui::theme;
+
 pub const LOGO_WIDTH: u16 = 24;
 pub const LOGO_HEIGHT: u16 = 10;
 
-/// 混ぜる下地の色。端末の本当の背景色は読み取れず、ほかの配色も暗い端末を前提にしているため、暗い背景だと決めている
-const TERMINAL_RGB: [u8; 3] = [13, 17, 23];
-pub const TERMINAL_GROUND: Color = Color::Rgb(TERMINAL_RGB[0], TERMINAL_RGB[1], TERMINAL_RGB[2]);
 /// 日の出が終わるまでの時間（水面の揺れが始まる 2.3 秒の少しあと）
 const SUNRISE: Duration = Duration::from_millis(2500);
-const SUN_TOP: [u8; 3] = [0xFF, 0xD4, 0x7A];
-const SUN_BOTTOM: [u8; 3] = [0xFF, 0x6A, 0x4D];
-const HORIZON: [u8; 3] = [0xFF, 0xB3, 0x6B];
-const WATER_TOP: [u8; 3] = [0xFF, 0x7E, 0x5F];
-const WATER_BOTTOM: [u8; 3] = [0x8B, 0x6C, 0xFF];
 
 const WIDTH: usize = LOGO_WIDTH as usize;
 const RADIUS: f32 = 5.0;
@@ -50,6 +44,13 @@ fn scene(elapsed: Duration) -> Scene {
         reach: ease(s / 0.7),
         spread: ease((s - 0.9) / 1.4),
         phase: (s > 2.3).then_some((s - 2.3) * 1.6),
+    }
+}
+
+fn channels(color: Color) -> [u8; 3] {
+    match color {
+        Color::Rgb(r, g, b) => [r, g, b],
+        _ => unreachable!(),
     }
 }
 
@@ -91,7 +92,11 @@ fn sun_pixel(x: usize, y: usize, cy: f32, glow: f32, ground: [u8; 3]) -> Option<
         return None;
     }
     let t = (y as f32 - (cy - RADIUS)) / (2.0 * RADIUS - 1.0);
-    let sun = mix(SUN_TOP, SUN_BOTTOM, t);
+    let sun = mix(
+        channels(theme::BRAND_SUN_TOP),
+        channels(theme::BRAND_SUN_BOTTOM),
+        t,
+    );
     Some(rgb(mix(ground, sun, (hit as f32 / 13.0).min(1.0) * glow)))
 }
 
@@ -132,7 +137,7 @@ fn render(scene: &Scene, ground: [u8; 3]) -> Vec<Line<'static>> {
         let edge = ((1.0 - dist) / 0.5).min(1.0) * ((scene.reach - dist) / 0.15 + 0.2).min(1.0);
         *cell = Cell {
             ch: '─',
-            fg: Some(rgb(mix(ground, HORIZON, edge))),
+            fg: Some(rgb(mix(ground, channels(theme::BRAND_HORIZON), edge))),
             bg: None,
         };
     }
@@ -151,7 +156,11 @@ fn render(scene: &Scene, ground: [u8; 3]) -> Vec<Line<'static>> {
         let shine = scene
             .phase
             .map_or(1.0, |p| 0.82 + 0.18 * (p * 1.3 + i as f32 * 2.4).sin());
-        let water = mix(WATER_TOP, WATER_BOTTOM, t);
+        let water = mix(
+            channels(theme::BRAND_WATER_TOP),
+            channels(theme::BRAND_WATER_BOTTOM),
+            t,
+        );
         let alpha = (0.95 - t * 0.55) * (scene.spread * 1.4).min(1.0) * shine;
         let fg = rgb(mix(ground, water, alpha));
         let row = &mut grid[SUN_ROWS + 1 + i];
@@ -201,7 +210,7 @@ fn render(scene: &Scene, ground: [u8; 3]) -> Vec<Line<'static>> {
 pub fn logo_lines(elapsed: Duration, ground: Color) -> Vec<Line<'static>> {
     let ground = match ground {
         Color::Rgb(r, g, b) => [r, g, b],
-        _ => TERMINAL_RGB,
+        _ => channels(theme::BRAND_GROUND),
     };
     render(&scene(elapsed), ground)
 }
@@ -224,7 +233,7 @@ mod tests {
         let steps = (0..=100).map(|i| Duration::from_millis(i * 50));
         let day = Duration::from_secs(24 * 60 * 60);
         for elapsed in steps.chain([day]) {
-            let lines = logo_lines(elapsed, TERMINAL_GROUND);
+            let lines = logo_lines(elapsed, theme::BRAND_GROUND);
             assert_eq!(lines.len(), LOGO_HEIGHT as usize, "{elapsed:?}");
             for line in &lines {
                 assert_eq!(line.width(), LOGO_WIDTH as usize, "{elapsed:?}");
