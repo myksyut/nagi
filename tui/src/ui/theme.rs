@@ -108,12 +108,45 @@ mod tests {
         format!("#{r:02X}{g:02X}{b:02X}")
     }
 
+    /// SVG の塗り（`stop-color`・`fill`・`stroke`）の値を全部読む。`#RRGGBB` のほかに書けるのは `none` と
+    /// `url(#…)` だけにし、短い 16 進や `rgb()`、透明度つきの 8 桁、`style` での指定は落とす（読み飛ばすと、ずれを見逃す）
     fn hexes(svg: &str) -> Vec<String> {
-        svg.match_indices('#')
-            .filter_map(|(i, _)| svg.get(i..i + 7))
-            .filter(|h| h[1..].chars().all(|c| c.is_ascii_hexdigit()))
-            .map(str::to_uppercase)
-            .collect()
+        assert!(!svg.contains("style="), "style で色を書かない");
+        let mut found = Vec::new();
+        for attr in ["stop-color", "fill", "stroke"] {
+            let key = format!("{attr}=\"");
+            for (i, _) in svg.match_indices(&key) {
+                if !svg[..i].ends_with(char::is_whitespace) {
+                    continue;
+                }
+                let rest = &svg[i + key.len()..];
+                let value = &rest[..rest.find('"').expect("値が閉じていない")];
+                if value == "none" || (value.starts_with("url(#") && value.ends_with(')')) {
+                    continue;
+                }
+                let ok = value.len() == 7
+                    && value.starts_with('#')
+                    && value[1..].chars().all(|c| c.is_ascii_hexdigit());
+                assert!(ok, "{attr}=\"{value}\" は #RRGGBB で書く");
+                found.push(value.to_uppercase());
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn svg_paints_reject_other_notations() {
+        for bad in [
+            r##"<stop stop-color="#f00"/>"##,
+            r#"<stop stop-color="rgb(255,0,0)"/>"#,
+            r##"<stop stop-color="#FDE68A00"/>"##,
+        ] {
+            assert!(std::panic::catch_unwind(|| hexes(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(
+            hexes(r##"<g fill="none" stroke="#eef0f5"><rect fill="url(#sun)"/></g>"##),
+            ["#EEF0F5"]
+        );
     }
 
     fn linear(c: u8) -> f64 {
