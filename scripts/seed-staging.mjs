@@ -9,7 +9,8 @@
 import { execFileSync } from "node:child_process";
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { generateNKeysBetween } from "fractional-indexing";
 
 const STAGING_DB = { name: "nagi-staging", id: "8f5e89a9-19fb-4982-b33a-dc6374731e9e" };
@@ -49,7 +50,8 @@ function parseJsonc(text) {
 
 /** `--env staging` で wrangler が解決する D1 が nagi-staging（名前と id の両方）であることを確かめる。本番の id は名指しで断る */
 function assertStagingDatabase() {
-  const config = parseJsonc(readFileSync(new URL("../wrangler.jsonc", import.meta.url), "utf8"));
+  const configPath = fileURLToPath(new URL("../wrangler.jsonc", import.meta.url));
+  const config = parseJsonc(readFileSync(configPath, "utf8"));
   const databases = config.env?.staging?.d1_databases ?? [];
   if (databases.length !== 1) throw new Error("env.staging.d1_databases が 1 つではありません");
   const { database_name: name, database_id: id } = databases[0];
@@ -61,6 +63,7 @@ function assertStagingDatabase() {
       `env.staging の D1 が ${STAGING_DB.name}（${STAGING_DB.id}）ではありません：${name}（${id}）`,
     );
   }
+  return configPath;
 }
 
 const quote = (value) => {
@@ -180,13 +183,15 @@ function buildSql() {
   ];
   const seeds = USERS.map(seedRows);
   return [
-    // 子の表から先に消す。持ち主の行は migrations/0004 が入れたものなので残し、データだけ空にする
+    // 子の表から先に消す。持ち主の行も消して作り直す（アカウント削除で無い場合も、ログインで github_user_id が入った場合も、
+    // migrations/0004 の直後と同じ形に戻す。github_user_id は NULL なので、テスト利用者の ID と重ならない）
     "DELETE FROM applied_mutations;",
     "DELETE FROM user_sessions;",
     "DELETE FROM tasks;",
     "DELETE FROM projects;",
     "DELETE FROM meta;",
-    `DELETE FROM users WHERE id <> ${quote(OWNER_USER_ID)};`,
+    "DELETE FROM users;",
+    insert("users", [{ id: OWNER_USER_ID, github_user_id: null, created_at: NOW_ISO }]),
     insert("meta", initialOwnerMeta),
     insert(
       "users",
@@ -215,8 +220,9 @@ if (printOnly) {
   process.exit(0);
 }
 
-assertStagingDatabase();
+const configPath = assertStagingDatabase();
 
+// 検証した wrangler.jsonc をそのまま使わせる（呼び出し元の cwd の設定を拾わせない）
 const wrangler = (extra) =>
   execFileSync(
     "pnpm",
@@ -226,12 +232,14 @@ const wrangler = (extra) =>
       "d1",
       "execute",
       STAGING_DB.name,
+      "--config",
+      configPath,
       "--env",
       "staging",
       "--remote",
       ...extra,
     ],
-    { encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
+    { cwd: dirname(configPath), encoding: "utf8", stdio: ["ignore", "pipe", "inherit"] },
   );
 
 const dir = mkdtempSync(join(tmpdir(), "nagi-seed-staging-"));

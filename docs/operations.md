@@ -14,7 +14,8 @@
 
 守ること：
 
-- データベース、シークレット、課金のアカウントを、本番と共有しない。Wrangler の環境は binding・vars・routes・triggers を引き継がないので、`env.staging` に全部書いてある。足すときも、本番の値や id をここに写さない
+- データベース、シークレット、課金のアカウントを、本番と共有しない。Wrangler の環境は bindings・vars を引き継がず、routes・triggers は引き継ぐ（Cloudflare の仕様）。`env.staging` は routes・triggers も含めて全部明示してある。足すときも、本番の値や id をここに写さない
+- staging は専用の GitHub OAuth App（デバイスフローを有効にしたもの）を使う。本番と同じ OAuth App だと、staging が出したデバイスコードを本番で引き換えて、本番のセッションを作れてしまう。OAuth App は運用者が作り、その Client ID を `env.staging.vars.GITHUB_CLIENT_ID` に書く
 - staging には本番のデータを入れない。入れるのは、下の種（架空の利用者）だけ
 - 課金（R19）を入れたあとも、staging の課金の提供元はテストモードのまま。本番の課金のシークレットや変数を、staging の GitHub environment に置かない
 - `AUTH_DISABLED` は、staging の `vars` に書かない。`localhost` 以外へのリクエストには、書いてあっても効かない（`src/worker/auth/middleware.ts`）
@@ -47,8 +48,8 @@ CLOUDFLARE_API_TOKEN=<staging 用のトークン> CLOUDFLARE_ACCOUNT_ID=<アカ�
 node scripts/seed-staging.mjs --print   # 流す SQL を出すだけ（D1 には触らない）
 ```
 
-- 流す先は `wrangler d1 execute nagi-staging --env staging --remote`。実行の前に、`env.staging` の D1 が `nagi-staging` と `8f5e89a9-19fb-4982-b33a-dc6374731e9e` の両方に合うことを確かめ、合わなければ何も書かずに止まる。本番の id は名指しで断る
-- 消すのは、タスク、プロジェクト、セッション、meta、持ち主以外の利用者。持ち主（`owner`）の行は残し、データは空にする
+- 流す先は `wrangler d1 execute nagi-staging --env staging --remote`。毎回、検証した `wrangler.jsonc` の絶対パスを `--config` で渡し、その置き場（リポジトリのルート）を cwd にして動かす（呼び出し元の cwd の設定は拾わない）。実行の前に、`env.staging` の D1 が `nagi-staging` と `8f5e89a9-19fb-4982-b33a-dc6374731e9e` の両方に合うことを確かめ、合わなければ何も書かずに止まる。本番の id は名指しで断る
+- 消すのは、タスク、プロジェクト、セッション、meta、利用者（持ち主を含む）。持ち主（`owner`）の行は、マイグレーション直後の形（`github_user_id` は NULL）と meta で作り直す。アカウント削除で無くなっていても、ログインで ID が入っていても、同じ状態に戻る
 - 入るのは、利用者 3 人（`staging-user-1`〜`3`。GitHub ユーザー ID は架空の 9000000001〜）。タスクの数は人ごとに変えてある（15・9・4 件。ほかにプロジェクトが 2 つずつ）ので、別の人のタスクが見えていれば件数でわかる
 - 最後に、利用者ごとの件数を出す。種の状態に戻ったかは、この件数で見る
 - 架空の ID ではログインできない。利用者 1 として GitHub でログインするには、`STAGING_TEST_USER_1_GITHUB_ID=<自分の GitHub ユーザー ID>` を付けて回し、同じ ID を `env.staging.vars.ALLOWED_GITHUB_USER_IDS` に足して配備する
