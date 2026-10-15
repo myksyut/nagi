@@ -4,6 +4,24 @@
 use crate::i18n::{Msg, t};
 use ratatui::style::{Color, Modifier, Style};
 
+/// ブランドの色。ロゴ（`render/logo.rs`）と `assets/*.svg` は、ここと同じ 16 進を使う。色の値を書く場所はここだけ。
+/// マーク「接」は左上の正方形 A と右下の正方形 B
+pub const BRAND_MARK_A: Color = Color::Rgb(0x93, 0xC5, 0xFD);
+pub const BRAND_MARK_B: Color = Color::Rgb(0x60, 0xA5, 0xFA);
+/// ロゴの字 `Nagi` の色（暗い地）
+pub const BRAND_INK: Color = Color::Rgb(0xE6, 0xE9, 0xF0);
+/// 白い地の色。端末には描かず `logo-light.svg` だけが使う。SVG とずれないことをテストで確かめるためにここに置く
+#[cfg_attr(not(test), expect(dead_code))]
+pub const BRAND_MARK_A_LIGHT: Color = Color::Rgb(0x60, 0xA5, 0xFA);
+#[cfg_attr(not(test), expect(dead_code))]
+pub const BRAND_MARK_B_LIGHT: Color = Color::Rgb(0x3B, 0x4C, 0xCA);
+#[cfg_attr(not(test), expect(dead_code))]
+pub const BRAND_INK_LIGHT: Color = Color::Rgb(0x16, 0x20, 0x3A);
+/// ロゴを置く暗い地と、アイコンの地。端末の本当の背景色は読み取れず、ほかの配色も暗い端末を前提にしているため、暗い背景だと決めている。
+/// 端末では塗らず（ほかの背景の端末で暗い四角になる）、文字のコントラストをこの地で確かめる
+#[cfg_attr(not(test), expect(dead_code))]
+pub const BRAND_GROUND: Color = Color::Rgb(0x0D, 0x11, 0x17);
+
 /// 選択の青
 pub const ACCENT: Color = Color::Rgb(96, 165, 250);
 /// 小さい補助の文字
@@ -66,5 +84,167 @@ pub fn project_color_label(name: &str) -> &'static str {
         "orange" => t(Msg::ColorOrange),
         "teal" => t(Msg::ColorTeal),
         _ => t(Msg::ColorGray),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// SVG ごとに、使ってよい色の全部。マークは地に合わせた 2 色、字は地に合わせた 1 色、アイコンは地の正方形の色
+    const SVGS: [(&str, &str, [Color; 3]); 3] = [
+        (
+            "logo-dark.svg",
+            include_str!("../../../assets/logo-dark.svg"),
+            [BRAND_MARK_A, BRAND_MARK_B, BRAND_INK],
+        ),
+        (
+            "logo-light.svg",
+            include_str!("../../../assets/logo-light.svg"),
+            [BRAND_MARK_A_LIGHT, BRAND_MARK_B_LIGHT, BRAND_INK_LIGHT],
+        ),
+        (
+            "icon.svg",
+            include_str!("../../../assets/icon.svg"),
+            [BRAND_MARK_A, BRAND_MARK_B, BRAND_GROUND],
+        ),
+    ];
+
+    fn rgb(color: Color) -> [u8; 3] {
+        match color {
+            Color::Rgb(r, g, b) => [r, g, b],
+            other => panic!("RGB ではない色: {other:?}"),
+        }
+    }
+
+    fn hex(color: Color) -> String {
+        let [r, g, b] = rgb(color);
+        format!("#{r:02X}{g:02X}{b:02X}")
+    }
+
+    /// SVG の塗り（`stop-color`・`fill`・`stroke`）の値を全部読む。`#RRGGBB` のほかに書けるのは `none` と
+    /// `url(#…)` だけにし、短い 16 進や `rgb()`、透明度つきの 8 桁、`style` での指定は落とす（読み飛ばすと、ずれを見逃す）
+    fn hexes(svg: &str) -> Vec<String> {
+        assert!(!svg.contains("style="), "style で色を書かない");
+        let mut found = Vec::new();
+        for attr in ["stop-color", "fill", "stroke"] {
+            let key = format!("{attr}=\"");
+            for (i, _) in svg.match_indices(&key) {
+                if !svg[..i].ends_with(char::is_whitespace) {
+                    continue;
+                }
+                let rest = &svg[i + key.len()..];
+                let value = &rest[..rest.find('"').expect("値が閉じていない")];
+                if value == "none" || (value.starts_with("url(#") && value.ends_with(')')) {
+                    continue;
+                }
+                let ok = value.len() == 7
+                    && value.starts_with('#')
+                    && value[1..].chars().all(|c| c.is_ascii_hexdigit());
+                assert!(ok, "{attr}=\"{value}\" は #RRGGBB で書く");
+                found.push(value.to_uppercase());
+            }
+        }
+        found
+    }
+
+    #[test]
+    fn svg_paints_reject_other_notations() {
+        for bad in [
+            r##"<stop stop-color="#f00"/>"##,
+            r#"<stop stop-color="rgb(255,0,0)"/>"#,
+            r##"<stop stop-color="#FDE68A00"/>"##,
+        ] {
+            assert!(std::panic::catch_unwind(|| hexes(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(
+            hexes(r##"<g fill="none" stroke="#eef0f5"><rect fill="url(#sun)"/></g>"##),
+            ["#EEF0F5"]
+        );
+    }
+
+    fn linear(c: u8) -> f64 {
+        let c = f64::from(c) / 255.0;
+        if c <= 0.04045 {
+            c / 12.92
+        } else {
+            ((c + 0.055) / 1.055).powf(2.4)
+        }
+    }
+
+    fn luminance(color: Color) -> f64 {
+        let [r, g, b] = rgb(color);
+        0.2126 * linear(r) + 0.7152 * linear(g) + 0.0722 * linear(b)
+    }
+
+    fn contrast(a: Color, b: Color) -> f64 {
+        let (a, b) = (luminance(a), luminance(b));
+        (a.max(b) + 0.05) / (a.min(b) + 0.05)
+    }
+
+    fn lab(color: Color) -> [f64; 3] {
+        let [r, g, b] = rgb(color);
+        let (r, g, b) = (linear(r), linear(g), linear(b));
+        let x = (0.4124564 * r + 0.3575761 * g + 0.1804375 * b) / 0.95047;
+        let y = 0.2126729 * r + 0.7151522 * g + 0.0721750 * b;
+        let z = (0.0193339 * r + 0.1191920 * g + 0.9503041 * b) / 1.08883;
+        let f = |t: f64| {
+            if t > 216.0 / 24389.0 {
+                t.cbrt()
+            } else {
+                (24389.0 / 27.0 * t + 16.0) / 116.0
+            }
+        };
+        let (fx, fy, fz) = (f(x), f(y), f(z));
+        [116.0 * fy - 16.0, 500.0 * (fx - fy), 200.0 * (fy - fz)]
+    }
+
+    /// CIE76 の色差
+    fn distance(a: Color, b: Color) -> f64 {
+        let (a, b) = (lab(a), lab(b));
+        ((a[0] - b[0]).powi(2) + (a[1] - b[1]).powi(2) + (a[2] - b[2]).powi(2)).sqrt()
+    }
+
+    #[test]
+    fn brand_colors_match_svgs() {
+        for (name, svg, colors) in SVGS {
+            let mut found = hexes(svg);
+            found.sort();
+            found.dedup();
+            let mut want = colors.map(hex).to_vec();
+            want.sort();
+            assert_eq!(found, want, "{name} の色");
+        }
+    }
+
+    #[test]
+    fn semantic_colors_stay_apart() {
+        let colors = [
+            ("ACCENT", ACCENT),
+            ("ATTENTION", ATTENTION),
+            ("DANGER", DANGER),
+        ];
+        for (i, (a_name, a)) in colors.iter().enumerate() {
+            for (b_name, b) in &colors[i + 1..] {
+                let d = distance(*a, *b);
+                assert!(d >= 25.0, "{a_name} と {b_name} の色差が {d:.1}");
+            }
+        }
+    }
+
+    #[test]
+    fn text_contrast_on_grounds() {
+        for (ground_name, ground) in [("SURFACE", SURFACE), ("BRAND_GROUND", BRAND_GROUND)] {
+            for (name, color, min) in [
+                ("ACCENT", ACCENT, 4.5),
+                ("MUTED", MUTED, 4.5),
+                ("ATTENTION", ATTENTION, 4.5),
+                ("DANGER", DANGER, 4.5),
+                ("FAINT", FAINT, 3.0),
+            ] {
+                let ratio = contrast(color, ground);
+                assert!(ratio >= min, "{name} on {ground_name}: {ratio:.2} < {min}");
+            }
+        }
     }
 }

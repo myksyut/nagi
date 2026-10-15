@@ -8,8 +8,6 @@ mod logo;
 mod overlay;
 mod timeline;
 
-pub use logo::animation_tick;
-
 use std::time::Duration;
 
 use ratatui::Frame;
@@ -18,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Clear, Paragraph};
 
-use self::logo::{LOGO_HEIGHT, logo_lines};
+use self::logo::{SIDEBAR_LOGO_HEIGHT, WORDMARK, sidebar_lines};
 use super::app::{App, Focus, Screen, ToastKind};
 use super::text::{pad, truncate, width};
 use super::theme;
@@ -35,6 +33,7 @@ const SIDEBAR_RAIL_WIDTH: u16 = 4;
 /// これより狭い端末では、サイドバーを出さない
 const MIN_WIDTH_FOR_SIDEBAR: u16 = 72;
 
+/// 返すのは、ロゴを動かすための次の描き直しまでの間隔（動いていなければ None）
 pub fn draw(frame: &mut Frame, app: &mut App) -> Option<Duration> {
     let area = frame.area();
     if app.login.is_some() {
@@ -50,13 +49,14 @@ pub fn draw(frame: &mut Frame, app: &mut App) -> Option<Duration> {
     } else {
         0
     };
-    let (main, logo) = if sidebar_width > 0 {
+    let main = if sidebar_width > 0 {
         let [sidebar, main] =
             Layout::horizontal([Constraint::Length(sidebar_width), Constraint::Min(20)])
                 .areas(body);
-        (main, draw_sidebar(frame, app, sidebar, rail))
+        draw_sidebar(frame, app, sidebar, rail);
+        main
     } else {
-        (body, None)
+        body
     };
     let main = Rect {
         x: main.x + 1,
@@ -80,7 +80,7 @@ pub fn draw(frame: &mut Frame, app: &mut App) -> Option<Duration> {
     draw_status(frame, app, status);
     draw_toasts(frame, app, body);
     overlay::draw(frame, app, body);
-    logo
+    None
 }
 
 /// 完了の丸。未着手は ○、進行中は半分を塗った ◐、完了は ●
@@ -105,17 +105,18 @@ pub fn priority_mark(priority: crate::model::Priority) -> Span<'static> {
 }
 
 /// サイドバー。rail なら、畳んだ細い帯（印だけ。見出し・名前・件数は出さない）
-fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) -> Option<Duration> {
+fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) {
     let lists = app.store.lists();
     let focused = app.focus == Focus::Sidebar;
     let inner_width = area.width.saturating_sub(2) as usize;
     let heading = |text: &'static str| Line::from(Span::styled(text, theme::faint()));
+    let title = if rail {
+        t(Msg::SidebarRailTitle).to_string()
+    } else {
+        format!(" {WORDMARK}")
+    };
     let mut lines: Vec<Line> = vec![Line::from(Span::styled(
-        if rail {
-            t(Msg::SidebarRailTitle)
-        } else {
-            " nagi"
-        },
+        title,
         theme::accent().add_modifier(Modifier::BOLD),
     ))];
     lines.push(Line::default());
@@ -220,14 +221,12 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) -> Option<
             theme::faint(),
         )));
     }
-    let elapsed = app.started_at.elapsed();
-    let fits_logo = !rail && area.height as usize > lines.len() + LOGO_HEIGHT as usize + 1;
-    if fits_logo {
-        let mut with_logo = vec![Line::default()];
-        with_logo.extend(logo_lines(elapsed, theme::SURFACE));
-        with_logo.push(Line::default());
-        with_logo.append(&mut lines);
-        lines = with_logo;
+    // 見出しの 1 行を、上の空行とマークに替えても全部が収まるときだけ、マークを出す。左は行の印と同じ 1 桁あける
+    if !rail && area.height as usize >= lines.len() + SIDEBAR_LOGO_HEIGHT as usize {
+        lines.splice(
+            0..1,
+            std::iter::once(Line::default()).chain(sidebar_lines(1)),
+        );
     }
     // 長いときは、選んでいる位置が見えるように上を切る
     let visible = area.height as usize;
@@ -240,7 +239,6 @@ fn draw_sidebar(frame: &mut Frame, app: &App, area: Rect, rail: bool) -> Option<
         Paragraph::new(lines.into_iter().skip(skip).collect::<Vec<_>>()).block(block),
         area,
     );
-    fits_logo.then_some(elapsed)
 }
 
 fn draw_header(frame: &mut Frame, app: &App, area: Rect) {

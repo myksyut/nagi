@@ -55,7 +55,7 @@ pub struct Login {
     pub reason: Option<String>,
     /// 確かめに行くスレッドを止める合図
     cancel: Arc<AtomicBool>,
-    /// ロゴの日の出の起点。Enter で作り直しても、日の出をやり直さない
+    /// ロゴの動きの起点。Enter で作り直しても、動きをやり直さない
     pub shown_at: Instant,
 }
 
