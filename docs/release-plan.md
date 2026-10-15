@@ -547,7 +547,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
   - [ ] 一覧と動画を operator に見せ、A、B、C の返事を待つ。選んだ案を PR の本文に書く。選んだあと `proto/R07-palette` を消す。
 - [ ] 運用者は配色に案 B を選んだが、日の出のロゴは退けた。ロゴの試作を 3 回重ね、3 回目の 6 案（`/tmp/swarm-R07/proto/nagi3/x/`）から「接」を選んだ。ふたつの正方形が角の一点だけで触れる形。日の出の 3 案の一覧と動画（`R07-palettes.png`、`R07-palettes.mp4`）は退けた案なので PR から消し、3 回目の一覧 `sheet.png` を `docs/review/R07-marks.png` に写す。選んだマークを PR の本文に書く。
 - [ ] `theme.rs` の `BRAND_*` をマークの色にする。暗い地は A `#93C5FD`、B `#60A5FA`、字 `#E6E9F0`。白い地は A `#60A5FA`、B `#3B4CCA`、字 `#16203A`。地は `#0D1117`。太陽、水平線、水面の定数と、それを使うところを消す。白い地の 3 色と `BRAND_GROUND` は SVG とテストだけが使うので、`#[cfg_attr(not(test), expect(dead_code))]` を付ける。
-- [ ] サイドバーの見出しを、試作の `side.rows` そのままの 6×3 セルのマーク（地は `SURFACE`）と、1 桁あけた太字の `Nagi`（`ACCENT`、マークのまん中の行）にする。24x10 のロゴと、その下の `nagi` の行をこれに替え、一覧を 9 行上げる。全部が収まらないときは、見出しの 1 行（` Nagi`）だけにする。
+- [ ] サイドバーの見出しを、試作の `side.rows` そのままの 6×3 セルのマーク（地は `SURFACE`）と、1 桁あけて半ブロックの点で描いた `Nagi`（`ACCENT`）にする。端末の字は 1 セルより大きくできないので、運用者の選んだとおり、字はマークと同じ 6 点の高さの点で描く（g だけ下に 2 点のびるので、見出しは 4 行）。見出しは左の 1 桁を足して 24 桁ちょうど。24x10 のロゴと、その下の `nagi` の行をこれに替え、一覧を 8 行上げる。全部が収まらないときは、見出しの 1 行（` Nagi`）だけにする。
 - [ ] ログインの画面のロゴを、試作の `login.at(t)` を 24x10 の半ブロックに描いたものにする。描き方も試作と同じ（1 セルを 8x8 に分けて数え、全部塗る・上下に分ける・左右に分けるのうち、外れの少ない形を選ぶ）。ふたつの正方形は 1.0 秒の 3 次のイーズアウトで斜めに寄って触れ、そのあとは動かない。9 行目のまん中に太字の `Nagi`（`#E6E9F0`）を置く。最後のコマは A も B も 5 桁 x 5 半行で、角の一点だけで触れる。ロゴが収まるときだけ、名前の行と空行をロゴに替える。
 - [ ] 描き直しの間隔を、ログインのロゴが動く 1.0 秒のあいだだけ 50 ms にする。そのあとは `login_redraw_after` が `None` を返し、250 ms の `TICK` に戻る。サイドバーは止まっているので描き直しを頼まない。`render::draw` は次の描き直しまでの間隔を返し、`ui/mod.rs` はそれがなければ `TICK` を使う。
 - [ ] 狭い端末の細い帯（`\`）は変えない。ロゴを出さず、`凪` をアクセントで書く。
@@ -555,7 +555,7 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `docs/brand.md` を書き直す。マークの形の決まり（同じ大きさの正方形、角の一点で触れる）、暗い地と白い地の色の表（名前、16 進、役目、Rust の定数）、ロックアップの組み方、余白（四方に正方形 1 つ分）、最小の大きさ（アイコン 16 px、ロックアップ幅 96 px）、してはいけないこと（色を変える、伸ばす、回す、正方形を離す・重ねる、効果を付ける、ほかのフォントで組む）、Inter と OFL の出典を書く。
 
 **You see.**
-- [ ] 起動すると、サイドバーの上に 6×3 セルのマーク「接」と青い太字の `Nagi` が出て、一覧がすぐ下から始まる。
+- [ ] 起動すると、サイドバーの上にマーク「接」と、同じ高さの点で描いた青い `Nagi` が出て、一覧がすぐ下から始まる。
 - [ ] ログインの画面で、離れていたふたつの正方形が 1 秒で斜めに寄って角で触れ、そこで止まる。下に `Nagi` が出る。
 - [ ] GitHub の README の先頭に、暗い表示でも明るい表示でも、マークと `Nagi` のロックアップが出る。
 - [ ] `docs/brand.md` を読むと、マークの形、色の 16 進、組み方と置き方が分かる。
@@ -566,17 +566,17 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 - [ ] `svg_paints_reject_other_notations` が通る。塗りは `#RRGGBB`、`none`、`url(#…)` だけを受け、短い 16 進、`rgb()`、透明度つきの 8 桁を落とす。
 - [ ] `semantic_colors_stay_apart` が通る。`ACCENT`、`ATTENTION`、`DANGER` の Lab の距離（CIE76）が、どの 2 つでも 25 以上。
 - [ ] `text_contrast_on_grounds` が通る。`ACCENT`、`MUTED`、`ATTENTION`、`DANGER` と `SURFACE`、`BRAND_GROUND` の WCAG のコントラスト比が 4.5 以上。`FAINT` は 3.0 以上。
-- [ ] `logo.rs` の 4 つのテストが通る。`ログインのロゴはどの時点でも24桁10行に収まる`（0 秒から 1.5 秒の 50 ms ごとと 1 日後で、10 行、どの行も 24 桁、字は半ブロックと `Nagi` だけ、色はマークの 2 色だけ）。`最後のコマで正方形は角の一点だけで触れる`（半ブロックを画素に戻し、A と B が穴のない同じ大きさの正方形で、B の左上の画素が A の右下の画素と斜めに隣り合う）。`サイドバーのロゴは見出しの3行に収まる`。`動き終わったらロゴのためには描き直さない`。
+- [ ] `logo.rs` の 4 つのテストが通る。`ログインのロゴはどの時点でも24桁10行に収まる`（0 秒から 1.5 秒の 50 ms ごとと 1 日後で、10 行、どの行も 24 桁、字は半ブロックと `Nagi` だけ、色はマークの 2 色だけ）。`最後のコマで正方形は角の一点だけで触れる`（半ブロックを画素に戻し、A と B が穴のない同じ大きさの正方形で、B の左上の画素が A の右下の画素と斜めに隣り合う）。`サイドバーの見出しは24桁に収まり_字の高さはマークと同じ`（4 行、どの行も 24 桁以内、マークの上下の半行と N の上下の半行が同じ）。`動き終わったらロゴのためには描き直さない`。
 - [ ] `cargo clippy --all-targets -- -D warnings`、`cargo fmt --check`、`xmllint --noout assets/*.svg` が通る。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `fast mechanical model (setup default)` at the PR head, per the boot recipe.
-- [ ] Lane 1. 120x36 で起動し、1.5 秒後にサイドバーの見出しを撮る。Save `sidebar-mark.png`. Pass when 2 から 4 行目の 2 から 7 桁目が試作の `side.rows` の字と色（A は `#93C5FD`、B は `#60A5FA`）で、3 行目の 9 から 12 桁目が太字の `Nagi`（`ACCENT`）、上の 5 行のほかのセルが空で、地がどれも `SURFACE`。PNG の画素から各セルの上と下の半分を読んで、A と B がどちらも 3 桁 x 3 半行の埋まった四角で、角の一点で触れる.
+- [ ] Lane 1. 120x36 で起動し、1.5 秒後にサイドバーの見出しを撮る。Save `sidebar-mark.png`. Pass when 2 から 4 行目の 2 から 7 桁目が試作の `side.rows` の字と色（A は `#93C5FD`、B は `#60A5FA`）で、2 から 5 行目の 9 から 24 桁目が `ACCENT` の半ブロックで描いた `Nagi` で、地がどれも `SURFACE`。セルの字と色から各セルの上と下の半分を読んで、A と B がどちらも 3 桁 x 3 半行の埋まった四角で角の一点で触れ、N の上下の半行がマークの上下の半行と同じ.
 - [ ] Lane 2. Ctrl+K で「ログイン」を選び、2 秒後に撮る。Save `login-final.png`. Pass when PNG の画素から各セルの上と下の半分を読んで、A と B がどちらも 5 桁 x 5 半行の穴のない正方形で、B の左上が A の右下と斜めに隣り合い（重なりもすき間もない）、ロゴの 24x10 にマークの 2 色と地のほかの色がなく、`Nagi` がロゴの 9 行目の 11 から 14 桁目に太字の `#E6E9F0` で出る.
 - [ ] Lane 3. ログインの画面を開いてから 1.6 秒のあいだ 20 ms ごとに撮り、3 秒後にも撮る。0、0.2、0.4、0.6、0.8、1.0、3.0 秒のコマを横に並べる。Save `motion-steps.png`. Pass when どのコマでも色のあるセルが 24x10 の外に出ず、1.0 秒より後のコマが最後のコマとセル単位で同じで、開いてから 1.2 秒から 11.2 秒の毎秒の書き出し回数が、動きのない最初の画面（今日）の 1.1 倍以下（どちらも 250 ms の `TICK` だけ）.
 - [ ] Lane 4. 80x24 で起動し、`\` でサイドバーを畳んで撮る。Save `narrow-rail.png`. Pass when 帯にロゴのセルが 1 つもなく、帯の上の `凪` と今いる画面の印が `ACCENT` で、帯の 4 桁の画素が trunk と同じ.
 - [ ] Lane 5. `rsvg-convert -w 16 -h 16` で `assets/icon.svg` を描き、12 倍に拡大して撮る。Save `icon-16.png`. Pass when A と B がちょうど 4x4 px の `#93C5FD` と `#60A5FA` の正方形で、B の左上の画素が A の右下の画素と斜めに隣り合い、A と B、それぞれと地の Lab の距離が 20 以上.
 - [ ] Lane 6. `rsvg-convert -w 840`（viewBox の 1 単位がちょうど 2 px）で `assets/logo-dark.svg` を `#0D1117` の地に、`assets/logo-light.svg` を `#FFFFFF` の地に描く。Save `svg-assets.png`. Pass when 両方で、マークの高さが N の高さと同じ（2 px 以内）、マークの下の辺が N の下の辺と同じ行、A と B が同じ大きさの正方形で角の一点で触れ、マークから N の字までの間がキャップハイトの 0.585 倍 ±0.02（語の書き出しまでの 0.5 倍に、N の左の余白 0.085 倍を足した値）、字と地のコントラスト比が 4.5 以上で、SVG に `<text>` がなく、`role="img"` と `aria-label="Nagi"` がある.
-- [ ] Lane 7. Regression lane against trunk. trunk と head のバイナリを、同じ一時 HOME（締切を過ぎた 1 件、今日 2 件（うち 1 件は締切が今日）、受信箱 2 件）で 120x36 に起動し、`1` で受信箱にして `J` で 2 行を選び、3 秒後に撮る。trunk と head のサイドバーを並べる。Save `sidebar-trunk-head.png`. Pass when サイドバーの外の画素が trunk と同じで、サイドバーの一覧の行が、9 行上がったほかは、セルの字と色も画素も trunk と同じ.
+- [ ] Lane 7. Regression lane against trunk. trunk と head のバイナリを、同じ一時 HOME（締切を過ぎた 1 件、今日 2 件（うち 1 件は締切が今日）、受信箱 2 件）で 120x36 に起動し、`1` で受信箱にして `J` で 2 行を選び、3 秒後に撮る。trunk と head のサイドバーを並べる。Save `sidebar-trunk-head.png`. Pass when サイドバーの外の画素が trunk と同じで、サイドバーの一覧の行が、8 行上がったほかは、セルの字と色も画素も trunk と同じ.
 - [ ] Lane 8. カレンダー（`6`）で、今日の日、締切が今日の◆、締切を過ぎた◆が同じ月に見える状態を撮る。Save `calendar-semantics.png`. Pass when アクセント、注意、締切切れの 3 色が画面の画素にあり、どの 2 つも Lab の距離が 25 以上.
 - [ ] Lane 9. `N` でプロジェクトを 8 つ作り（作った順に `PROJECT_COLORS` の 8 色が付く）、`1` で受信箱に戻ってサイドバーを撮る。Save `project-colors.png`. Pass when 8 つの ● の色が互いに違い、どれも `ACCENT` と Lab の距離が 15 以上離れている.
 - [ ] Lane 10. Ctrl+K でコマンドの一覧を開き、ポップアップの地と枠を撮る。Save `palette-surface.png`. Pass when ポップアップの補助の文字（`MUTED`）とその地（`SURFACE`）のコントラスト比が 4.5 以上で、画素にも両方の色があり、枠のセルの色がどれも `BORDER`.

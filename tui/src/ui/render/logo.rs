@@ -1,5 +1,6 @@
 //! ロゴ「接」。ふたつの正方形が、角の一点だけで触れている。
-//! サイドバーは止まった 6×3 セル、ログインの画面は 24×10 の半ブロックで、離れていた正方形が寄って触れ、そこで止まる
+//! サイドバーは止まった見出し（マークと、同じ高さの点で描いた Nagi）、ログインの画面は 24×10 の半ブロックで、
+//! 離れていた正方形が寄って触れ、そこで止まる
 
 use std::time::Duration;
 
@@ -11,7 +12,7 @@ use crate::ui::theme;
 /// ブランドの字。名前そのものなので翻訳しない（`i18n` の表に入れない）。コマンドの名前は小文字の `nagi` のまま
 pub const WORDMARK: &str = "Nagi";
 
-pub const SIDEBAR_LOGO_HEIGHT: u16 = SIDEBAR_MARK.len() as u16;
+pub const SIDEBAR_LOGO_HEIGHT: u16 = (SIDEBAR_PIXELS.len() / 2) as u16;
 pub const LOGIN_LOGO_WIDTH: u16 = 24;
 pub const LOGIN_LOGO_HEIGHT: u16 = 10;
 
@@ -19,14 +20,18 @@ pub const LOGIN_LOGO_HEIGHT: u16 = 10;
 const MOTION: Duration = Duration::from_millis(1000);
 const FRAME: Duration = Duration::from_millis(50);
 
-/// サイドバーのマーク（試作の `side.rows` そのまま）。字と、その字を塗る正方形（a・b、空白は塗らない）
-const SIDEBAR_MARK: [(&str, &str); 3] = [
-    ("███   ", "aaa   "),
-    ("▀▀▀▄▄▄", "aaabbb"),
-    ("   ███", "   bbb"),
+/// サイドバーの見出しの点（列, 半行）。a・b はマークの正方形、`#` は Nagi の字、`.` は塗らない。
+/// 端末の字は 1 セルより大きくできないので、Nagi はマークと同じ 6 点の高さの点で描く（g だけ下に 2 点のびる）
+const SIDEBAR_PIXELS: [&str; 8] = [
+    "aaa....#..#...........#",
+    "aaa....##.#............",
+    "aaa....#.##..###..###.#",
+    "...bbb.#..#.#..#.#..#.#",
+    "...bbb.#..#.#..#.#..#.#",
+    "...bbb.#..#..###..###.#",
+    "....................#..",
+    ".................###...",
 ];
-/// `Nagi` を置くマークの行
-const SIDEBAR_TEXT_ROW: usize = 1;
 
 const LOGIN_TEXT_ROW: usize = 8;
 const LOGIN_TEXT_COLUMN: usize = 10;
@@ -46,28 +51,30 @@ fn square_color(square: Square) -> Color {
     }
 }
 
-/// サイドバーの見出し。マーク、1 桁あけて太字の `Nagi`。left はマークの左の余白の桁数
+/// サイドバーの見出し。マーク、1 桁あけて点で描いた `Nagi`。left はマークの左の余白の桁数
 pub fn sidebar_lines(left: usize) -> Vec<Line<'static>> {
-    SIDEBAR_MARK
-        .iter()
-        .enumerate()
-        .map(|(row, &(glyphs, paint))| {
+    let paint = |c: u8| match c {
+        b'a' => Some(theme::BRAND_MARK_A),
+        b'b' => Some(theme::BRAND_MARK_B),
+        b'#' => Some(theme::ACCENT),
+        _ => None,
+    };
+    SIDEBAR_PIXELS
+        .chunks(2)
+        .map(|pair| {
+            let (top, bottom) = (pair[0].as_bytes(), pair[1].as_bytes());
             let mut spans = vec![Span::raw(" ".repeat(left))];
-            for ((i, ch), square) in glyphs.char_indices().zip(paint.chars()) {
-                let style = match square {
-                    'a' => Style::new().fg(theme::BRAND_MARK_A),
-                    'b' => Style::new().fg(theme::BRAND_MARK_B),
-                    _ => Style::new(),
-                };
-                spans.push(Span::styled(&glyphs[i..i + ch.len_utf8()], style));
-            }
-            if row == SIDEBAR_TEXT_ROW {
-                spans.push(Span::raw(" "));
-                spans.push(Span::styled(
-                    WORDMARK,
-                    theme::accent().add_modifier(Modifier::BOLD),
-                ));
-            }
+            spans.extend(
+                top.iter()
+                    .zip(bottom)
+                    .map(|(&t, &b)| match (paint(t), paint(b)) {
+                        (Some(t), Some(b)) if t == b => Span::styled("█", Style::new().fg(t)),
+                        (Some(t), Some(b)) => Span::styled("▀", Style::new().fg(t).bg(b)),
+                        (Some(t), None) => Span::styled("▀", Style::new().fg(t)),
+                        (None, Some(b)) => Span::styled("▄", Style::new().fg(b)),
+                        (None, None) => Span::raw(" "),
+                    }),
+            );
             Line::from(spans)
         })
         .collect()
@@ -258,13 +265,28 @@ mod tests {
     }
 
     #[test]
-    fn サイドバーのロゴは見出しの3行に収まる() {
+    fn サイドバーの見出しは24桁に収まり_字の高さはマークと同じ() {
         let lines = sidebar_lines(1);
         assert_eq!(lines.len(), SIDEBAR_LOGO_HEIGHT as usize);
-        let widths: Vec<usize> = lines.iter().map(Line::width).collect();
-        // マークは 1 桁目から 6 桁、1 桁あけて Nagi
-        assert_eq!(widths, [7, 1 + 6 + 1 + 4, 7]);
-        assert_eq!(lines[1].spans.last().unwrap().content, WORDMARK);
+        assert!(lines.iter().all(|line| line.width() <= 24));
+        let grid = pixels(&lines);
+        let rows_with = |color: Color, columns: std::ops::Range<usize>| -> Vec<usize> {
+            (0..grid.len())
+                .filter(|&y| {
+                    columns
+                        .clone()
+                        .any(|x| grid[y].get(x) == Some(&Some(color)))
+                })
+                .collect()
+        };
+        // マーク（1〜6 桁）の上下と、N（8〜11 桁）の上下が同じ半行
+        let mark: Vec<usize> = [theme::BRAND_MARK_A, theme::BRAND_MARK_B]
+            .into_iter()
+            .flat_map(|color| rows_with(color, 1..7))
+            .collect();
+        let n = rows_with(theme::ACCENT, 8..12);
+        assert_eq!(mark.iter().min(), n.iter().min());
+        assert_eq!(mark.iter().max(), n.iter().max());
     }
 
     /// 半ブロックを、縦に 2 倍した画素（列, 半行）の塗りに戻す
