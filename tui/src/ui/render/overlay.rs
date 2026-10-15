@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::calendar::filter_label;
-use super::logo::{LOGO_HEIGHT, logo_lines};
+use super::logo::{LOGIN_LOGO_HEIGHT, WORDMARK, login_lines, login_redraw_after};
 use super::{centered, clear_for_popup};
 use crate::data::sort::TaskSort;
 use crate::dates::{format_long_date, parse_date_input};
@@ -579,7 +579,7 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> 
     };
     let mut lines: Vec<Line<'static>> = vec![
         Line::from(Span::styled(
-            "nagi",
+            WORDMARK,
             theme::accent().add_modifier(Modifier::BOLD),
         )),
         Line::default(),
@@ -743,15 +743,14 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> 
         fill(Msg::ServerLabel, &[&app.config.server]),
         theme::faint(),
     )));
-    let fits_logo = area.height >= lines.len() as u16 + LOGO_HEIGHT + 1 + 2;
-    let elapsed = login.shown_at.elapsed();
-    if fits_logo {
-        let mut with_logo = logo_lines(elapsed, theme::BRAND_GROUND);
-        with_logo.push(Line::default());
-        with_logo.append(&mut lines);
-        lines = with_logo;
+    // 名前と空行の 2 行を、名前の入ったロゴに替えても枠（上下 2 行）ごと収まるときだけ、ロゴを出す
+    let mut redraw = None;
+    if area.height >= lines.len() as u16 + LOGIN_LOGO_HEIGHT {
+        let elapsed = login.shown_at.elapsed();
+        lines.splice(0..2, login_lines(elapsed));
+        redraw = login_redraw_after(elapsed);
     }
     let rect = centered(area, 64, lines.len() as u16 + 2);
     frame.render_widget(Paragraph::new(lines), rect);
-    fits_logo.then_some(elapsed)
+    redraw
 }

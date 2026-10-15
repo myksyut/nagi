@@ -287,8 +287,6 @@ pub struct App {
     time_zone_tx: Sender<TimeZoneReport>,
     /// 端末のタイムゾーンを Worker へ書いている途中（終わるまで、差分は取らない）
     time_zone_sending: bool,
-    /// 起動した時刻。ホームのロゴの日の出の時計
-    pub started_at: Instant,
 }
 
 impl App {
@@ -343,7 +341,6 @@ impl App {
             time_zone_reports,
             time_zone_tx,
             time_zone_sending: false,
-            started_at: Instant::now(),
         }
     }
 

@@ -527,12 +527,13 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
 **Depends on.** R00.
 
 **Files.**
-- [ ] `tui/src/ui/theme.rs` を変える。ブランドの色を `BRAND_SUN_TOP`、`BRAND_SUN_BOTTOM`、`BRAND_HORIZON`、`BRAND_WATER_TOP`、`BRAND_WATER_BOTTOM`、`BRAND_GROUND` の定数で持つ。`ACCENT`、`IN_PROGRESS`、`SELECTED_BG`、`CURSOR_BG`、`SURFACE`、`BORDER` を選んだ案の値にする。テストを 3 つ足す。
-- [ ] `tui/src/ui/render/logo.rs` を変える。`SUN_TOP`、`SUN_BOTTOM`、`HORIZON`、`WATER_TOP`、`WATER_BOTTOM`、`TERMINAL_RGB` を消し、`theme::BRAND_*` を読む。
-- [ ] `assets/logo-dark.svg`、`assets/logo-light.svg`、`assets/icon.svg` を変える。`sun`、`dot`、`water`、`horizon` のグラデーションの `stop-color` を選んだ案にする。字の線（`#EEF0F5`、`#16203A`）とアイコンの地（`#0D1424`）も案に合わせる。形と座標は変えない。
+- [ ] `tui/src/ui/theme.rs` を変える。ブランドの色を `BRAND_MARK_A`、`BRAND_MARK_B`、`BRAND_INK`、`BRAND_MARK_A_LIGHT`、`BRAND_MARK_B_LIGHT`、`BRAND_INK_LIGHT`、`BRAND_GROUND` の定数で持つ。アプリの色（`ACCENT` ほか）は案 B のまま変えない。テストを 4 つ足す。
+- [ ] `tui/src/ui/render/logo.rs` を書き直す。日の出を消し、マーク「接」を描く。サイドバーの見出し（`sidebar_lines`）、ログインの画面の動き（`login_lines`）、動きのあいだだけの描き直しの間隔（`login_redraw_after`）、ブランドの字 `WORDMARK`（`Nagi`）を置く。
+- [ ] 呼ぶ側を変える。`tui/src/ui/render/mod.rs` のサイドバー、`tui/src/ui/render/overlay.rs` のログインの画面、`tui/src/ui/mod.rs` の描き直しの間隔。使わなくなった `tui/src/ui/app.rs` の `started_at` を消し、`tui/src/ui/login.rs` の `shown_at` の説明を動きに合わせる。
+- [ ] `assets/logo-dark.svg`、`assets/logo-light.svg`、`assets/icon.svg` を作り直す。ファイルの名前は README が使うので変えない。
 - [ ] Create `docs/brand.md`。
-- [ ] `README.md` の 10 行目（ロゴの説明の文）を新しい配色に合わせる。
-- [ ] Create `docs/review/R07-palettes.png`、`docs/review/R07-palettes.mp4`、`docs/review/R07-review-palette.png`、`docs/review/R07-review.mp4`。
+- [ ] `README.md` の先頭の画像の alt を `Nagi` にし、10 行目（ロゴの説明の文）をマーク「接」の説明にする。ほかは変えない。
+- [ ] Create `docs/review/R07-marks.png`、`docs/review/R07-review-palette.png`、`docs/review/R07-review.mp4`。
 
 **Build.**
 - [ ] Stop until the operator picks palette A, B, or C. 選ぶ前に、次の使い捨ての試作を作って見せる。
@@ -544,46 +545,51 @@ Each live lane runs at the PR head in its own git worktree. Drive the surface th
   - [ ] 3 つのバイナリを `scripts/tui-shot.py` で 120x36 に起動する。受信箱、ログインの画面、カレンダーを撮る。データは同じ一時 HOME に `nagi add` で入れる（締切を過ぎた 1 件、今日 2 件、ふつう 2 件）。
   - [ ] Pillow で 3 列の一覧 `docs/review/R07-palettes.png` を作る。各列はロゴ 2 種、アイコン、3 つの画面。日の出の 3 秒を 3 案並べた動画を `ffmpeg` で `docs/review/R07-palettes.mp4` にする。
   - [ ] 一覧と動画を operator に見せ、A、B、C の返事を待つ。選んだ案を PR の本文に書く。選んだあと `proto/R07-palette` を消す。
-- [ ] 選んだ案の 6 つのブランドの色を `theme.rs` の `BRAND_*` に入れる。`logo.rs` はそれを読む。色の値を書く場所を `theme.rs` の 1 か所にする。
-- [ ] アプリの色を選んだ案の値にする。`ATTENTION` と `DANGER` は、下の `semantic_colors_stay_apart` が通るときだけ今の値を残す。
-- [ ] SVG 3 つの色を `BRAND_*` と同じ 16 進にする。
-- [ ] `docs/brand.md` を書く。色の表を置く（名前、16 進、役目、Rust の定数）。ロゴの使い分けを書く（`logo-dark.svg` は暗い地、`logo-light.svg` は明るい地、`icon.svg` は正方形の場所）。余白はロゴの四方に太陽の半径と同じ幅にする。最小の大きさはアイコン 16 px、字の入ったロゴは幅 120 px にする。してはいけないことを書く（色を変える、縦横を伸ばす、影を付ける、写真の上に置く、締切切れにアクセントの色を使う）。
+- [ ] 運用者は配色に案 B を選んだが、日の出のロゴは退けた。ロゴの試作を 3 回重ね、3 回目の 6 案（`/tmp/swarm-R07/proto/nagi3/x/`）から「接」を選んだ。ふたつの正方形が角の一点だけで触れる形。日の出の 3 案の一覧と動画（`R07-palettes.png`、`R07-palettes.mp4`）は退けた案なので PR から消し、3 回目の一覧 `sheet.png` を `docs/review/R07-marks.png` に写す。選んだマークを PR の本文に書く。
+- [ ] `theme.rs` の `BRAND_*` をマークの色にする。暗い地は A `#93C5FD`、B `#60A5FA`、字 `#E6E9F0`。白い地は A `#60A5FA`、B `#3B4CCA`、字 `#16203A`。地は `#0D1117`。太陽、水平線、水面の定数と、それを使うところを消す。白い地の 3 色と `BRAND_GROUND` は SVG とテストだけが使うので、`#[cfg_attr(not(test), expect(dead_code))]` を付ける。
+- [ ] サイドバーの見出しを、試作の `side.rows` そのままの 6×3 セルのマーク（地は `SURFACE`）と、1 桁あけた太字の `Nagi`（`ACCENT`、マークのまん中の行）にする。24x10 のロゴと、その下の `nagi` の行をこれに替え、一覧を 9 行上げる。全部が収まらないときは、見出しの 1 行（` Nagi`）だけにする。
+- [ ] ログインの画面のロゴを、試作の `login.at(t)` を 24x10 の半ブロックに描いたものにする。描き方も試作と同じ（1 セルを 8x8 に分けて数え、全部塗る・上下に分ける・左右に分けるのうち、外れの少ない形を選ぶ）。ふたつの正方形は 1.0 秒の 3 次のイーズアウトで斜めに寄って触れ、そのあとは動かない。9 行目のまん中に太字の `Nagi`（`#E6E9F0`）を置く。最後のコマは A も B も 5 桁 x 5 半行で、角の一点だけで触れる。ロゴが収まるときだけ、名前の行と空行をロゴに替える。
+- [ ] 描き直しの間隔を、ログインのロゴが動く 1.0 秒のあいだだけ 50 ms にする。そのあとは `login_redraw_after` が `None` を返し、250 ms の `TICK` に戻る。サイドバーは止まっているので描き直しを頼まない。`render::draw` は次の描き直しまでの間隔を返し、`ui/mod.rs` はそれがなければ `TICK` を使う。
+- [ ] 狭い端末の細い帯（`\`）は変えない。ロゴを出さず、`凪` をアクセントで書く。
+- [ ] SVG を作り直す。字は OFL の Inter の可変フォント（試作の `InterVariable.woff2`、4.001）を `uv run --with fonttools` で wght 580、opsz 32（ブラウザが大きな字に選ぶ光学サイズ）に固定し、N、a、g、i の輪郭を取る。送り幅、カーニング（この 4 字の組では 0）、字間 −0.022em を当てて path にし、`<text>` は使わない。キャップハイトを 100 単位とし、マークは `(0, 0)–(100, 100)`、下の辺がベースライン、語の書き出しはマークの右の辺から 50 単位。viewBox は整数に丸める（`0 -1 420 130`）。`icon.svg` は 512 の `BRAND_GROUND` の角丸の正方形のまん中に、幅 256 のマークを置く（四方に正方形 1 つ分の余白）。どれも `role="img"` と `aria-label="Nagi"` を付ける。
+- [ ] `docs/brand.md` を書き直す。マークの形の決まり（同じ大きさの正方形、角の一点で触れる）、暗い地と白い地の色の表（名前、16 進、役目、Rust の定数）、ロックアップの組み方、余白（四方に正方形 1 つ分）、最小の大きさ（アイコン 16 px、ロックアップ幅 96 px）、してはいけないこと（色を変える、伸ばす、回す、正方形を離す・重ねる、効果を付ける、ほかのフォントで組む）、Inter と OFL の出典を書く。
 
 **You see.**
-- [ ] 起動すると、サイドバーのロゴと選んでいる行のアクセントが同じ配色に見える。
-- [ ] ログインの画面で、太陽が選んだ案の色で昇る。
-- [ ] GitHub の README の先頭のロゴが、暗い表示でも明るい表示でも選んだ案の色で出る。
-- [ ] `docs/brand.md` を読むと、色の 16 進とロゴの置き方が分かる。
+- [ ] 起動すると、サイドバーの上に 6×3 セルのマーク「接」と青い太字の `Nagi` が出て、一覧がすぐ下から始まる。
+- [ ] ログインの画面で、離れていたふたつの正方形が 1 秒で斜めに寄って角で触れ、そこで止まる。下に `Nagi` が出る。
+- [ ] GitHub の README の先頭に、暗い表示でも明るい表示でも、マークと `Nagi` のロックアップが出る。
+- [ ] `docs/brand.md` を読むと、マークの形、色の 16 進、組み方と置き方が分かる。
 
 **Verify, unit.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
 - [ ] `cd tui && cargo test` が通る。
-- [ ] `theme.rs` の新しいテスト `brand_colors_match_svgs` が通る。`include_str!` で `assets/` の 3 つの SVG を読む。`BRAND_*` の 16 進がどの SVG にもあることを確かめる。ほかの 16 進がないことも確かめる（字の線とアイコンの地は除く）。
+- [ ] `theme.rs` の `brand_colors_match_svgs` が通る。`include_str!` で `assets/` の 3 つの SVG を読み、塗りの色の集まりが SVG ごとに決めた 3 色とちょうど同じかを確かめる。`logo-dark.svg` は `BRAND_MARK_A`、`BRAND_MARK_B`、`BRAND_INK`。`logo-light.svg` は `BRAND_MARK_A_LIGHT`、`BRAND_MARK_B_LIGHT`、`BRAND_INK_LIGHT`。`icon.svg` は `BRAND_MARK_A`、`BRAND_MARK_B`、`BRAND_GROUND`。
+- [ ] `svg_paints_reject_other_notations` が通る。塗りは `#RRGGBB`、`none`、`url(#…)` だけを受け、短い 16 進、`rgb()`、透明度つきの 8 桁を落とす。
 - [ ] `semantic_colors_stay_apart` が通る。`ACCENT`、`ATTENTION`、`DANGER` の Lab の距離（CIE76）が、どの 2 つでも 25 以上。
 - [ ] `text_contrast_on_grounds` が通る。`ACCENT`、`MUTED`、`ATTENTION`、`DANGER` と `SURFACE`、`BRAND_GROUND` の WCAG のコントラスト比が 4.5 以上。`FAINT` は 3.0 以上。
-- [ ] `logo.rs` の `どの時点でも24桁10行になる` が、変えずに通る。
+- [ ] `logo.rs` の 4 つのテストが通る。`ログインのロゴはどの時点でも24桁10行に収まる`（0 秒から 1.5 秒の 50 ms ごとと 1 日後で、10 行、どの行も 24 桁、字は半ブロックと `Nagi` だけ、色はマークの 2 色だけ）。`最後のコマで正方形は角の一点だけで触れる`（半ブロックを画素に戻し、A と B が穴のない同じ大きさの正方形で、B の左上の画素が A の右下の画素と斜めに隣り合う）。`サイドバーのロゴは見出しの3行に収まる`。`動き終わったらロゴのためには描き直さない`。
 - [ ] `cargo clippy --all-targets -- -D warnings`、`cargo fmt --check`、`xmllint --noout assets/*.svg` が通る。
 
 **Verify, live.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked. Ten lanes on `fast mechanical model (setup default)` at the PR head, per the boot recipe.
-- [ ] Lane 1. Regression lane against trunk. trunk と head のバイナリを、同じ一時 HOME（締切を過ぎた 1 件、今日 2 件、ふつう 2 件）で 120x36 に起動し、`J` で 2 行を選んで 3 秒後の受信箱を撮る。Save `inbox-trunk-head.png`. Pass when 文字と並びが trunk と同じで、違う画素がアクセント、カーソルの行、選んだ行、サイドバーの地、ロゴの 24x10 のセルの中だけにある.
-- [ ] Lane 2. Ctrl+K で「ログイン」を選び、ログインの画面を 3 秒後に撮る。Save `login-logo.png`. Pass when 太陽の中心のセルの色が `BRAND_SUN_TOP` と `BRAND_SUN_BOTTOM` を結ぶ線の上（各成分 8 以内）にあり、水平線のまん中のセルが `BRAND_HORIZON` と各成分 8 以内.
-- [ ] Lane 3. 120x36 で起動し、3 秒後のサイドバーの上のロゴを撮る。Save `sidebar-logo.png`. Pass when ロゴのまわりのセルの地が `SURFACE` と同じ色で、ロゴの範囲に `SURFACE` より暗い四角が出ない.
-- [ ] Lane 4. ログインの画面を 0.5 秒、1.5 秒、2.5 秒で撮り、3 枚を横に並べる。Save `sunrise-steps.png`. Pass when 太陽が 3 枚で下から上へ動き、どの枚でも色のあるセルが 24x10 の外に出ない.
-- [ ] Lane 5. 今日の画面（`2`）で 1 件に `s` を押して進行中にし、`v` でボードにして撮る。Save `board-in-progress.png`. Pass when 進行中の印 ◐ の色が新しい `IN_PROGRESS` と同じで、カーソルの行の地が新しい `CURSOR_BG` と同じ.
-- [ ] Lane 6. カレンダー（`6`）で、今日の日、締切が今日の◆、締切を過ぎた◆が同じ月に見える状態を撮る。Save `calendar-semantics.png`. Pass when 画素から測ったアクセント、注意、締切切れの 3 色の Lab の距離が、どの 2 つでも 25 以上.
-- [ ] Lane 7. Ctrl+K でコマンドの一覧を開き、ポップアップの地と枠を撮る。Save `palette-surface.png`. Pass when 補助の文字とポップアップの地を画素から測ったコントラスト比が 4.5 以上で、枠の色が新しい `BORDER` と同じ.
-- [ ] Lane 8. `N` でプロジェクトを 8 つ作り（作った順に `PROJECT_COLORS` の 8 色が付く）、サイドバーを撮る。Save `project-colors.png`. Pass when 8 色が互いに違い、どれも新しい `ACCENT` と Lab の距離が 15 以上離れている.
-- [ ] Lane 9. `rsvg-convert` で `assets/logo-dark.svg` を `#0D1117` の地に、`assets/logo-light.svg` を `#FFFFFF` の地に描く。`assets/icon.svg` は 16、32、512 px で描き、1 枚に並べる。Save `svg-assets.png`. Pass when 3 つの SVG の太陽の中心の画素が同じ色で、16 px のアイコンでも太陽と水面の画素の Lab の距離が 20 以上あり、字の線と地のコントラスト比が 4.5 以上.
-- [ ] Lane 10. 80x24 で起動し、`\` でサイドバーを畳んで撮る。Save `narrow-rail.png`. Pass when ロゴのセルが 1 つも描かれず、今いる画面の印と帯の上の `凪` が新しい `ACCENT` で出る.
+- [ ] Lane 1. 120x36 で起動し、1.5 秒後にサイドバーの見出しを撮る。Save `sidebar-mark.png`. Pass when 2 から 4 行目の 2 から 7 桁目が試作の `side.rows` の字と色（A は `#93C5FD`、B は `#60A5FA`）で、3 行目の 9 から 12 桁目が太字の `Nagi`（`ACCENT`）、上の 5 行のほかのセルが空で、地がどれも `SURFACE`。PNG の画素から各セルの上と下の半分を読んで、A と B がどちらも 3 桁 x 3 半行の埋まった四角で、角の一点で触れる.
+- [ ] Lane 2. Ctrl+K で「ログイン」を選び、2 秒後に撮る。Save `login-final.png`. Pass when PNG の画素から各セルの上と下の半分を読んで、A と B がどちらも 5 桁 x 5 半行の穴のない正方形で、B の左上が A の右下と斜めに隣り合い（重なりもすき間もない）、ロゴの 24x10 にマークの 2 色と地のほかの色がなく、`Nagi` がロゴの 9 行目の 11 から 14 桁目に太字の `#E6E9F0` で出る.
+- [ ] Lane 3. ログインの画面を開いてから 1.6 秒のあいだ 20 ms ごとに撮り、3 秒後にも撮る。0、0.2、0.4、0.6、0.8、1.0、3.0 秒のコマを横に並べる。Save `motion-steps.png`. Pass when どのコマでも色のあるセルが 24x10 の外に出ず、1.0 秒より後のコマが最後のコマとセル単位で同じで、開いてから 1.2 秒から 11.2 秒の毎秒の書き出し回数が、動きのない最初の画面（今日）の 1.1 倍以下（どちらも 250 ms の `TICK` だけ）.
+- [ ] Lane 4. 80x24 で起動し、`\` でサイドバーを畳んで撮る。Save `narrow-rail.png`. Pass when 帯にロゴのセルが 1 つもなく、帯の上の `凪` と今いる画面の印が `ACCENT` で、帯の 4 桁の画素が trunk と同じ.
+- [ ] Lane 5. `rsvg-convert -w 16 -h 16` で `assets/icon.svg` を描き、12 倍に拡大して撮る。Save `icon-16.png`. Pass when A と B がちょうど 4x4 px の `#93C5FD` と `#60A5FA` の正方形で、B の左上の画素が A の右下の画素と斜めに隣り合い、A と B、それぞれと地の Lab の距離が 20 以上.
+- [ ] Lane 6. `rsvg-convert -w 840`（viewBox の 1 単位がちょうど 2 px）で `assets/logo-dark.svg` を `#0D1117` の地に、`assets/logo-light.svg` を `#FFFFFF` の地に描く。Save `svg-assets.png`. Pass when 両方で、マークの高さが N の高さと同じ（2 px 以内）、マークの下の辺が N の下の辺と同じ行、A と B が同じ大きさの正方形で角の一点で触れ、マークから N の字までの間がキャップハイトの 0.585 倍 ±0.02（語の書き出しまでの 0.5 倍に、N の左の余白 0.085 倍を足した値）、字と地のコントラスト比が 4.5 以上で、SVG に `<text>` がなく、`role="img"` と `aria-label="Nagi"` がある.
+- [ ] Lane 7. Regression lane against trunk. trunk と head のバイナリを、同じ一時 HOME（締切を過ぎた 1 件、今日 2 件（うち 1 件は締切が今日）、受信箱 2 件）で 120x36 に起動し、`1` で受信箱にして `J` で 2 行を選び、3 秒後に撮る。trunk と head のサイドバーを並べる。Save `sidebar-trunk-head.png`. Pass when サイドバーの外の画素が trunk と同じで、サイドバーの一覧の行が、9 行上がったほかは、セルの字と色も画素も trunk と同じ.
+- [ ] Lane 8. カレンダー（`6`）で、今日の日、締切が今日の◆、締切を過ぎた◆が同じ月に見える状態を撮る。Save `calendar-semantics.png`. Pass when アクセント、注意、締切切れの 3 色が画面の画素にあり、どの 2 つも Lab の距離が 25 以上.
+- [ ] Lane 9. `N` でプロジェクトを 8 つ作り（作った順に `PROJECT_COLORS` の 8 色が付く）、`1` で受信箱に戻ってサイドバーを撮る。Save `project-colors.png`. Pass when 8 つの ● の色が互いに違い、どれも `ACCENT` と Lab の距離が 15 以上離れている.
+- [ ] Lane 10. Ctrl+K でコマンドの一覧を開き、ポップアップの地と枠を撮る。Save `palette-surface.png`. Pass when ポップアップの補助の文字（`MUTED`）とその地（`SURFACE`）のコントラスト比が 4.5 以上で、画素にも両方の色があり、枠のセルの色がどれも `BORDER`.
 
 **Verify, perf.** Tests alone are not sufficient verification. A PR is verified only when its unit, live, and perf boxes are all checked.
-- [ ] Metric. 毎秒の書き出し回数。起動から 2.5 秒の日の出のあいだと、そのあとの 10 秒を分けて測る。
-- [ ] Probe. `scripts/tui-shot.py` で 120x36 に起動し、キーを送らずに 12.5 秒置く。5 回の中央値を取る。
-- [ ] Baseline. trunk のバイナリで同じ probe を 5 回取る。`animation_tick` の値から、日の出のあいだは毎秒 20 回前後、そのあとは毎秒 10 回前後になるはず。
-- [ ] Rule. head の 2 つの値が、どちらも trunk の 1.1 倍以下。色の値を変えるだけなので、増えたら原因を直してから出す。
+- [ ] Metric. 毎秒の書き出し回数（PTY から読んだ回数）。ログインの画面を開いてから 0 から 1 秒（動き）、1 から 2.5 秒、2.5 から 12 秒と、最初の画面（今日）の起動から 0 から 2.5 秒、2.5 から 12.5 秒に分けて測る。
+- [ ] Probe. `scripts/tui-shot.py` の `Session` で、lane 7 と同じ一時 HOME で 120x36 に起動する。最初の画面はキーを送らずに 12.5 秒置く。ログインは 1 秒後に Ctrl+K で開き、12 秒置く。5 回の中央値を取る。
+- [ ] Baseline. trunk のバイナリで同じ probe を 5 回取る。trunk はサイドバーとログインの日の出を 2.5 秒まで 50 ms ごと、そのあとも水面の揺れを 100 ms ごとに描き直す。head は動きのあいだ 50 ms ごと、そのあとは 250 ms の `TICK` だけになるはず。
+- [ ] Rule. ログインの動きのあいだ（0 から 1 秒）が trunk の 1.1 倍以下。ログインの 2.5 から 12 秒と最初の画面の 2.5 から 12.5 秒が trunk の 1.1 倍以下で、ログインの 2.5 から 12 秒が最初の画面の 2.5 から 12.5 秒の 1.1 倍以下（動き終わったロゴは書き出しを増やさない）。
 
 **Review gate.**
-- [ ] Copy lane 1, lane 2, and lane 9 screenshots into `docs/review/R07-review-palette.png`.
-- [ ] Record a 30 to 60 second video of the change and save it as `docs/review/R07-review.mp4`. ログインの日の出、サイドバー、カレンダー、コマンドの一覧の順に、tui-shot のコマを `ffmpeg` でつなぐ。
+- [ ] Copy lane 7 (trunk と head のサイドバー), lane 2 (ログインの最後のコマ), lane 6, and lane 5 screenshots (SVG を暗い地と白い地に、アイコンを 16、32、128 px で) into `docs/review/R07-review-palette.png`.
+- [ ] Record a 20 to 40 second video of the change and save it as `docs/review/R07-review.mp4`. ログインの動きを 1 倍と 0.25 倍（コマから）、サイドバー、狭い端末の細い帯、コマンドの一覧の順に、tui-shot のコマを `ffmpeg` でつなぐ。
 - [ ] Post the screenshot and the video in chat for the operator. Stop at merge-ready.
 
 **Merge.**

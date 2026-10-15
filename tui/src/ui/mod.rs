@@ -102,9 +102,9 @@ fn main_loop(
 ) -> io::Result<()> {
     let mut quit_deadline: Option<Instant> = None;
     loop {
-        let mut logo_elapsed = None;
-        terminal.draw(|frame| logo_elapsed = render::draw(frame, app))?;
-        let wait = logo_elapsed.map_or(TICK, render::animation_tick);
+        let mut logo_redraw = None;
+        terminal.draw(|frame| logo_redraw = render::draw(frame, app))?;
+        let wait = logo_redraw.unwrap_or(TICK);
         let first = match inbox.recv_timeout(wait) {
             Ok(event) => Some(event),
             Err(RecvTimeoutError::Timeout) => None,

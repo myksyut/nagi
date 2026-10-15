@@ -4,13 +4,22 @@
 use crate::i18n::{Msg, t};
 use ratatui::style::{Color, Modifier, Style};
 
-/// ブランドの色。ロゴ（`render/logo.rs`）と `assets/*.svg` は、ここと同じ 16 進を使う。色の値を書く場所はここだけ
-pub const BRAND_SUN_TOP: Color = Color::Rgb(0xFD, 0xE6, 0x8A);
-pub const BRAND_SUN_BOTTOM: Color = Color::Rgb(0xF5, 0xB9, 0x71);
-pub const BRAND_HORIZON: Color = Color::Rgb(0x93, 0xC5, 0xFD);
-pub const BRAND_WATER_TOP: Color = Color::Rgb(0x60, 0xA5, 0xFA);
-pub const BRAND_WATER_BOTTOM: Color = Color::Rgb(0x3B, 0x4C, 0xCA);
-/// ロゴを置く暗い地。端末の本当の背景色は読み取れず、ほかの配色も暗い端末を前提にしているため、暗い背景だと決めている
+/// ブランドの色。ロゴ（`render/logo.rs`）と `assets/*.svg` は、ここと同じ 16 進を使う。色の値を書く場所はここだけ。
+/// マーク「接」は左上の正方形 A と右下の正方形 B
+pub const BRAND_MARK_A: Color = Color::Rgb(0x93, 0xC5, 0xFD);
+pub const BRAND_MARK_B: Color = Color::Rgb(0x60, 0xA5, 0xFA);
+/// ロゴの字 `Nagi` の色（暗い地）
+pub const BRAND_INK: Color = Color::Rgb(0xE6, 0xE9, 0xF0);
+/// 白い地の色。端末には描かず `logo-light.svg` だけが使う。SVG とずれないことをテストで確かめるためにここに置く
+#[cfg_attr(not(test), expect(dead_code))]
+pub const BRAND_MARK_A_LIGHT: Color = Color::Rgb(0x60, 0xA5, 0xFA);
+#[cfg_attr(not(test), expect(dead_code))]
+pub const BRAND_MARK_B_LIGHT: Color = Color::Rgb(0x3B, 0x4C, 0xCA);
+#[cfg_attr(not(test), expect(dead_code))]
+pub const BRAND_INK_LIGHT: Color = Color::Rgb(0x16, 0x20, 0x3A);
+/// ロゴを置く暗い地と、アイコンの地。端末の本当の背景色は読み取れず、ほかの配色も暗い端末を前提にしているため、暗い背景だと決めている。
+/// 端末では塗らず（ほかの背景の端末で暗い四角になる）、文字のコントラストをこの地で確かめる
+#[cfg_attr(not(test), expect(dead_code))]
 pub const BRAND_GROUND: Color = Color::Rgb(0x0D, 0x11, 0x17);
 
 /// 選択の青
@@ -82,19 +91,24 @@ pub fn project_color_label(name: &str) -> &'static str {
 mod tests {
     use super::*;
 
-    const SVGS: [(&str, &str); 3] = [
+    /// SVG ごとに、使ってよい色の全部。マークは地に合わせた 2 色、字は地に合わせた 1 色、アイコンは地の正方形の色
+    const SVGS: [(&str, &str, [Color; 3]); 3] = [
         (
             "logo-dark.svg",
             include_str!("../../../assets/logo-dark.svg"),
+            [BRAND_MARK_A, BRAND_MARK_B, BRAND_INK],
         ),
         (
             "logo-light.svg",
             include_str!("../../../assets/logo-light.svg"),
+            [BRAND_MARK_A_LIGHT, BRAND_MARK_B_LIGHT, BRAND_INK_LIGHT],
         ),
-        ("icon.svg", include_str!("../../../assets/icon.svg")),
+        (
+            "icon.svg",
+            include_str!("../../../assets/icon.svg"),
+            [BRAND_MARK_A, BRAND_MARK_B, BRAND_GROUND],
+        ),
     ];
-    /// 字の線の色。ブランドの色ではなく、地に合わせて SVG ごとに違う
-    const STROKES: [&str; 2] = ["#EEF0F5", "#16203A"];
 
     fn rgb(color: Color) -> [u8; 3] {
         match color {
@@ -193,26 +207,13 @@ mod tests {
 
     #[test]
     fn brand_colors_match_svgs() {
-        let gradient = [
-            BRAND_SUN_TOP,
-            BRAND_SUN_BOTTOM,
-            BRAND_HORIZON,
-            BRAND_WATER_TOP,
-            BRAND_WATER_BOTTOM,
-        ]
-        .map(hex);
-        for (name, svg) in SVGS {
-            let found = hexes(svg);
-            for want in &gradient {
-                assert!(found.contains(want), "{name} に {want} がない");
-            }
-            // アイコンの地だけが BRAND_GROUND と同じ色を使う
-            let ground = hex(BRAND_GROUND);
-            assert_eq!(found.contains(&ground), name == "icon.svg", "{name}");
-            for h in &found {
-                let known = gradient.contains(h) || *h == ground || STROKES.contains(&h.as_str());
-                assert!(known, "{name} にブランドにない色 {h} がある");
-            }
+        for (name, svg, colors) in SVGS {
+            let mut found = hexes(svg);
+            found.sort();
+            found.dedup();
+            let mut want = colors.map(hex).to_vec();
+            want.sort();
+            assert_eq!(found, want, "{name} の色");
         }
     }
 
