@@ -9,7 +9,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Paragraph};
 
 use super::calendar::filter_label;
-use super::logo::{LOGIN_LOGO_HEIGHT, WORDMARK, login_lines, login_redraw_after};
+use super::logo::{LOGIN_LOGO_HEIGHT, LOGIN_LOGO_WIDTH, WORDMARK, login_lines, login_redraw_after};
 use super::{centered, clear_for_popup};
 use crate::data::sort::TaskSort;
 use crate::dates::{format_long_date, parse_date_input};
@@ -743,9 +743,10 @@ pub fn draw_login(frame: &mut Frame, app: &App, area: Rect) -> Option<Duration> 
         fill(Msg::ServerLabel, &[&app.config.server]),
         theme::faint(),
     )));
-    // 名前と空行の 2 行を、名前の入ったロゴに替えても枠（上下 2 行）ごと収まるときだけ、ロゴを出す
+    // 名前と空行の 2 行を、名前の入ったロゴに替えても枠（上下 2 行、左右 1 列）ごと収まるときだけ、ロゴを出す。
+    // 幅が足りないと、右の正方形と名前が切れる
     let mut redraw = None;
-    if area.height >= lines.len() as u16 + LOGIN_LOGO_HEIGHT {
+    if area.height >= lines.len() as u16 + LOGIN_LOGO_HEIGHT && area.width >= LOGIN_LOGO_WIDTH + 2 {
         let elapsed = login.shown_at.elapsed();
         lines.splice(0..2, login_lines(elapsed));
         redraw = login_redraw_after(elapsed);
